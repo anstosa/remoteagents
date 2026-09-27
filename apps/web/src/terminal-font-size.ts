@@ -1,8 +1,8 @@
 import { useSyncExternalStore } from 'react';
 
 // Per-browser terminal font size, in whole pixels, shared across the tabs of one
-// browser. It drives only the xterm agent pane; the note editor, note preview,
-// and response file viewer keep the shared `--output-font-size` default.
+// browser. It drives xterm and diff views; the note editor and note preview
+// keep the shared `--output-font-size` default.
 export const terminalFontSizeKey = 'rac.terminal-font-size';
 export const minTerminalFontSize = 8;
 export const maxTerminalFontSize = 24;

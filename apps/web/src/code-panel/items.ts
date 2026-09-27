@@ -11,22 +11,26 @@ import type { ComparisonFile, ComparisonFileContents } from './comparison.js';
 // very large diff or file never blocks the main thread. From the spike's timing measurements.
 export const CODE_TOKENIZE_MAX_LINES = 2000;
 
-// The font metrics the diffs render at, shared by both renderers so they cannot drift: the same
-// numbers drive the `--diffs-*` CSS variables the shadow DOM reads AND the virtualiser's itemMetrics,
-// and a mismatch mis-measures every row's height (styles.css notes this lockstep explicitly).
+// baseline metrics preserve the established line-height ratio while the shared terminal setting
+// supplies the live font size; rendered css and virtualizer metrics must remain in lockstep
 export const CODE_FONT_SIZE = 13;
 export const CODE_LINE_HEIGHT = 20;
 
+// scale line boxes with the shared font setting
+const codeLineHeight = (fontSize: number): number => Math.round(fontSize * CODE_LINE_HEIGHT / CODE_FONT_SIZE);
+
 // The CSS custom properties the diff library reads for its font metrics, applied to the element that
 // hosts the CodeView. Cast to CSSProperties at the call site (custom properties aren't in its type).
-export const codeViewStyle = (): Record<string, string> => ({ '--diffs-font-size': `${CODE_FONT_SIZE}px`, '--diffs-line-height': `${CODE_LINE_HEIGHT}px` });
+// build matching shadow-dom font metrics
+export const codeViewStyle = (fontSize: number): Record<string, string> => ({ '--diffs-font-size': `${fontSize}px`, '--diffs-line-height': `${codeLineHeight(fontSize)}px` });
 
 // The diff-library options both renderers share (theme, highlighter, scroll/sticky behaviour, the
 // freeze cap, and the itemMetrics that track the font metrics above). Each renderer spreads this and
 // adds its own view-specific keys — diffStyle, and the Code panel's full-context expandUnchanged /
 // loadDiffFiles. `themeType` is driven from color-theme.ts. Literals are pinned so the object stays
 // assignable to `CodeViewReactOptions` when spread, without importing the React entry here.
-export const codeViewBaseOptions = (themeType: 'light' | 'dark') => ({
+// build matching virtualizer metrics
+export const codeViewBaseOptions = (themeType: 'light' | 'dark', fontSize: number) => ({
   theme: { dark: 'catppuccin-mocha', light: 'catppuccin-latte' } as const,
   themeType,
   preferredHighlighter: 'shiki-js' as const,
@@ -35,7 +39,7 @@ export const codeViewBaseOptions = (themeType: 'light' | 'dark') => ({
   stickyHeaders: true,
   enableLineSelection: true,
   tokenizeMaxLength: CODE_TOKENIZE_MAX_LINES,
-  itemMetrics: { lineHeight: CODE_LINE_HEIGHT, diffHeaderHeight: CODE_LINE_HEIGHT + 24 }
+  itemMetrics: { lineHeight: codeLineHeight(fontSize), diffHeaderHeight: codeLineHeight(fontSize) + 24 }
 });
 
 // A small, stable content hash (djb2, folded to uint32). Drives both an item's `version` — which

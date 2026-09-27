@@ -1,4 +1,4 @@
-import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject, type TouchEvent as ReactTouchEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { FlyoutPortal } from './flyout-portal.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 
@@ -12,7 +12,18 @@ export type PanelCarousel = { panels: readonly CarouselPanel[]; visibleKey: stri
 // move one split for a deliberate horizontal touch, leaving taps and vertical scrolling alone
 export function usePanelSwipe(carousel: PanelCarousel) {
   const start = useRef<{ pointerId: number; x: number; y: number } | undefined>(undefined);
+  const touchStart = useRef<{ identifier: number; x: number; y: number } | undefined>(undefined);
   const swiped = useRef(false);
+  // move one split only for a deliberate horizontal gesture
+  const finishSwipe = (dx: number, dy: number) => {
+    // preserve taps and vertical content scrolling
+    if (Math.abs(dx) < 40 || Math.abs(dx) <= Math.abs(dy) * 1.25) return;
+    swiped.current = true;
+    const index = carousel.panels.findIndex(panel => panel.key === carousel.visibleKey);
+    const neighbor = carousel.panels[index + (dx < 0 ? 1 : -1)];
+    // stay at the first or last split
+    if (neighbor !== undefined) carousel.show(neighbor.key);
+  };
   // remember only the primary touch within an enabled swipe area
   const onPointerDown = (event: ReactPointerEvent<HTMLElement>, enabled = true) => {
     swiped.current = false;
@@ -25,21 +36,37 @@ export function usePanelSwipe(carousel: PanelCarousel) {
   const onPointerUp = (event: ReactPointerEvent<HTMLElement>) => {
     const gesture = start.current;
     start.current = undefined;
+    // touchend owns gestures that also emitted touchstart, even if this pointer was cancelled
+    if (touchStart.current !== undefined && event.pointerType === 'touch') return;
     // ignore a touch that did not start in this area
     if (gesture === undefined || gesture.pointerId !== event.pointerId) return;
-    const dx = event.clientX - gesture.x;
-    const dy = event.clientY - gesture.y;
-    // preserve taps and vertical note scrolling
-    if (Math.abs(dx) < 40 || Math.abs(dx) <= Math.abs(dy) * 1.25) return;
-    swiped.current = true;
-    // move one split regardless of swipe distance
-    const index = carousel.panels.findIndex(panel => panel.key === carousel.visibleKey);
-    const neighbor = carousel.panels[index + (dx < 0 ? 1 : -1)];
-    // stay at the first or last split
-    if (neighbor !== undefined) carousel.show(neighbor.key);
+    finishSwipe(event.clientX - gesture.x, event.clientY - gesture.y);
   };
   // discard a browser-owned gesture such as a vertical scroll
   const onPointerCancel = () => { start.current = undefined; };
+  // the diff's shadow scroll surface can cancel pointer events while still delivering touchend
+  const onTouchStart = (event: ReactTouchEvent<HTMLElement>, enabled = true) => {
+    touchStart.current = undefined;
+    swiped.current = false;
+    // do not treat a second finger or an excluded area as a carousel swipe
+    if (!enabled || event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    touchStart.current = { identifier: touch.identifier, x: touch.clientX, y: touch.clientY };
+  };
+  // use the ending finger when a nested scroller consumed the pointer stream
+  const onTouchEnd = (event: ReactTouchEvent<HTMLElement>) => {
+    const gesture = touchStart.current;
+    touchStart.current = undefined;
+    start.current = undefined;
+    // ignore touches that did not start in a swipe area
+    if (gesture === undefined) return;
+    const touch = Array.from(event.changedTouches).find(candidate => candidate.identifier === gesture.identifier);
+    // ignore another finger ending first
+    if (touch === undefined) return;
+    finishSwipe(touch.clientX - gesture.x, touch.clientY - gesture.y);
+  };
+  // discard a cancelled multi-touch or browser gesture
+  const onTouchCancel = () => { touchStart.current = undefined; start.current = undefined; };
   // prevent the touch-generated click from opening a menu or editing a note
   const onClickCapture = (event: ReactMouseEvent<HTMLElement>) => {
     // preserve normal taps and keyboard activation
@@ -48,7 +75,7 @@ export function usePanelSwipe(carousel: PanelCarousel) {
     event.preventDefault();
     event.stopPropagation();
   };
-  return { onPointerDown, onPointerUp, onPointerCancel, onClickCapture };
+  return { onPointerDown, onPointerUp, onPointerCancel, onTouchStart, onTouchEnd, onTouchCancel, onClickCapture };
 }
 
 // Track which of a split's panels (`keys`, in column order) is in view. On a phone the split is a

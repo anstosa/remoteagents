@@ -9,7 +9,8 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions, type FileDiffMetadata } from '@pierre/diffs/react';
 import { useColorTheme } from '../color-theme.js';
-import { type PanelAction, PanelHeader, PanelIcon, panelIcons, usePanelExpand } from '../panel-header.js';
+import { PanelHeader, PanelIcon, panelIcons, usePanelExpand } from '../panel-header.js';
+import { useTerminalFontSize } from '../terminal-font-size.js';
 import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch, type FilePreviewView } from './comparison.js';
 import { codeViewBaseOptions, codeViewStyle, diffItemForContents, diffItemForFile, fileItemForContents, fileVersion, loadedFilesFromContents } from './items.js';
 
@@ -117,16 +118,18 @@ const placeholderFor = (file: ComparisonFile): Placeholder | undefined => {
 
 export default function CodePanel({ mode, state, patch, selectedPath, filePreview, prAvailable, branch, review, loadFile, onSelectFile, onClearFile, onSetMode, onCloseFile, onClose, onRetry }: CodePanelProps) {
   const theme = useColorTheme();
+  const fontSize = useTerminalFontSize();
   const [supportingExpanded, setSupportingExpanded] = useState(false);
   // the Workspace's expansion, which promotes this panel over its siblings
   const expanded = usePanelExpand('code')?.expanded === true;
   const [viewMode, setViewMode] = useState<ViewMode>('hunks');
   const [split, setSplit] = useState(false);
+  // wrapping is opt-in so wide lines keep their horizontal scroll by default
+  const [wrapLines, setWrapLines] = useState(false);
+  // keep file collapse separate from cached diff content and version each toggle for CodeView
+  const [fileCollapse, setFileCollapse] = useState<Record<string, { collapsed: boolean; revision: number }>>({});
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  // The view options (diff mode and layout) live in a right-side fly-out this toggles; it closes as
-  // soon as an option is chosen.
-  const [optionsOpen, setOptionsOpen] = useState(false);
   // The panel's own width (not the viewport's), so the file list and header adapt to a squeezed
   // column, not just a narrow phone. `narrow` folds the file list into a drawer and forces unified;
   // `compact` (narrower still) drops the header's file count and branch.
@@ -164,13 +167,14 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
     lastModeRef.current = mode;
     if (modeChanged) {
       setLoaded({}); setLoadStatus({}); setPlain(undefined); setFullOverrides({});
+      setFileCollapse({});
       anchorRef.current = undefined;
       itemCacheRef.current.clear();
       overrideInflightRef.current.clear();
       return;
     }
     const live = patch?.files;
-    if (live === undefined) { setLoaded({}); setLoadStatus({}); setFullOverrides({}); return; }
+    if (live === undefined) { setLoaded({}); setLoadStatus({}); setFullOverrides({}); setFileCollapse({}); return; }
     // keep "Load anyway" results for files the Comparison still has (a capped/binary file the reviewer
     // pulled in stays put unless it is gone); keep an override only while its file's version is unchanged
     const present = new Set(live.map(file => file.change.path));
@@ -178,6 +182,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
     setLoaded(current => keepKeys(current, path => present.has(path)));
     setLoadStatus(current => keepKeys(current, path => present.has(path)));
     setFullOverrides(current => keepKeys(current, path => versions.get(path) === current[path]?.patchVersion));
+    setFileCollapse(current => keepKeys(current, path => present.has(path)));
   }, [mode, patch?.fingerprint]);
   // The current Comparison's fingerprint, tracked in a ref so an in-flight "Load anyway" or override
   // can tell the Comparison changed under it (a stale resolve must not write into the new patch's map).
@@ -299,6 +304,20 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
     return { items: nextItems, placeholders: nextPlaceholders, missing: false, overrideNeeds: needs };
   }, [patch, selectedPath, effectiveMode, plain, groups, supportingExpanded, loaded, fullOverrides]);
 
+  // only toggled files get new item versions; unchanged files retain their cache identity
+  const visibleItems = useMemo(() => items.map(item => {
+    // plain files and untouched diffs keep their original instance
+    if (item.type !== 'diff') return item;
+    const collapse = fileCollapse[item.id.slice(5)];
+    // an untouched diff keeps its original instance too
+    if (collapse === undefined) return item;
+    return { ...item, collapsed: collapse.collapsed, version: (item.version ?? 0) + collapse.revision };
+  }), [items, fileCollapse]);
+  // the library keeps a collapsed item's header mounted, so this controls its body in place
+  const toggleFileCollapse = useCallback((path: string) => {
+    setFileCollapse(current => ({ ...current, [path]: { collapsed: !current[path]?.collapsed, revision: (current[path]?.revision ?? 0) + 1 } }));
+  }, []);
+
   // Fetch the non-partial rebuilds the full-context memo asked for: a changed file's two revisions,
   // diffed in the browser so it renders already expanded (no hunks-only frame). Deduped per version
   // by the in-flight map, and dropped if the Comparison moved on. On failure fall back to the fresh
@@ -328,7 +347,8 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   }, [overrideSignature, loadFile]);
 
   const options = useMemo<PanelOptions>(() => ({
-    ...codeViewBaseOptions(theme === 'latte' ? 'light' : 'dark'),
+    ...codeViewBaseOptions(theme === 'latte' ? 'light' : 'dark', fontSize),
+    overflow: wrapLines ? 'wrap' : 'scroll',
     diffStyle: effectiveSplit ? 'split' : 'unified',
     // Full context expands the unchanged lines, hydrating each partial patch through loadDiffFiles.
     // Full context auto-expands every unchanged line; Hunks leaves the gaps collapsed. Either way the
@@ -337,7 +357,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
     // is lazy: nothing is fetched until a gap is actually expanded.)
     expandUnchanged: effectiveMode === 'full',
     loadDiffFiles
-  }), [theme, effectiveSplit, effectiveMode, loadDiffFiles]);
+  }), [theme, fontSize, wrapLines, effectiveSplit, effectiveMode, loadDiffFiles]);
 
   // Remember the topmost item and how far into it we had scrolled, before leaving the all-files
   // scroll for one file: the last rendered item whose top has passed the viewport top.
@@ -388,7 +408,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   };
 
   const fileCount = groups.implementation.length + groups.supporting.length;
-  const style = codeViewStyle() as CSSProperties;
+  const style = codeViewStyle(fontSize) as CSSProperties;
   // The rail is a persistent column on a wide panel unless the reviewer collapsed it; a narrow panel
   // uses the drawer instead.
   const railVisible = !narrow && !railCollapsed;
@@ -408,13 +428,31 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   if (filePreview !== undefined) return <FileView filePreview={filePreview} options={options} style={style} expanded={expanded} onBack={onCloseFile} onClose={onClose} />;
 
   const hasDiffs = state === 'ready' && fileCount > 0;
-  const secondary: PanelAction[] = [];
-  if (state === 'ready' && selectedPath === undefined && groups.supporting.length > 0) secondary.push({ key: 'supporting', label: `${supportingExpanded ? 'Hide' : 'Show'} tests & docs (${groups.supporting.length})`, icon: <PanelIcon path="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3M7.5 15h9" />, pressed: supportingExpanded, onSelect: () => setSupportingExpanded(value => !value) });
-  if (hasDiffs) secondary.push({ key: 'options', label: 'View options', title: 'View options (Hunks / Full / Plain, Unified / Split)', icon: <PanelIcon path="M4 6h16M4 12h16M4 18h16" />, popupOpen: optionsOpen, onSelect: () => setOptionsOpen(value => !value) });
+  // render display choices directly in the header flyout at every panel width
+  const viewMenu = hasDiffs ? (closeMenu: () => void) => <div className="code-pane-view-menu">
+    <div className="code-pane-options-group">
+      <span className="code-pane-options-label">Diff mode</span>
+      <span className="code-pane-segment" role="group" aria-label="Diff mode">
+        <button type="button" aria-pressed={effectiveMode === 'hunks'} onClick={() => setViewMode('hunks')}>Hunks</button>
+        <button type="button" aria-pressed={effectiveMode === 'full'} onClick={() => setViewMode('full')}>Full ctx</button>
+        <button type="button" aria-pressed={effectiveMode === 'plain'} disabled={selectedPath === undefined} title={selectedPath === undefined ? 'Open a file for the plain view' : undefined} onClick={() => setViewMode('plain')}>Plain file</button>
+      </span>
+    </div>
+    {!narrow && effectiveMode !== 'plain' && <div className="code-pane-options-group">
+      <span className="code-pane-options-label">Diff layout</span>
+      <span className="code-pane-segment" role="group" aria-label="Diff layout">
+        <button type="button" aria-pressed={!effectiveSplit} onClick={() => setSplit(false)}>Unified</button>
+        <button type="button" aria-pressed={effectiveSplit} onClick={() => setSplit(true)}>Split</button>
+      </span>
+    </div>}
+    {/* keep labels mounted through their forwarded click, then reveal the newly configured view */}
+    {selectedPath === undefined && groups.supporting.length > 0 && <label className="code-pane-view-check" onClick={event => event.stopPropagation()}><input type="checkbox" checked={supportingExpanded} onChange={event => { setSupportingExpanded(event.target.checked); closeMenu(); }} />View docs <small>({groups.supporting.length})</small></label>}
+    <label className="code-pane-view-check" onClick={event => event.stopPropagation()}><input type="checkbox" checked={wrapLines} onChange={event => { setWrapLines(event.target.checked); closeMenu(); }} />Wrap lines</label>
+  </div> : undefined;
   const title = <>
     {hasDiffs && (narrow || railCollapsed) && (
       <button type="button" className="code-pane-files-open" aria-label="Show changed files" title="Files" onClick={() => { if (narrow) setDrawerOpen(true); else setRailCollapsed(false); }}>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h10l3 3v1M4 4v15h3M7 8h10l3 3v10H7zM17 8v3h3" /></svg>
       </button>
     )}
     <nav className="code-pane-crumbs" aria-label="Location">
@@ -441,8 +479,8 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   </>;
 
   return (
-    <section className={`code-pane${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes" ref={panelRef} onKeyDown={event => { /* an open fly-out takes Esc before the Workspace does */ if (event.key === 'Escape' && optionsOpen) { event.preventDefault(); event.stopPropagation(); setOptionsOpen(false); } }}>
-      <PanelHeader panelKey="code" label="code panel" title={title} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close code changes', title: 'Close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} />
+    <section className={`code-pane${expanded ? ' expanded' : ''}`} data-wrap-lines={wrapLines ? 'true' : undefined} style={style} role="region" aria-label="Code changes" ref={panelRef}>
+      <PanelHeader panelKey="code" label="code panel" title={title} actions={actions} menuContent={viewMenu} close={{ key: 'close', label: 'Close code changes', title: 'Close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} />
       <div className="code-pane-main">
         {state === 'ready' && fileCount > 0 && railVisible && (
           <aside className="code-pane-rail">
@@ -484,10 +522,13 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
                 ))}
               </ul>
             )}
-            <CodeView ref={viewRef} className="code-pane-view" options={options} items={items} disableWorkerPool />
+            {/* add one disclosure control to each diff header */}
+            <CodeView ref={viewRef} className="code-pane-view" options={options} items={visibleItems} renderHeaderPrefix={item => item.type === 'diff' ? <button type="button" className="code-pane-file-collapse" aria-label={`${item.collapsed ? 'Expand' : 'Collapse'} ${item.fileDiff.name}`} aria-expanded={!item.collapsed} title={item.collapsed ? 'Expand file' : 'Collapse file'} onClick={() => toggleFileCollapse(item.id.slice(5))}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg></button> : null} disableWorkerPool />
           </>}
         </div>
         {narrow && drawerOpen && state === 'ready' && fileCount > 0 && (
+          <>
+          <button type="button" className="code-pane-drawer-backdrop" aria-label="Close changed files" onClick={() => setDrawerOpen(false)} />
           <div className="code-pane-drawer" role="dialog" aria-label="Changed files" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setDrawerOpen(false); } }}>
             <div className="code-pane-drawer-head">
               <span>Files</span>
@@ -497,37 +538,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
             </div>
             {fileList}
           </div>
-        )}
-        {/* The view options fly-out, each option closing it as soon as it is chosen (so a phone tap
-            picks one option and returns to the diff). */}
-        {optionsOpen && hasDiffs && (
-          <div className="code-pane-options" role="dialog" aria-label="View options" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setOptionsOpen(false); } }}>
-            <div className="code-pane-options-head">
-              <span>View options</span>
-              <button type="button" className="code-pane-close" aria-label="Close view options" title="Close" onClick={() => setOptionsOpen(false)}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
-              </button>
-            </div>
-            <div className="code-pane-options-body">
-              <div className="code-pane-options-group">
-                <span className="code-pane-options-label">Diff mode</span>
-                <span className="code-pane-segment" role="group" aria-label="Diff mode">
-                  <button type="button" aria-pressed={effectiveMode === 'hunks'} onClick={() => { setViewMode('hunks'); setOptionsOpen(false); }}>Hunks</button>
-                  <button type="button" aria-pressed={effectiveMode === 'full'} onClick={() => { setViewMode('full'); setOptionsOpen(false); }}>Full ctx</button>
-                  <button type="button" aria-pressed={effectiveMode === 'plain'} disabled={selectedPath === undefined} title={selectedPath === undefined ? 'Open a file for the plain view' : undefined} onClick={() => { setViewMode('plain'); setOptionsOpen(false); }}>Plain file</button>
-                </span>
-              </div>
-              {!narrow && effectiveMode !== 'plain' && (
-                <div className="code-pane-options-group">
-                  <span className="code-pane-options-label">Diff layout</span>
-                  <span className="code-pane-segment" role="group" aria-label="Diff layout">
-                    <button type="button" aria-pressed={!effectiveSplit} onClick={() => { setSplit(false); setOptionsOpen(false); }}>Unified</button>
-                    <button type="button" aria-pressed={effectiveSplit} onClick={() => { setSplit(true); setOptionsOpen(false); }}>Split</button>
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
+          </>
         )}
       </div>
     </section>
@@ -575,11 +586,26 @@ function FileView({ filePreview, options, style, expanded, onBack, onClose }: { 
 
 // One grouped section of the changed-file rail/drawer: a header with the count, then a clickable row
 // per Change that filters the panel to that file (highlighting the active one).
+// use git's two-character status, preferring conflict/deletion over other staged changes
+const changeStatus = (code: string): string => {
+  // conflicted pairs outrank their individual add/delete letters
+  if (/^(?:DD|AU|UD|UA|DU|AA|UU)$/u.test(code) || code.includes('U')) return 'conflicted';
+  // deletions use the removal color
+  if (code.includes('D')) return 'deleted';
+  // untracked and added files share the addition color
+  if (code.includes('A') || code.includes('?')) return 'added';
+  // renames remain distinct from edited files
+  if (code.includes('R')) return 'renamed';
+  return 'modified';
+};
+
 function FileGroup({ label, changes, selectedPath, onSelect }: { label: string; changes: ComparisonChange[]; selectedPath: string | undefined; onSelect: (path: string) => void }) {
+  // empty categories do not need a heading
   if (changes.length === 0) return null;
   return (
     <div className="code-pane-file-group" role="group" aria-label={label}>
       <div className="code-pane-file-group-head">{label}</div>
+      {/* show each file's git status and available line totals in the shared rail/drawer */}
       {changes.map(change => (
         <button
           key={change.path}
@@ -589,8 +615,9 @@ function FileGroup({ label, changes, selectedPath, onSelect }: { label: string; 
           title={change.originalPath === undefined ? change.path : `${change.originalPath} → ${change.path}`}
           onClick={() => onSelect(change.path)}
         >
-          <span className="code-pane-file-code" aria-hidden="true">{change.code.trim() || '·'}</span>
+          <span className={`code-pane-file-code status-${changeStatus(change.code)}`} aria-hidden="true">{change.code.trim() || '·'}</span>
           <span className="code-pane-file-name">{basename(change.path)}</span>
+          {(change.additions !== undefined || change.deletions !== undefined) && <span className="code-pane-file-lines" aria-label={`${change.additions ?? 0} lines added, ${change.deletions ?? 0} lines deleted`}><span className="added">+{change.additions ?? 0}</span><span className="deleted">−{change.deletions ?? 0}</span></span>}
         </button>
       ))}
     </div>

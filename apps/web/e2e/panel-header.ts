@@ -10,10 +10,16 @@ export const panelAction = async (panel: Locator, name: string | RegExp, exact =
   return panel.page().locator('.panel-header-menu').getByRole('button', options);
 };
 
-// Choose one of the Code panel's view options (diff mode or layout) from its fly-out.
+// open the Code panel's top-level action flyout
+export const openCodeViewMenu = async (panel: Locator): Promise<Locator> => {
+  const more = panel.getByRole('button', { name: 'More code panel actions' });
+  if (await more.getAttribute('aria-expanded') !== 'true') await more.click();
+  return panel.page().getByRole('group', { name: 'More code panel actions' });
+};
+
+// choose one of the Code panel's top-level view controls
 export const codeViewOption = async (panel: Locator, name: string): Promise<Locator> => {
-  await (await panelAction(panel, 'View options')).click();
-  return panel.getByRole('dialog', { name: 'View options' }).getByRole('button', { name, exact: true });
+  return (await openCodeViewMenu(panel)).getByRole('button', { name, exact: true });
 };
 
 // Close an open header ⋮, so the rest of the page is clickable again.

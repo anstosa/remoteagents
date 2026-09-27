@@ -11,9 +11,22 @@ const patchOf = (files: ComparisonFile[]): ComparisonPatch => ({ kind: 'working'
 const codePanel = (page: Page) => page.getByRole('region', { name: 'Code changes' });
 const agentOutput = (page: Page) => page.locator('.log-output');
 
+test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+// dispatch one deliberate horizontal touch from a rendered target
+const swipe = async (page: Page, start: { x: number; y: number }, distance: number) => {
+  const session = await page.context().newCDPSession(page);
+  await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
+  // move in small steps so the browser recognizes a touch gesture
+  for (let step = 1; step <= 12; step += 1) {
+    await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: start.x + Math.round(distance * step / 12), y: start.y }] });
+  }
+  await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await session.detach();
+};
+
 // a phone with the agent's Workspace open and its Code panel opened from the git popup
 const mount = async (page: Page) => {
-  await page.setViewportSize({ width: 390, height: 844 });
   await installPaneMock(page);
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
@@ -55,16 +68,48 @@ test('shows the Code panel as a switchable mobile panel, not stacked on the agen
   await expect(codePanel(page)).not.toBeInViewport();
 });
 
-// the view options drop from the header's top-right as a card sized to its options, as on desktop
-test('opens the view options as a card beneath the header, not a full-height drawer', async ({ page }) => {
+// the view controls live directly in the header's top-level flyout
+test('opens view controls as a card beneath the header without a submenu', async ({ page }) => {
   await mount(page);
   await expect(codePanel(page)).toBeInViewport({ ratio: 0.99 });
   await codePanel(page).getByRole('button', { name: 'More code panel actions' }).click();
-  await page.getByRole('group', { name: 'More code panel actions' }).getByRole('button', { name: 'View options' }).click();
-  const flyout = codePanel(page).getByRole('dialog', { name: 'View options' });
+  const flyout = page.getByRole('group', { name: 'More code panel actions' });
   await expect(flyout).toBeVisible();
+  await expect(flyout.getByRole('button', { name: 'View options' })).toHaveCount(0);
+  await expect(flyout.getByRole('button', { name: 'Hunks' })).toBeVisible();
+  await expect(flyout.getByRole('checkbox', { name: 'Wrap lines' })).not.toBeChecked();
   const [flyoutBox, panelBox] = await Promise.all([flyout.boundingBox(), codePanel(page).boundingBox()]);
   expect(flyoutBox!.height).toBeLessThan(panelBox!.height / 2);
   expect(flyoutBox!.x).toBeGreaterThanOrEqual(panelBox!.x);
   expect(flyoutBox!.x + flyoutBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
+});
+
+test('swipes from a wrapped diff to the neighboring split', async ({ page }) => {
+  await mount(page);
+  await expect(codePanel(page)).toBeInViewport({ ratio: 0.99 });
+
+  await codePanel(page).getByRole('button', { name: 'More code panel actions' }).click();
+  const menu = page.getByRole('group', { name: 'More code panel actions' });
+  await menu.getByRole('checkbox', { name: 'Wrap lines' }).click();
+  await expect(codePanel(page)).toHaveAttribute('data-wrap-lines', 'true');
+  // choosing wrap closes the flyout so its backdrop cannot consume the next swipe
+  await expect(menu).toHaveCount(0);
+  const renderedLine = codePanel(page).locator('diffs-container [data-line]').filter({ hasText: 'const b = 3' }).first();
+  await expect(renderedLine).toBeVisible();
+  const [lineBox, viewport] = await Promise.all([renderedLine.boundingBox(), Promise.resolve(page.viewportSize())]);
+  expect(lineBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  const start = { x: Math.round(lineBox!.x + 4), y: Math.round(lineBox!.y + lineBox!.height / 2) };
+  const distance = Math.min(280, viewport!.width - start.x - 8);
+  // prove the gesture starts on a line inside the diff web component
+  const hit = await page.evaluate(({ x, y }) => {
+    const outer = document.elementFromPoint(x, y);
+    const container = outer?.closest('diffs-container');
+    const inner = container?.shadowRoot?.elementFromPoint(x, y);
+    return { outer: outer?.tagName ?? null, inner: inner?.tagName ?? null, onLine: Boolean(inner?.closest('[data-line]')) };
+  }, start);
+  expect(hit, `unexpected touch target: ${JSON.stringify(hit)}`).toMatchObject({ outer: 'DIFFS-CONTAINER', onLine: true });
+  await swipe(page, start, distance);
+  await expect(agentOutput(page)).toBeInViewport({ ratio: 0.99 });
+  await expect(codePanel(page)).not.toBeInViewport();
 });

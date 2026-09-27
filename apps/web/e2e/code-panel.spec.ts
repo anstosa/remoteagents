@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { installPaneMock, pushBytes, seedPaneSize } from './pane-stream-mock';
-import { codeViewOption, panelAction } from './panel-header';
+import { codeViewOption, openCodeViewMenu } from './panel-header';
 import type { ComparisonFile, ComparisonFileContents, ComparisonPatch, FilePreviewView, RevisionFile } from '../src/code-panel/comparison';
 
 // a minimal but valid git unified diff for one modified file, enough for parsePatchFiles
@@ -8,6 +8,8 @@ const modifiedPatch = (path: string) => `diff --git a/${path} b/${path}\nindex 1
 // the same diff shape with a chosen new line, so a live update can change one file's content — and
 // so its content version — without changing its rendered height
 const modifiedPatchTo = (path: string, line: string) => `diff --git a/${path} b/${path}\nindex 1111111..4444444 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,3 +1,3 @@\n const a = 1;\n-const b = 2;\n+${line}\n const c = 4;\n`;
+// preserve git's quoted UTF-8 path form for collapse-key coverage
+const quotedUnicodePatch = 'diff --git "a/src/\\303\\251.ts" "b/src/\\303\\251.ts"\nindex 1111111..4444444 100644\n--- "a/src/\\303\\251.ts"\n+++ "b/src/\\303\\251.ts"\n@@ -1,3 +1,3 @@\n const a = 1;\n-const b = 2;\n+const unicode = 3;\n const c = 4;\n';
 
 const trackedFile = (path: string): ComparisonFile => ({ change: { code: ' M', path, additions: 1, deletions: 1 }, kind: 'tracked', patch: modifiedPatch(path), capped: false });
 const trackedFileTo = (path: string, line: string): ComparisonFile => ({ change: { code: ' M', path, additions: 1, deletions: 1 }, kind: 'tracked', patch: modifiedPatchTo(path, line), capped: false });
@@ -108,19 +110,23 @@ test('renders each File view state: text through the library, image inline, bina
   await expect(panel(page).getByText(/Preview unavailable/u)).toBeVisible();
 });
 
-test('renders implementation changes and collapses tests & docs by default', async ({ page }) => {
+test('renders implementation changes and exposes View docs as an unchecked checkbox', async ({ page }) => {
   await mountPanel(page, patchOf([trackedFile('src/app.ts'), trackedFile('src/widget.ts'), trackedFile('src/app.test.ts')]));
 
   // the panel header carries the Working / All PR comparison toggle, seeded to Working
   await expect(panel(page).getByRole('button', { name: 'Working', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  // the inactive comparison choice has no visible outline or divider
+  const inactiveBorder = await panel(page).getByRole('button', { name: 'All PR' }).evaluate(button => getComputedStyle(button).borderLeftColor);
+  expect(inactiveBorder).toBe('rgba(0, 0, 0, 0)');
   await expect(panel(page).getByText('3 files')).toBeVisible();
   // only the two implementation files render; the test file is behind the collapsed group
   await expect(diffHeaders(page)).toHaveCount(2);
 
-  const toggle = page.getByRole('button', { name: /tests & docs \(1\)/iu });
-  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  const menu = await openCodeViewMenu(panel(page));
+  const toggle = menu.getByRole('checkbox', { name: /View docs \(1\)/iu });
+  await expect(toggle).not.toBeChecked();
   await toggle.click();
-  // expanding the supporting group appends the test file to the same scroll
+  // checking View docs appends the test file to the same scroll
   await expect(diffHeaders(page)).toHaveCount(3);
 });
 
@@ -147,7 +153,7 @@ test('expands a collapsed hunk gap in Hunks mode without first visiting Full con
   const bigFile: ComparisonFile = { change: { code: ' M', path: 'src/big.ts', additions: 2, deletions: 2 }, kind: 'tracked', patch: twoHunkPatch, capped: false };
   const contents: ComparisonFileContents = { path: 'src/big.ts', base: revision('src/big.ts', base), working: revision('src/big.ts', working) };
   await mountPanel(page, patchOf([bigFile]), { 'src/big.ts': contents });
-  await panel(page).getByRole('button', { name: 'big.ts' }).click();
+  await panel(page).getByTitle('src/big.ts').click();
 
   // Hunks (default): a line inside the gap is hidden
   await expect(panel(page).getByText('line 25', { exact: true })).toHaveCount(0);
@@ -159,34 +165,35 @@ test('expands a collapsed hunk gap in Hunks mode without first visiting Full con
   await expect(panel(page).getByText('line 25', { exact: true })).toBeVisible();
 });
 
-test('keeps the view options in a fly-out, folded into the header ⋮ on a narrow panel', async ({ page }) => {
+test('keeps view controls directly in the top-level header flyout on a narrow panel', async ({ page }) => {
   // a narrow root (below the header's fold width) stands in for a phone / squeezed column
   await mountPanel(page, patchOf([trackedFile('src/app.ts'), trackedFile('src/widget.ts')]), {}, false, 380);
 
-  // the diff modes are never inline, and the narrow header folds the View options control into its ⋮
+  // the diff modes are never inline or behind a second View options action
   await expect(panel(page).getByRole('button', { name: 'Hunks' })).toHaveCount(0);
   await expect(panel(page).getByRole('button', { name: 'View options' })).toHaveCount(0);
   // the Working / All PR toggle stays in the header
   await expect(panel(page).getByRole('button', { name: 'Working', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'More code panel actions' }).click();
-  await page.getByRole('group', { name: 'More code panel actions' }).getByRole('button', { name: 'View options' }).click();
-  const flyout = panel(page).getByRole('dialog', { name: 'View options' });
+  const flyout = await openCodeViewMenu(panel(page));
   await expect(flyout.getByRole('button', { name: 'Hunks' })).toHaveAttribute('aria-pressed', 'true');
-  // choosing an option applies it and closes the fly-out
+  // the shared flyout row styles must not erase segmented-control dividers
+  await expect(flyout.getByRole('button', { name: 'Full ctx' })).toHaveCSS('border-left-width', '1px');
+  await expect(flyout.getByRole('checkbox', { name: 'Wrap lines' })).not.toBeChecked();
+  // choosing an option applies it and closes the top-level flyout
   await flyout.getByRole('button', { name: 'Full ctx' }).click();
   await expect(flyout).toBeHidden();
   // reopening shows the chosen mode
   await expect(await codeViewOption(panel(page), 'Full ctx')).toHaveAttribute('aria-pressed', 'true');
 });
 
-test('Esc from the View options control closes its fly-out before it restores the panel', async ({ page }) => {
+test('Esc from the Code panel More control closes its flyout before it restores the panel', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await mountPanel(page, patchOf([trackedFile('src/app.ts')]));
   const region = panel(page);
   await region.getByRole('button', { name: 'Expand code panel' }).click();
-  const options = region.getByRole('button', { name: 'View options', exact: true });
+  const options = region.getByRole('button', { name: 'More code panel actions' });
   await options.click();
-  const flyout = region.getByRole('dialog', { name: 'View options' });
+  const flyout = page.getByRole('group', { name: 'More code panel actions' });
   await expect(flyout).toBeVisible();
   await options.press('Escape');
   await expect(flyout).toBeHidden();
@@ -196,13 +203,13 @@ test('Esc from the View options control closes its fly-out before it restores th
   await expect(region).not.toHaveClass(/\bexpanded\b/u);
 });
 
-test('on a desktop the view options drop from the header as a card, not a full-height drawer', async ({ page }) => {
+test('on a desktop the top-level view controls drop from the header as a card', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await mountPanel(page, patchOf([trackedFile('src/app.ts')]));
   const region = panel(page);
-  const options = region.getByRole('button', { name: 'View options', exact: true });
+  const options = region.getByRole('button', { name: 'More code panel actions' });
   await options.click();
-  const flyout = region.getByRole('dialog', { name: 'View options' });
+  const flyout = page.getByRole('group', { name: 'More code panel actions' });
   await expect(flyout).toBeVisible();
   const [flyoutBox, regionBox, optionsBox] = await Promise.all([flyout.boundingBox(), region.boundingBox(), options.boundingBox()]);
   expect(flyoutBox!.height).toBeLessThan(regionBox!.height / 2);
@@ -238,7 +245,7 @@ test('filters to one file from the rail and restores scroll on the way back', as
   await expect.poll(() => view.evaluate(element => element.scrollTop)).toBeGreaterThan(100);
   const before = await view.evaluate(element => element.scrollTop);
 
-  await panel(page).getByRole('button', { name: 'mod4.ts' }).click();
+  await panel(page).getByTitle('src/mod4.ts').click();
   await expect(panel(page).getByRole('button', { name: '‹ All files' })).toBeVisible();
   await expect(diffHeaders(page)).toHaveCount(1);
 
@@ -249,14 +256,114 @@ test('filters to one file from the rail and restores scroll on the way back', as
   await expect.poll(() => view.evaluate((element, left) => Math.abs(element.scrollTop - left), before)).toBeLessThan(24);
 });
 
+test('collapses and expands each file without hiding the other diffs', async ({ page }) => {
+  await mountPanel(page, patchOf([trackedFileTo('src/app.ts', 'const app = 3;'), trackedFileTo('src/widget.ts', 'const widget = 3;')]));
+  await expect(panel(page).getByText('const app = 3;')).toBeVisible();
+  await expect(panel(page).getByText('const widget = 3;')).toBeVisible();
+
+  const collapse = panel(page).getByRole('button', { name: 'Collapse src/app.ts' });
+  await expect(collapse).toHaveAttribute('aria-expanded', 'true');
+  await collapse.click();
+  await expect(panel(page).getByText('const app = 3;')).toHaveCount(0);
+  await expect(panel(page).getByText('const widget = 3;')).toBeVisible();
+  await expect(diffHeaders(page)).toHaveCount(2);
+
+  const expand = panel(page).getByRole('button', { name: 'Expand src/app.ts' });
+  await expect(expand).toHaveAttribute('aria-expanded', 'false');
+  await expand.click();
+  await expect(panel(page).getByText('const app = 3;')).toBeVisible();
+});
+
+test('collapses and expands a file whose Git patch path is quoted', async ({ page }) => {
+  const file: ComparisonFile = { change: { code: ' M', path: 'src/é.ts', additions: 1, deletions: 1 }, kind: 'tracked', patch: quotedUnicodePatch, capped: false };
+  await mountPanel(page, patchOf([file]));
+  const changedLine = panel(page).getByText('const unicode = 3;');
+  await expect(changedLine).toBeVisible();
+
+  const toggle = panel(page).locator('.code-pane-file-collapse');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(changedLine).toHaveCount(0);
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(changedLine).toBeVisible();
+});
+
+test('keeps wrapping off by default and applies it from the top-level flyout', async ({ page }) => {
+  const longLine = `const longValue = '${'wrapped '.repeat(30)}';`;
+  await mountPanel(page, patchOf([trackedFileTo('src/app.ts', longLine)]), {}, false, 560);
+  const region = panel(page);
+  const menu = await openCodeViewMenu(region);
+  const wrap = menu.getByRole('checkbox', { name: 'Wrap lines' });
+  const changedLine = region.locator('diffs-container [data-line]').filter({ hasText: 'const longValue' }).last();
+  await expect(changedLine).toBeVisible();
+  const unwrappedHeight = (await changedLine.boundingBox())!.height;
+  await expect(wrap).not.toBeChecked();
+  await expect(region).not.toHaveAttribute('data-wrap-lines', 'true');
+  await wrap.click();
+  await expect(region).toHaveAttribute('data-wrap-lines', 'true');
+  await expect(region.getByText(longLine)).toBeVisible();
+  // the line itself grows as its text wraps instead of scrolling sideways
+  await expect.poll(async () => (await changedLine.boundingBox())?.height ?? 0).toBeGreaterThan(unwrappedHeight + 5);
+  await expect((await openCodeViewMenu(region)).getByRole('checkbox', { name: 'Wrap lines' })).toBeChecked();
+});
+
+test('uses the terminal font setting for diff text', async ({ page }) => {
+  await mountPanel(page, patchOf([trackedFile('src/app.ts')]));
+  const changedLine = panel(page).getByText('const b = 3;');
+  await expect(changedLine).toHaveCSS('font-size', '11px');
+
+  await page.evaluate(async () => {
+    const { setTerminalFontSize } = await import('/src/terminal-font-size.ts');
+    setTerminalFontSize(18);
+  });
+  await expect(changedLine).toHaveCSS('font-size', '18px');
+});
+
+test('color codes file statuses and shows added and deleted line totals', async ({ page }) => {
+  // build one rendered patch for each status presentation
+  const fileWith = (path: string, code: string, additions: number, deletions: number): ComparisonFile => ({ change: { code, path, additions, deletions }, kind: 'tracked', patch: modifiedPatch(path), capped: false });
+  await mountPanel(page, patchOf([
+    fileWith('src/added.ts', 'A ', 3, 0),
+    fileWith('src/modified.ts', ' M', 4, 2),
+    fileWith('src/deleted.ts', 'D ', 0, 7),
+    fileWith('src/renamed.ts', 'R ', 1, 1)
+  ]));
+
+  const added = panel(page).locator('.code-pane-file-row', { hasText: 'added.ts' });
+  const modified = panel(page).locator('.code-pane-file-row', { hasText: 'modified.ts' });
+  const deleted = panel(page).locator('.code-pane-file-row', { hasText: 'deleted.ts' });
+  const renamed = panel(page).locator('.code-pane-file-row', { hasText: 'renamed.ts' });
+  await expect(added).toContainText('+3−0');
+  await expect(modified).toContainText('+4−2');
+  await expect(deleted).toContainText('+0−7');
+  await expect(added.getByLabel('3 lines added, 0 lines deleted')).toBeVisible();
+  // sample the active theme tokens for semantic status colors
+  const palette = await page.evaluate(() => {
+    const probe = document.createElement('span');
+    document.body.append(probe);
+    // resolve each CSS variable to the browser's computed RGB form
+    const sample = (name: string) => { probe.style.color = `var(--${name})`; return getComputedStyle(probe).color; };
+    const colors = { green: sample('green'), red: sample('red'), yellow: sample('yellow'), mauve: sample('mauve') };
+    probe.remove();
+    return colors;
+  });
+  const statusColors = await Promise.all([added, modified, deleted, renamed].map(row => row.locator('.code-pane-file-code').evaluate(element => getComputedStyle(element).color)));
+  expect(statusColors).toEqual([palette.green, palette.yellow, palette.red, palette.mauve]);
+  const lineColors = await modified.locator('.code-pane-file-lines > span').evaluateAll(elements => elements.map(element => getComputedStyle(element).color));
+  expect(lineColors).toEqual([palette.green, palette.red]);
+});
+
 test('switches a file between hunks, plain, and full-context modes', async ({ page }) => {
   await mountPanel(page, patchOf([trackedFile('src/app.ts')]), { 'src/app.ts': contentsOf('src/app.ts', baseFile, workingFile) });
 
   // Plain file is single-file only, so it is disabled in the all-files view
   await expect(await codeViewOption(panel(page), 'Plain file')).toBeDisabled();
-  await panel(page).getByRole('button', { name: 'Close view options' }).click();
+  await panel(page).getByRole('button', { name: 'More code panel actions' }).press('Escape');
 
-  await panel(page).getByRole('button', { name: 'app.ts' }).click();
+  await panel(page).getByTitle('src/app.ts').click();
   await expect(panel(page).getByRole('button', { name: '‹ All files' })).toBeVisible();
 
   // Hunks (default): only the patched lines render, so a line past the hunk stays hidden
@@ -335,15 +442,27 @@ test('promotes the File view to full screen and restores it', async ({ page }) =
   await expect(fileView).not.toHaveClass(/\bexpanded\b/u);
 });
 
-test('closing the changed-files drawer with Esc does not also collapse full screen', async ({ page }) => {
+test('the square files trigger opens a drawer that closes from its backdrop or Esc', async ({ page }) => {
   // a desktop viewport (control visible) but a narrow panel (the file list is a drawer, not a rail)
   await page.setViewportSize({ width: 1200, height: 800 });
   await mountPanel(page, patchOf([trackedFile('src/app.ts'), trackedFile('src/app.test.ts')]), {}, false, 560);
   const region = panel(page);
   await region.getByRole('button', { name: 'Expand code panel' }).click();
   await expect(region).toHaveClass(/\bexpanded\b/u);
-  await region.getByRole('button', { name: 'Show changed files' }).click();
+  const trigger = region.getByRole('button', { name: 'Show changed files' });
+  const triggerBox = await trigger.boundingBox();
+  if (triggerBox === null) throw new Error('Changed-files trigger has no layout bounds');
+  expect(Math.abs(triggerBox.width - triggerBox.height)).toBeLessThanOrEqual(1);
+  await trigger.click();
   const drawer = page.getByRole('dialog', { name: 'Changed files' });
+  await expect(drawer).toBeVisible();
+  const backdrop = region.locator('.code-pane-drawer-backdrop');
+  const backdropBox = await backdrop.boundingBox();
+  if (backdropBox === null) throw new Error('Changed-files backdrop has no layout bounds');
+  await backdrop.click({ position: { x: backdropBox.width - 4, y: 4 } });
+  await expect(drawer).toBeHidden();
+
+  await trigger.click();
   await expect(drawer).toBeVisible();
   // one Escape closes only the drawer; the panel stays full screen (the drawer stops the key bubbling)
   await drawer.getByRole('button', { name: 'Close changed files' }).press('Escape');
@@ -382,7 +501,7 @@ test('opens a Code panel of the Working changes from the Git flyout', async ({ p
   await expect(panel(page).getByRole('button', { name: 'Working', exact: true })).toHaveAttribute('aria-pressed', 'true');
   // the implementation file renders; the test file stays behind the collapsed supporting group
   await expect(diffHeaders(page)).toHaveCount(1);
-  await expect(page.getByRole('button', { name: /tests & docs \(1\)/iu })).toBeVisible();
+  await expect((await openCodeViewMenu(panel(page))).getByRole('checkbox', { name: /View docs \(1\)/iu })).not.toBeChecked();
 });
 
 test('deep-links a flyout file row into the panel and toggles Working / All PR', async ({ page }) => {
@@ -526,7 +645,7 @@ test('preserves the reviewer scroll position across a soft refresh', async ({ pa
 
 test('keeps a full-context file expanded while its live rebuild is in flight', async ({ page }) => {
   await mountPanel(page, patchOf([trackedFile('src/app.ts')]), { 'src/app.ts': contentsOf('src/app.ts', baseFile, workingFile) });
-  await panel(page).getByRole('button', { name: 'app.ts' }).click();
+  await panel(page).getByTitle('src/app.ts').click();
   await (await codeViewOption(panel(page), 'Full ctx')).click();
 
   // Full context expands the unchanged lines: the out-of-hunk sentinel shows, alongside the current

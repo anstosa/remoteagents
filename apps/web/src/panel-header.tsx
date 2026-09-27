@@ -147,6 +147,8 @@ type PanelHeaderProps = {
   actions?: ReactNode;
   // actions that fold into the ⋮ when the panel is narrow
   secondary?: PanelAction[];
+  // panel-specific rows rendered directly in the shared ⋮ flyout with a dismiss action
+  menuContent?: (closeMenu: () => void) => ReactNode;
   // the trailing action: close, minimize for a Terminal, or a control that opens a popup of its
   // own (the agent panel's power menu)
   close?: PanelAction | ReactElement;
@@ -156,7 +158,7 @@ type PanelHeaderProps = {
 // The floating header every panel shares: a title pill top-left and an action pill top-right,
 // over the panel's content. No bar sits behind them. The action pill ends with expand (which
 // fills the Workspace with this panel) and the panel's close.
-export function PanelHeader({ panelKey, label, title, actions, secondary = [], close, expandDisabled = false }: PanelHeaderProps) {
+export function PanelHeader({ panelKey, label, title, actions, secondary = [], menuContent, close, expandDisabled = false }: PanelHeaderProps) {
   const expand = usePanelExpand(panelKey);
   const phone = usePhoneLayout();
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -179,7 +181,8 @@ export function PanelHeader({ panelKey, label, title, actions, secondary = [], c
   }, []);
   useEffect(() => { if (!folded) setMoreOpen(false); }, [folded]);
   const closeMore = useCallback(() => setMoreOpen(false), []);
-  const showMore = folded && secondary.length > 0;
+  // keep custom menu controls available at every panel width
+  const showMore = menuContent !== undefined || folded && secondary.length > 0;
   return <div ref={wrapRef} className="panel-header">
     <div className="panel-header-pill panel-header-title">{title}</div>
     <div className="panel-header-pill panel-header-actions" role="toolbar" aria-label={`${label[0].toUpperCase()}${label.slice(1)} actions`}>
@@ -189,6 +192,6 @@ export function PanelHeader({ panelKey, label, title, actions, secondary = [], c
       {expand !== undefined && <button type="button" className="panel-header-action panel-header-expand" disabled={expandDisabled} aria-label={`${expand.expanded ? 'Restore' : 'Expand'} ${label}`} aria-pressed={expand.expanded} title={phone ? expand.expanded ? 'Show the tabs and toolbar' : 'Full screen' : expand.expanded ? 'Restore the other panels' : 'Fill the Workspace'} onClick={expand.toggle}><PanelIcon path={expand.expanded ? panelIcons.restore : panelIcons.expand} /></button>}
       {close === undefined || isValidElement(close) ? close : actionButton(close)}
     </div>
-    {showMore && moreOpen && <FlyoutPortal onDismiss={closeMore}><div ref={flyoutRef} className="more-menu panel-header-menu" role="group" aria-label={`More ${label} actions`} style={style} onClick={closeMore} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); closeMore(); } }}>{secondary.map(action => actionButton(action, true))}</div></FlyoutPortal>}
+    {showMore && moreOpen && <FlyoutPortal onDismiss={closeMore}><div ref={flyoutRef} className="more-menu panel-header-menu" role="group" aria-label={`More ${label} actions`} style={style} onClick={closeMore} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); closeMore(); } }}>{folded && secondary.map(action => actionButton(action, true))}{menuContent?.(closeMore)}</div></FlyoutPortal>}
   </div>;
 }

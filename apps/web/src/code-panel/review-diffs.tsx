@@ -8,6 +8,7 @@
 import { type CSSProperties, useMemo } from 'react';
 import { CodeView, type CodeViewItem, type CodeViewReactOptions } from '@pierre/diffs/react';
 import { useColorTheme } from '../color-theme.js';
+import { useTerminalFontSize } from '../terminal-font-size.js';
 import { codeViewBaseOptions, codeViewStyle, diffItemForPatch } from './items.js';
 
 type ReviewItem = CodeViewItem<undefined>;
@@ -18,8 +19,10 @@ type ReviewOptions = CodeViewReactOptions<undefined, undefined>;
 // kind union is kept intact so the `kind === 'binary'` placeholder note stays typo-checked.
 export type ReviewDiffChange = { id: string; file: string; originalFile?: string; kind: 'hunk' | 'binary' | 'rename' | 'metadata' | 'untracked'; patch: string };
 
+// render one tour step with current display settings
 export default function ReviewDiffs({ changes }: { changes: ReviewDiffChange[] }) {
   const theme = useColorTheme();
+  const terminalFontSize = useTerminalFontSize();
   // Each renderable Change becomes one diff item, keyed by its Change id so a file split across
   // several hunks (each its own Change) does not collide on its path. A Change whose patch is not a
   // diff the parser can recover (a binary file, a metadata-only change) falls back to a placeholder.
@@ -34,9 +37,9 @@ export default function ReviewDiffs({ changes }: { changes: ReviewDiffChange[] }
   }, [changes]);
 
   // The Code panel's shared render options, fixed to unified (the tour has no split/full-context toggles).
-  const options = useMemo<ReviewOptions>(() => ({ ...codeViewBaseOptions(theme === 'latte' ? 'light' : 'dark'), diffStyle: 'unified' }), [theme]);
+  const options = useMemo<ReviewOptions>(() => ({ ...codeViewBaseOptions(theme === 'latte' ? 'light' : 'dark', terminalFontSize), diffStyle: 'unified' }), [terminalFontSize, theme]);
 
-  const style = codeViewStyle() as CSSProperties;
+  const style = codeViewStyle(terminalFontSize) as CSSProperties;
   return (
     <div className="review-tour-diff-view" style={style}>
       {placeholders.length > 0 && (

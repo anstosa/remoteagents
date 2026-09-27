@@ -4589,12 +4589,19 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
     const label = `Show ${title.charAt(0).toLowerCase()}${title.slice(1)}`;
     return { key: column.key, kind, title, label };
   });
-  const noteSwipe = usePanelSwipe({ panels: carouselPanels, visibleKey: carousel.visibleKey, show: carousel.show });
-  // start a manual swipe only inside the note's own scrolling content
-  const startNoteSwipe = (event: React.PointerEvent<HTMLDivElement>) => {
-    const target = event.target;
-    const noteContent = target instanceof Element && target.closest('.note-pane :is(.note-markdown, textarea)') !== null;
-    noteSwipe.onPointerDown(event, phone && noteContent);
+  const contentSwipe = usePanelSwipe({ panels: carouselPanels, visibleKey: carousel.visibleKey, show: carousel.show });
+  // enable carousel swipes only over nested note scrollers or wrapped diff content
+  const swipeContentTarget = (target: EventTarget | null) => target instanceof Element && (
+    target.closest('.note-pane :is(.note-markdown, textarea)') !== null
+    || target.closest('.code-pane[data-wrap-lines="true"] .code-pane-view') !== null
+  );
+  // leave unwrapped horizontal diff scrolling alone
+  const startContentSwipe = (event: React.PointerEvent<HTMLDivElement>) => {
+    contentSwipe.onPointerDown(event, phone && swipeContentTarget(event.target));
+  };
+  // shadow-dom diff scrollers can cancel pointer events, so also follow the touch lifecycle
+  const startContentTouchSwipe = (event: React.TouchEvent<HTMLDivElement>) => {
+    contentSwipe.onTouchStart(event, phone && swipeContentTarget(event.target));
   };
   const carouselSignature = carouselPanels.map(panel => `${panel.key}\u0000${panel.title}`).join('\u0001');
   // Report the carousel so the toolbar's dots follow it, and the footer swaps the Agent's composer
@@ -4641,7 +4648,7 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
     return index === 0 ? [node] : [resizer(columns[index - 1].key, column.key), node];
   });
   const mobileView = carousel.visibleKey !== undefined ? ` mobile-${splitPanelKind(carousel.visibleKey)}-view` : '';
-  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasAgent ? '' : ' no-agent'}${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown} onPointerDown={startNoteSwipe} onPointerUp={noteSwipe.onPointerUp} onPointerCancel={noteSwipe.onPointerCancel} onClickCapture={noteSwipe.onClickCapture}>{columns.length === 0 ? empty : laidOut}</div></PanelExpandContext.Provider>;
+  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasAgent ? '' : ' no-agent'}${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown} onPointerDown={startContentSwipe} onPointerUp={contentSwipe.onPointerUp} onPointerCancel={contentSwipe.onPointerCancel} onTouchStart={startContentTouchSwipe} onTouchEnd={contentSwipe.onTouchEnd} onTouchCancel={contentSwipe.onTouchCancel} onClickCapture={contentSwipe.onClickCapture}>{columns.length === 0 ? empty : laidOut}</div></PanelExpandContext.Provider>;
 }
 
 // One pane of a Worktree the picker can show as a Terminal (the wire shape of
