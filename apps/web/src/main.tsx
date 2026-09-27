@@ -3227,6 +3227,8 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   const [titleDraft, setTitleDraft] = useState('');
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(false);
+  // hold split restoration until the saved note has been checked
+  const [initialNotesLoaded, setInitialNotesLoaded] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [lockPending, setLockPending] = useState(false);
   const [lockError, setLockError] = useState('');
@@ -3378,6 +3380,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
     setNotes(undefined);
     noteLoadSequence.current += 1;
     setLoading(false);
+    setInitialNotesLoaded(false);
     // reset refresh boundaries with the persistence context
     seenGeneration.current = undefined;
     seenNotesRevision.current = notesRevisionKey;
@@ -3420,6 +3423,8 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
       if (cancelled || sequence !== noteLoadSequence.current) return;
       for (const note of loaded) acknowledgedTexts.current.set(note.id, note.text);
       setNotes(loaded);
+      // only a successful read can rule out a saved Note split
+      setInitialNotesLoaded(true);
       const retained = getWorktreeNoteView(noteViewId);
       if (retained !== undefined) {
         const note = loaded.find(candidate => candidate.id === retained.noteId);
@@ -3465,6 +3470,8 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
       seenGeneration.current = dashboardGeneration;
       seenNotesRevision.current = notesRevisionKey;
       setNotes(loaded);
+      // a successful refresh also settles initial split restoration
+      setInitialNotesLoaded(true);
       // refresh server-owned metadata without disturbing the live text or draft
       const current = activeNoteRef.current;
       const fresh = current === undefined ? undefined : loaded.find(candidate => candidate.id === current.id);
@@ -3585,6 +3592,8 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
       if (sequence !== noteLoadSequence.current) return undefined;
       for (const note of loaded) acknowledgedTexts.current.set(note.id, note.text);
       setNotes(loaded);
+      // a manual retry can complete an earlier failed initial read
+      setInitialNotesLoaded(true);
       return loaded;
     } catch {
       // ignore failures from replaced requests
@@ -4182,7 +4191,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   const paneExpanded = expanded || expansion.immersive;
   // Esc closes the note, unless it is expanded: then the Workspace restores its siblings first
   const pane = activeNote === undefined ? null : <><section className={`note-pane${paneExpanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !paneExpanded && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><PanelHeader panelKey="note" label="note" title={noteTitlePill} actions={noteSendAction} secondary={noteSecondary} expandDisabled={noteFilesDisabled} close={{ key: 'close', label: 'Close note', className: 'note-close', disabled: noteFilesDisabled, icon: <PanelIcon path={panelIcons.close} />, onSelect: close }} /><div className="note-pane-head">{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}{notePicker}</>;
-  return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane, toggleMenu: toggle };
+  return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, initialNotesLoaded, control, createWithText: create, pane, toggleMenu: toggle };
 }
 type WorktreeNotes = ReturnType<typeof useWorktreeNotes>;
 
@@ -4564,7 +4573,7 @@ function CodePane({ controller, prAvailable, branch, review }: { controller: Cod
 // `expansion` is the Workspace's expanded panel; a split without a Workspace keeps its own.
 // On a phone the panels sit in a swipe carousel, one per screen; `onCarousel` hears its panels and
 // the one in view, for the toolbar's dots.
-function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, terminals, terminalSelectionActions, onCarousel, expansion: workspaceExpansion }: { worktreeId?: string; output?: ReactNode; empty?: ReactNode; note?: ReactNode; browser?: ReactNode; code?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onCarousel?: (carousel: PanelCarousel) => void; expansion?: PanelExpansion }) {
+function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, terminals, terminalSelectionActions, onCarousel, initialPanelsReady, expansion: workspaceExpansion }: { worktreeId?: string; output?: ReactNode; empty?: ReactNode; note?: ReactNode; browser?: ReactNode; code?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onCarousel?: (carousel: PanelCarousel) => void; initialPanelsReady?: boolean; expansion?: PanelExpansion }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const ownExpansion = usePanelExpansion();
   const expansion = workspaceExpansion ?? ownExpansion;
@@ -4588,7 +4597,7 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
   // restores that combination's own widths
   const signature = keys.join('|');
   const phone = usePhoneLayout();
-  const carousel = usePanelCarousel(containerRef, keys, phone);
+  const carousel = usePanelCarousel(containerRef, keys, phone, worktreeId, initialPanelsReady);
   const expansionScope = useExpansionScope(expansion, keys, containerRef, carousel.visibleKey);
   const [sizes, setSizes] = useState<SplitSizes>(() => savedSplitSizes(worktreeId, signature, keys));
   // restore the exact workspace layout for each open-panel composition
@@ -5449,7 +5458,7 @@ function Workspace({ workspace, output, empty, git, onAddToPrompt }: { workspace
   const browserPane = browser.url === undefined || browser.homeUrl === undefined ? null : <ProjectBrowserPane url={browser.url} homeUrl={browser.homeUrl} proxied={browser.proxied} worktreeId={place.id} navigationRequest={browser.navigationRequest} onNavigate={browser.navigate} onClose={browser.close} />;
   const review = git === undefined || (git.onReview === undefined && git.reviewUnavailable === undefined) ? undefined : { onReview: git.onReview, open: git.review !== undefined, unavailable: git.reviewUnavailable };
   const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} branch={place.branch} review={review} /> : null;
-  return <section className="log-shell"><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={output} empty={empty} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onCarousel={workspace.setCarousel} /></div></section>;
+  return <section className="log-shell"><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={output} empty={empty} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onCarousel={workspace.setCarousel} initialPanelsReady={notes.initialNotesLoaded} /></div></section>;
 }
 
 type LogProps = { id: string; embedded?: boolean; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined, overflow: boolean) => void; header?: (connection: string) => ReactNode; composer?: ReactNode; notes?: WorktreeNotes; onAddToPrompt?: (text: string) => void; onOpenUrl?: (url: string) => boolean; onOpenFile?: (path: string) => void; processingLabel?: string; processingDetail?: string };

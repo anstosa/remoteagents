@@ -9,6 +9,25 @@ export type CarouselPanel = { key: string; kind: string; title: string; label: s
 // to bring one into view.
 export type PanelCarousel = { panels: readonly CarouselPanel[]; visibleKey: string | undefined; show: (key: string) => void };
 
+// retain the last visible split in this browser for each worktree
+const lastViewedSplitKey = (worktreeId: string) => `rac.last-split:${worktreeId}`;
+// read one bounded preference from optional browser storage
+const savedSplit = (worktreeId: string | undefined): string | undefined => {
+  // leave unscoped panels ephemeral
+  if (worktreeId === undefined) return undefined;
+  try {
+    const key = localStorage.getItem(lastViewedSplitKey(worktreeId));
+    return key !== null && key.length <= 128 ? key : undefined;
+  } catch { return undefined; }
+};
+// save only a real worktree panel
+const saveSplit = (worktreeId: string | undefined, key: string | undefined) => {
+  // leave unscoped and empty panels ephemeral
+  if (worktreeId === undefined || key === undefined) return;
+  try { localStorage.setItem(lastViewedSplitKey(worktreeId), key); }
+  catch { /* browser storage is optional */ }
+};
+
 // move one split for a deliberate horizontal touch, leaving taps and vertical scrolling alone
 export function usePanelSwipe(carousel: PanelCarousel) {
   const start = useRef<{ pointerId: number; x: number; y: number } | undefined>(undefined);
@@ -88,8 +107,14 @@ export function usePanelSwipe(carousel: PanelCarousel) {
 // scroll event, leaving the dots pointing at a panel that is not in view. Only a change of width
 // realigns: the toolbar swapping for a Terminal's taller helper keys mid-swipe changes the height,
 // and a realign then would yank the carousel from under the finger.
-export function usePanelCarousel(containerRef: RefObject<HTMLElement | null>, keys: readonly string[], phone: boolean) {
-  const [visibleKey, setVisibleKey] = useState<string | undefined>(keys[0]);
+export function usePanelCarousel(containerRef: RefObject<HTMLElement | null>, keys: readonly string[], phone: boolean, worktreeId?: string, initialPanelsReady = true) {
+  const [preferred] = useState(() => savedSplit(worktreeId));
+  const pendingRestore = useRef(preferred);
+  const ignoreHydratedNote = useRef(false);
+  const initialPanelsReadyRef = useRef(initialPanelsReady);
+  initialPanelsReadyRef.current = initialPanelsReady;
+  const scope = useRef(worktreeId);
+  const [visibleKey, setVisibleKey] = useState<string | undefined>(preferred ?? keys[0]);
   const keysRef = useRef(keys);
   keysRef.current = keys;
   const visibleRef = useRef(visibleKey);
@@ -103,22 +128,57 @@ export function usePanelCarousel(containerRef: RefObject<HTMLElement | null>, ke
     if (!phoneRef.current || container === null || index < 0) return;
     container.scrollTo({ left: index * container.clientWidth, behavior: 'instant' });
   }, [containerRef]);
-  const choose = useCallback((key: string | undefined) => {
+  // update the visible panel and optionally remember it
+  const choose = useCallback((key: string | undefined, persist = false) => {
     visibleRef.current = key;
     setVisibleKey(key);
-  }, []);
+    // record deliberate navigation and settled panel changes
+    if (persist) saveSplit(worktreeId, key);
+  }, [worktreeId]);
   // follow a panel opening or closing, and line the carousel up when the phone layout starts
   const signature = keys.join('|');
   useLayoutEffect(() => {
+    // restore a new worktree even if this hook survives a scope change
+    if (scope.current !== worktreeId) {
+      scope.current = worktreeId;
+      pendingRestore.current = savedSplit(worktreeId);
+      ignoreHydratedNote.current = false;
+      previousKeys.current = keysRef.current;
+      const next = pendingRestore.current !== undefined && keysRef.current.includes(pendingRestore.current) ? pendingRestore.current : keysRef.current[0];
+      choose(next);
+      if (next !== undefined) scrollTo(next);
+      return;
+    }
     const previous = previousKeys.current;
     const current = keysRef.current;
     previousKeys.current = current;
     const opened = current.find(key => key !== 'agent' && !previous.includes(key));
+    const pending = pendingRestore.current;
+    // wait for asynchronous panels such as saved Notes before replacing the remembered split
+    if (pending !== undefined) {
+      // a newly opened non-note panel is a user action, not a delayed note restoration
+      if (!initialPanelsReady && opened !== undefined && opened !== 'note') {
+        pendingRestore.current = undefined;
+        ignoreHydratedNote.current = true;
+        choose(opened, true);
+        scrollTo(opened);
+        return;
+      }
+      const next = current.includes(pending) ? pending : current[0];
+      // finish restoration only after the asynchronous note list settles
+      if (initialPanelsReady) pendingRestore.current = undefined;
+      choose(next, initialPanelsReady);
+      if (next !== undefined) scrollTo(next);
+      return;
+    }
     const shown = visibleRef.current;
-    const next = opened ?? (shown !== undefined && current.includes(shown) ? shown : current[0]);
-    choose(next);
+    // do not let a delayed retained Note replace an explicit choice
+    const hydratedNote = initialPanelsReady && ignoreHydratedNote.current && opened === 'note';
+    if (initialPanelsReady) ignoreHydratedNote.current = false;
+    const next = (hydratedNote ? undefined : opened) ?? (shown !== undefined && current.includes(shown) ? shown : current[0]);
+    choose(next, true);
     if (next !== undefined) scrollTo(next);
-  }, [signature, phone, choose, scrollTo]);
+  }, [signature, phone, worktreeId, initialPanelsReady, choose, scrollTo]);
   // a swipe moves the panel in view; a resize (rotation, the software keyboard) keeps it in view
   useEffect(() => {
     const container = containerRef.current;
@@ -126,7 +186,13 @@ export function usePanelCarousel(containerRef: RefObject<HTMLElement | null>, ke
     const follow = () => {
       const width = container.clientWidth;
       const key = width > 0 ? keysRef.current[Math.round(container.scrollLeft / width)] : undefined;
-      if (key !== undefined) choose(key);
+      // remember a real scroll selection
+      if (key !== undefined) {
+        // an actual swipe takes precedence over a pending Note restoration
+        if (!initialPanelsReadyRef.current && key !== visibleRef.current) ignoreHydratedNote.current = true;
+        pendingRestore.current = undefined;
+        choose(key, true);
+      }
     };
     let width = container.clientWidth;
     const realign = () => {
@@ -148,7 +214,10 @@ export function usePanelCarousel(containerRef: RefObject<HTMLElement | null>, ke
     if (!keysRef.current.includes(key)) return;
     const focused = document.activeElement;
     if (focused instanceof HTMLElement && containerRef.current?.contains(focused) === true) focused.blur();
-    choose(key);
+    pendingRestore.current = undefined;
+    // an explicit menu selection takes precedence over pending Note hydration
+    if (!initialPanelsReadyRef.current) ignoreHydratedNote.current = true;
+    choose(key, true);
     scrollTo(key);
   }, [containerRef, choose, scrollTo]);
   return { visibleKey: visibleKey !== undefined && keys.includes(visibleKey) ? visibleKey : keys[0], show };

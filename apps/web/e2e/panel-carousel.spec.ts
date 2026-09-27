@@ -14,16 +14,20 @@ const panes = [
   { paneId: '%5', session: '$1', window: '@1', role: 'shell', name: 'build', command: 'zsh', path: '/worktrees/cora', title: '', agent: false, busy: false }
 ];
 
-const routeApi = (page: Page) => page.route('**/api/**', async route => {
+const coraAgent = { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', branch: 'feature/phone', gitStatus: { files: 1, staged: 0, unstaged: 1, untracked: 0, conflicted: 0, changes: [{ code: ' M', path: 'src/app.ts', additions: 1, deletions: 1 }] }, title: 'Ready', projectUrl: 'https://project.example.com', stack: { running: true, tunnel: true }, queuedPromptCount: 0 };
+
+const routeApi = (page: Page, agents = [coraAgent]) => page.route('**/api/**', async route => {
   const path = new URL(route.request().url()).pathname;
   if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-  if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', branch: 'feature/phone', gitStatus: { files: 1, staged: 0, unstaged: 1, untracked: 0, conflicted: 0, changes: [{ code: ' M', path: 'src/app.ts', additions: 1, deletions: 1 }] }, title: 'Ready', projectUrl: 'https://project.example.com', stack: { running: true, tunnel: true }, queuedPromptCount: 0 }], projects: [] } });
+  if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents, projects: [] } });
   if (path === '/api/push/public-key') return route.fulfill({ json: {} });
-  if (path === '/api/agents/agent-1/tickets' || path === '/api/worktrees/cora/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
-  if (/^\/api\/agents\/agent-1\/(?:saved-prompts|prompt-history|queued-prompts)$/u.test(path)) return route.fulfill({ json: { prompts: [] } });
-  if (path === '/api/agents/agent-1/message-files') return route.fulfill({ json: { files: [] } });
+  if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(path) || /^\/api\/worktrees\/(?:cora|owen)\/tickets$/u.test(path)) return route.fulfill({ json: { ticket: 'pane-ticket' } });
+  if (/^\/api\/agents\/agent-[12]\/(?:saved-prompts|prompt-history|queued-prompts)$/u.test(path)) return route.fulfill({ json: { prompts: [] } });
+  if (/^\/api\/agents\/agent-[12]\/message-files$/u.test(path)) return route.fulfill({ json: { files: [] } });
   if (path === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [{ id: 'note-cora-000001', text: 'Phone checklist' }] } });
+  if (path === '/api/worktrees/owen/notes') return route.fulfill({ json: { notes: [] } });
   if (path === '/api/worktrees/cora/panes') return route.fulfill({ json: { panes } });
+  if (path === '/api/worktrees/owen/panes') return route.fulfill({ json: { panes: [] } });
   if (path === '/api/worktrees/cora/comparison') return route.fulfill({ json: { kind: 'working', base: 'HEAD', gitBase: 'HEAD', files: [], fingerprint: '', truncated: false } });
   return route.fulfill({ status: 404, json: { error: 'not mocked' } });
 });
@@ -61,6 +65,12 @@ const openTerminal = async (page: Page) => {
   await page.getByRole('menuitem', { name: /build/u }).click();
   await seedPaneSize(page, '%5', 80, 24);
   await pushBytes(page, '%5', '$ \r\n');
+};
+
+// select a worktree from the phone's workspace flyout
+const switchWorkspace = async (page: Page, name: string) => {
+  await page.getByRole('tab', { selected: true }).click();
+  await page.getByRole('dialog', { name: 'Workspaces' }).getByRole('button', { name: new RegExp(`^${name}\\b`, 'u') }).click();
 };
 
 test.beforeEach(async ({ page }) => {
@@ -132,6 +142,108 @@ test('swiping moves between panels one screen at a time, and the dots follow', a
   await expect.poll(() => changes.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(400);
   await page.mouse.click(4, 4);
   await expect(changes).toHaveCount(0);
+});
+
+test('loading a worktree restores its last viewed split even when a note arrives later', async ({ page }) => {
+  const owenAgent = { ...coraAgent, id: 'agent-2', sessionId: 'socket:$2', home: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', branch: 'feature/other' };
+  await page.unroute('**/api/**');
+  await routeApi(page, [coraAgent, owenAgent]);
+  let holdCoraNotes = false;
+  let releaseNotes = () => {};
+  const notesGate = new Promise<void>(resolve => { releaseNotes = resolve; });
+  // delay the returning worktree's note so its saved agent split must survive hydration
+  await page.route('**/api/worktrees/cora/notes', async route => {
+    if (holdCoraNotes) await notesGate;
+    await route.fulfill({ json: { notes: [{ id: 'note-cora-000001', text: 'Phone checklist' }] } });
+  });
+  await page.reload();
+  await toolbar(page).getByRole('button', { name: 'Notes (1)' }).click();
+  await page.getByRole('button', { name: 'Phone checklist…', exact: true }).click();
+  await chooseSplit(page, 'Agent output');
+  await expectCurrentDot(page, 'Show agent output');
+
+  await switchWorkspace(page, 'Owen');
+  await toolbar(page).getByRole('button', { name: 'More options' }).click();
+  await page.getByRole('button', { name: 'Browser', exact: true }).click();
+  await expectCurrentDot(page, 'Show project browser');
+
+  holdCoraNotes = true;
+  await switchWorkspace(page, 'Cora');
+  await expect(agentPanel(page)).toBeInViewport({ ratio: 0.99 });
+  releaseNotes();
+  await expect(page.getByRole('dialog', { name: 'Note' })).toBeVisible();
+  await expectCurrentDot(page, 'Show agent output');
+  await expect(agentPanel(page)).toBeInViewport({ ratio: 0.99 });
+
+  await chooseSplit(page, 'Note');
+  await switchWorkspace(page, 'Owen');
+  await expectCurrentDot(page, 'Show project browser');
+  await expect(page.getByRole('dialog', { name: 'Browser' })).toBeInViewport({ ratio: 0.99 });
+  await switchWorkspace(page, 'Cora');
+  await expectCurrentDot(page, 'Show note');
+  await expect(page.getByRole('dialog', { name: 'Note' })).toBeInViewport({ ratio: 0.99 });
+
+  await page.reload();
+  await expectCurrentDot(page, 'Show note');
+  await expect(page.getByRole('dialog', { name: 'Note' })).toBeInViewport({ ratio: 0.99 });
+});
+
+test('opening a panel during note hydration overrides the saved split', async ({ page }) => {
+  await page.evaluate(() => {
+    localStorage.setItem('rac.last-split:cora', 'agent');
+    localStorage.setItem('rac.note-view:cora', JSON.stringify({ noteId: 'note-cora-000001', expanded: false }));
+  });
+  let releaseNotes = () => {};
+  const notesGate = new Promise<void>(resolve => { releaseNotes = resolve; });
+  // keep the saved note response pending while the browser is opened
+  await page.route('**/api/worktrees/cora/notes', async route => {
+    await notesGate;
+    await route.fulfill({ json: { notes: [{ id: 'note-cora-000001', text: 'Phone checklist' }] } });
+  });
+  await page.reload();
+  await toolbar(page).getByRole('button', { name: 'More options' }).click();
+  await page.getByRole('button', { name: 'Browser', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Browser' })).toBeInViewport({ ratio: 0.99 });
+  await expectCurrentDot(page, 'Show project browser');
+  releaseNotes();
+  await expect(page.getByRole('dialog', { name: 'Note' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Browser' })).toBeInViewport({ ratio: 0.99 });
+  await page.reload();
+  await expect(page.getByRole('dialog', { name: 'Browser' })).toBeInViewport({ ratio: 0.99 });
+});
+
+test('a failed note load preserves its last-viewed split for the next load', async ({ page }) => {
+  await page.evaluate(() => {
+    localStorage.setItem('rac.last-split:cora', 'note');
+    localStorage.setItem('rac.note-view:cora', JSON.stringify({ noteId: 'note-cora-000001', expanded: false }));
+  });
+  let notesAvailable = false;
+  // fail the first load, then allow the same saved note to return after a reload
+  await page.route('**/api/worktrees/cora/notes', async route => {
+    if (!notesAvailable) return route.fulfill({ status: 503, json: { error: 'unavailable' } });
+    return route.fulfill({ json: { notes: [{ id: 'note-cora-000001', text: 'Phone checklist' }] } });
+  });
+  await page.reload();
+  await expect(agentPanel(page)).toBeInViewport({ ratio: 0.99 });
+  notesAvailable = true;
+  await page.reload();
+  await expectCurrentDot(page, 'Show note');
+  await expect(page.getByRole('dialog', { name: 'Note' })).toBeInViewport({ ratio: 0.99 });
+});
+
+test('a successful in-session note retry lets a newly opened note take focus', async ({ page }) => {
+  await page.evaluate(() => localStorage.setItem('rac.last-split:cora', 'agent'));
+  let notesAvailable = false;
+  // fail the initial read but let the notes menu retry succeed
+  await page.route('**/api/worktrees/cora/notes', route => notesAvailable
+    ? route.fulfill({ json: { notes: [{ id: 'note-cora-000001', text: 'Phone checklist' }] } })
+    : route.fulfill({ status: 503, json: { error: 'unavailable' } }));
+  await page.reload();
+  await expect(agentPanel(page)).toBeInViewport({ ratio: 0.99 });
+  notesAvailable = true;
+  await toolbar(page).getByRole('button', { name: 'Notes (0)' }).click();
+  await page.getByRole('button', { name: 'Phone checklist…', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Note' })).toBeInViewport({ ratio: 0.99 });
 });
 
 test('the split indicator swipes in both directions without opening its menu', async ({ page }) => {
