@@ -287,31 +287,39 @@ within a tick — no config edit or restart.
   run keeps its combined output under `.data/stack-logs` (its path is logged) for
   inspection. Like the other `commands` it is operator-trust shell, so it is never
   surfaced to the browser.
-- `commands.processes` declares a **Stack process**: a foreground command that
-  runs until it is killed, such as `{ "dev": "pnpm dev" }`, for a stack with no
-  daemon to hand off to. The stack menu's Start runs it in the background, as a
-  window named for the process in the Worktree's Workspace session (the tmux
-  session holding its Agents and Terminals, created the way a launch creates one
-  when there is none yet), with the same socket, login shell, host `PATH`, and
-  Worktree root as the other `commands`. The stack badge reads running, exited or
-  stopped straight from that window — no `status` command. Stop sends the
-  process Ctrl+C, waits up to about 10 seconds for it to exit, then closes its
-  window either way (a window that is the last in its session takes that session
-  with it); Restart interrupts it the same way and reruns the command in the
-  same pane, so a Terminal open on it stays attached. The process belongs
-  to tmux, so it keeps running across a console restart and is found again by
-  the tags on its window, and its pane scrolls back as far as that session's
-  `history-limit`. The stack menu's "Show `<name>` output" opens that history
-  in the log dialog and keeps it refreshing; while the process runs, that
+- `commands.processes` declares one or more **Stack processes**: foreground
+  commands that run until they are killed, such as
+  `{ "api": "pnpm --filter api dev", "web": "pnpm --filter web dev" }`, for a
+  stack with no daemon to hand off to. The stack menu's Start runs each in the
+  background, in the order written, as a window named for the process in the
+  Worktree's Workspace session (the tmux session holding its Agents and
+  Terminals, created the way a launch creates one when there is none yet), with
+  the same socket, login shell, host `PATH`, and Worktree root as the other
+  `commands`; a process already running is left alone. The stack badge reads
+  running, stopped, "`n` of `m` running", or exited (naming each process that
+  exited, with its code) straight from those windows — no `status` command.
+  Stop stops the processes in reverse order: each is sent Ctrl+C, given up to
+  about 10 seconds to exit, then its window is closed either way (a window that
+  is the last in its session takes that session with it); Restart stops them
+  all the same way, keeping their windows, and reruns each command in the order
+  written in its own pane, so a Terminal open on it stays attached. A step that
+  fails ends the Start, Stop or Restart there and reports it failed; processes already
+  started keep running. Each process belongs to tmux, so it keeps running across
+  a console restart and is found again by the tags on its window, and its pane
+  scrolls back as far as that session's `history-limit`. The stack menu's
+  "Show `<name>` output", one per process, opens that history in the log
+  dialog and keeps it refreshing; while the process runs, that
   dialog's "Open as Terminal" opens its pane as a live Terminal panel, where
   dev-server hotkeys such as Vite's `r` work. The pane is also in the Place's
   Terminal switcher, named for the process. "Show last command output" is the
-  latest `build` or `migrate` run. A process name is letters, digits, `_` and `-`,
-  and the map holds one process for now. A process derives the `start`, `stop`,
-  and `restart` actions, so `processes` cannot sit beside `start`, `stop`,
-  `restart`, or `status`; `build`, `migrate`, and `setup` stay available beside
-  it. There is no separate working-directory setting: to run from a
-  subdirectory, write `{ "dev": "cd web && pnpm dev" }`.
+  latest `build` or `migrate` run. Remove stops every running process before it
+  removes the checkout, and its confirmation lists them. A process name is
+  letters, digits, `_` and `-`, and the map holds up to 20 processes. The
+  processes derive the `start`, `stop`, and `restart` actions, so `processes`
+  cannot sit beside `start`, `stop`, `restart`, or `status`; `build`,
+  `migrate`, and `setup` stay available beside them. There is no separate
+  working-directory setting: to run from a subdirectory, write
+  `{ "dev": "cd web && pnpm dev" }`.
 - Preview configuration selects one of two mutually exclusive modes. `port` +
   `hostname` (both or neither) provide `https://<hostname>` proxied to
   `127.0.0.1:<port>`. Alternatively, `externalUrl` names an existing canonical

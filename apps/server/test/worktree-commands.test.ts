@@ -563,7 +563,7 @@ describe('worktree Stack process', () => {
     // on the host socket, through the host tmux client, like every stack command
     expect(tmux.calls.every(args => args[0] === '-S' && args[1] === '/host-tmux/default')).toBe(true);
 
-    await expect(service.state(cora)).resolves.toEqual({ running: true, transition: 'starting', process: { name: 'dev', state: 'running' } });
+    await expect(service.state(cora)).resolves.toEqual({ running: true, transition: 'starting', processes: [{ name: 'dev', state: 'running' }] });
   });
 
   // a Worktree with no Agent or Terminal open yet gets its Workspace session the way a launch
@@ -581,7 +581,7 @@ describe('worktree Stack process', () => {
     // the process window is the new session's only window
     expect(tmux.windows.filter(entry => entry.session === 'cora-2')).toEqual(processWindows(tmux));
     expect(processWindows(tmux)[0]?.paneOptions.get('@rac_role')).toBe('process');
-    await expect(service.state(cora)).resolves.toMatchObject({ running: true, process: { name: 'dev', state: 'running' } });
+    await expect(service.state(cora)).resolves.toMatchObject({ running: true, processes: [{ name: 'dev', state: 'running' }] });
   });
 
   it('does nothing when the process is already running', async () => {
@@ -594,7 +594,7 @@ describe('worktree Stack process', () => {
     await expect(service.start(cora.id, 'start')).resolves.toBe('started');
     expect(tmux.windows).toHaveLength(2);
     expect(tmux.calls.slice(before).map(args => args[0])).toEqual(['list-panes']);
-    await expect(service.state(cora)).resolves.toEqual({ running: true, process: { name: 'dev', state: 'running' } });
+    await expect(service.state(cora)).resolves.toEqual({ running: true, processes: [{ name: 'dev', state: 'running' }] });
   });
 
   // nothing about a process is remembered in memory: a restarted console reads it from tmux,
@@ -608,16 +608,16 @@ describe('worktree Stack process', () => {
     tmux.seedProcess('erin', '/worktrees/erin', 'dev');
     const service = processService(tmux);
 
-    await expect(service.state(cora)).resolves.toEqual({ running: true, process: { name: 'dev', state: 'running' } });
-    await expect(service.state(dana)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 127 } });
-    await expect(service.state(erin)).resolves.toEqual({ running: false, process: { name: 'web', state: 'stopped' } });
+    await expect(service.state(cora)).resolves.toEqual({ running: true, processes: [{ name: 'dev', state: 'running' }] });
+    await expect(service.state(dana)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'exited', exitCode: 127 }] });
+    await expect(service.state(erin)).resolves.toEqual({ running: false, processes: [{ name: 'web', state: 'stopped' }] });
     // reading state never opens a window: no status probe runs for a process Worktree
     expect(tmux.calls.every(args => args[0] === 'list-panes')).toBe(true);
   });
 
   it('reports a process stopped when no tmux server is running, and starts none by reading', async () => {
     const tmux = fakeTmux();
-    await expect(processService(tmux).state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    await expect(processService(tmux).state(cora)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
     expect(tmux.sessions.size).toBe(0);
   });
 
@@ -647,7 +647,7 @@ describe('worktree Stack process', () => {
     expect(processWindows(tmux)).toEqual([crashed]);
     expect(tmux.events).toContain(`respawn ${crashed.id}`);
     expect(crashed.command.at(-1)).toContain('pnpm dev');
-    await expect(service.state(cora)).resolves.toMatchObject({ running: true, process: { name: 'dev', state: 'running' } });
+    await expect(service.state(cora)).resolves.toMatchObject({ running: true, processes: [{ name: 'dev', state: 'running' }] });
   });
 
   // a command that dies at once has nothing left to start: the badge shows it down straight
@@ -659,7 +659,7 @@ describe('worktree Stack process', () => {
     await service.start(cora.id, 'start');
     await expect(service.state(cora)).resolves.toMatchObject({ transition: 'starting' });
     Object.assign(processWindows(tmux)[0]!, { dead: true, status: 127 });
-    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 127 } });
+    await expect(service.state(cora)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'exited', exitCode: 127 }] });
   });
 
   it('ends Starting once the Project answers after the Start, never on a check from before it', async () => {
@@ -674,10 +674,10 @@ describe('worktree Stack process', () => {
 
       preview.state.healthy = false;
       await expect(service.start(reachable.id, 'start')).resolves.toBe('started');
-      await expect(service.state(reachable)).resolves.toEqual({ running: true, transition: 'starting', process: running });
-      await vi.waitFor(async () => { expect(await service.state(reachable)).toEqual({ running: true, transition: 'starting', tunnel: false, process: running }); });
+      await expect(service.state(reachable)).resolves.toEqual({ running: true, transition: 'starting', processes: [running] });
+      await vi.waitFor(async () => { expect(await service.state(reachable)).toEqual({ running: true, transition: 'starting', tunnel: false, processes: [running] }); });
       preview.state.healthy = true;
-      await vi.waitFor(async () => { expect(await service.state(reachable)).toEqual({ running: true, tunnel: true, process: running }); }, { timeout: 5_000, interval: 100 });
+      await vi.waitFor(async () => { expect(await service.state(reachable)).toEqual({ running: true, tunnel: true, processes: [running] }); }, { timeout: 5_000, interval: 100 });
     } finally { await preview.close(); }
   });
 
@@ -803,7 +803,7 @@ describe('worktree Stack process', () => {
     // only the Workspace's own shell remains
     expect(tmux.windows.map(entry => entry.session)).toEqual(['cora']);
     expect(processWindows(tmux)).toEqual([]);
-    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    await expect(service.state(cora)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
   });
 
   it('refuses a second Start on the same Worktree while one is in flight', async () => {
@@ -837,7 +837,7 @@ describe('worktree Stack process', () => {
     expect(tmux.events.filter(event => event.startsWith('leave-mode') || event.startsWith('keys') || event.startsWith('kill'))).toEqual([`leave-mode ${dev.paneId}`, `keys ${dev.paneId} C-c`, `kill ${dev.id}`]);
     // the Workspace's own shell is untouched
     expect(tmux.windows.map(entry => entry.session)).toEqual(['cora']);
-    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    await expect(service.state(cora)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
   });
 
   it('kills a process that ignores Ctrl+C once the graceful budget runs out', async () => {
@@ -851,7 +851,7 @@ describe('worktree Stack process', () => {
     await expect(service.start(cora.id, 'stop')).resolves.toBe('started');
     expect(Date.now() - began).toBeGreaterThanOrEqual(stopTiming.timeoutMs);
     expect(tmux.events.indexOf(`kill ${dev.id}`)).toBeGreaterThan(tmux.events.indexOf(`keys ${dev.paneId} C-c`));
-    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    await expect(service.state(cora)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
   });
 
   it('clears an exited process by removing its window, without sending Ctrl+C', async () => {
@@ -863,7 +863,7 @@ describe('worktree Stack process', () => {
     await expect(service.start(cora.id, 'stop')).resolves.toBe('started');
     expect(tmux.events.filter(event => event.startsWith('keys'))).toEqual([]);
     expect(tmux.events).toContain(`kill ${crashed.id}`);
-    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    await expect(service.state(cora)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
   });
 
   it('does nothing to stop when there is no process window', async () => {
@@ -900,7 +900,7 @@ describe('worktree Stack process', () => {
     expect(tmux.events.filter(event => event.startsWith('kill') || event.startsWith('session'))).toEqual([]);
     expect(processWindows(tmux)).toEqual([dev]);
     expect(dev.command.at(-1)).toContain('pnpm dev');
-    await expect(service.state(cora)).resolves.toEqual({ running: true, transition: 'starting', process: { name: 'dev', state: 'running' } });
+    await expect(service.state(cora)).resolves.toEqual({ running: true, transition: 'starting', processes: [{ name: 'dev', state: 'running' }] });
   });
 
   it('restarts a process that ignores Ctrl+C by respawning its pane once the budget runs out', async () => {
@@ -924,8 +924,8 @@ describe('worktree Stack process', () => {
     await expect(service.start(dana.id, 'restart')).resolves.toBe('started');
     expect(tmux.events).toContain(`respawn ${crashed.id}`);
     expect(processWindows(tmux).map(entry => entry.options.get('@rac_worktree'))).toEqual(['/worktrees/cora', '/worktrees/dana']);
-    await expect(service.state(cora)).resolves.toMatchObject({ running: true, process: { name: 'dev', state: 'running' } });
-    await expect(service.state(dana)).resolves.toMatchObject({ running: true, process: { name: 'dev', state: 'running' } });
+    await expect(service.state(cora)).resolves.toMatchObject({ running: true, processes: [{ name: 'dev', state: 'running' }] });
+    await expect(service.state(dana)).resolves.toMatchObject({ running: true, processes: [{ name: 'dev', state: 'running' }] });
   });
 
   // a Stop issued while the process still reads as Starting ends that transition with it
@@ -936,7 +936,7 @@ describe('worktree Stack process', () => {
     await service.start(cora.id, 'start');
     await expect(service.state(cora)).resolves.toMatchObject({ transition: 'starting' });
     await expect(service.start(cora.id, 'stop')).resolves.toBe('started');
-    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    await expect(service.state(cora)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
   });
 
   // a one-shot migrate runs beside the process, so stopping the process leaves it Migrating
@@ -970,7 +970,7 @@ describe('worktree Stack process', () => {
       return { ...result, stdout: `${result.stdout}${[sessionId, windowId, '%99', '0', '', place, '', name, ...path].join('\t')}\n` };
     };
     const service = new WorktreeCommandService(config, { worktreesNow: () => [cora] } as never, withSplit, undefined, undefined, undefined, { timeoutMs: 5_000, pollMs: 5 });
-    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 1 } });
+    await expect(service.state(cora)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'exited', exitCode: 1 }] });
 
     const began = Date.now();
     await expect(service.start(cora.id, 'stop')).resolves.toBe('started');
@@ -993,12 +993,12 @@ describe('worktree Stack process', () => {
     const stopping = service.start(cora.id, 'stop');
     await vi.waitFor(() => { expect(tmux.events).toContain(`keys ${dev!.paneId} C-c`); });
     // Stopping, not Starting, while the Stop is under way
-    await expect(service.state(cora)).resolves.toEqual({ operation: 'stop', running: true, process: { name: 'dev', state: 'running' } });
+    await expect(service.state(cora)).resolves.toEqual({ operation: 'stop', running: true, processes: [{ name: 'dev', state: 'running' }] });
     await expect(service.start(cora.id, 'start')).resolves.toBe('busy');
     await expect(service.start(cora.id, 'restart')).resolves.toBe('busy');
     Object.assign(dev!, { dead: true, status: 0 });
     await expect(stopping).resolves.toBe('started');
-    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    await expect(service.state(cora)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
   });
 
   it('fails Stop and Restart, without throwing, when tmux cannot run', async () => {
@@ -1019,7 +1019,7 @@ describe('worktree Stack process', () => {
       return await tmux.command(binary, args);
     }, undefined, undefined, undefined, stopTiming);
     await expect(service.start(cora.id, 'stop')).resolves.toBe('started');
-    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    await expect(service.state(cora)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
   });
 
   it('fails Stop when the process window cannot be removed', async () => {
@@ -1056,7 +1056,7 @@ describe('worktree Stack process', () => {
     // the checkout goes only once the process is stopped, and no Start gets in meanwhile
     const removal = service.stopForRemoval(cora, async () => {
       tmux.events.push('remove');
-      await expect(service.state(cora)).resolves.toEqual({ operation: 'stop', running: false, process: { name: 'dev', state: 'stopped' } });
+      await expect(service.state(cora)).resolves.toEqual({ operation: 'stop', running: false, processes: [{ name: 'dev', state: 'stopped' }] });
       await expect(service.start(cora.id, 'start')).resolves.toBe('busy');
       return 'removed';
     });
@@ -1112,6 +1112,126 @@ describe('worktree Stack process', () => {
     await expect(service.start(cora.id, 'build')).resolves.toBe('started');
     expect(oneShot[0]?.[oneShot[0].indexOf('-s') + 1]).toMatch(/^rac-stack-proj-[0-9a-f]{12}-.+-exclusive$/u);
     expect(oneShot[0]?.at(-1)).toContain('pnpm build');
+  });
+});
+
+// several Stack processes run as one stack: Start in config order, Stop in reverse
+describe('worktree with several Stack processes', () => {
+  const fern = testWorktree({ id: 'proj:/worktrees/fern', projectId: 'proj', path: '/worktrees/fern', main: false, commands: { processes: { sync: 'ods exec sync', api: 'ods exec api', web: 'ods exec web' }, build: 'pnpm build' } });
+  const stopTiming = { timeoutMs: 60, pollMs: 5 };
+  const stackService = (tmux: ReturnType<typeof fakeTmux>, command: ReturnType<typeof fakeTmux>['command'] = tmux.command) => new WorktreeCommandService(config, { worktreesNow: () => [fern] } as never, command, undefined, undefined, undefined, stopTiming);
+  const processWindows = (tmux: ReturnType<typeof fakeTmux>) => tmux.windows.filter(entry => entry.options.has('@rac_process'));
+  const names = (tmux: ReturnType<typeof fakeTmux>) => processWindows(tmux).map(entry => entry.options.get('@rac_process'));
+  // the Ctrl+C, kill and respawn events, each named for the process whose pane or window it hit
+  const steps = (tmux: ReturnType<typeof fakeTmux>, windows: FakeWindow[]) => tmux.events.flatMap(event => {
+    const [verb, target] = event.split(' ');
+    const entry = windows.find(candidate => candidate.id === target || candidate.paneId === target);
+    return entry === undefined || !['keys', 'kill', 'respawn'].includes(verb!) ? [] : [`${verb} ${entry.options.get('@rac_process')}`];
+  });
+  const seedStack = (tmux: ReturnType<typeof fakeTmux>) => {
+    tmux.seedWorkspace('fern', fern.id);
+    return ['sync', 'api', 'web'].map(name => tmux.seedProcess('fern', '/worktrees/fern', name));
+  };
+  beforeEach(() => { delete process.env.RAC_HOST_TMUX_DIR; delete process.env.RAC_HOST_PATH; });
+
+  it('derives one Start, Stop and Restart for the whole stack, beside its one-shot build', () => {
+    expect(stackService(fakeTmux()).actions(fern)).toEqual(['start', 'stop', 'build', 'restart']);
+  });
+
+  it('starts every process in config order, in the one Workspace session the first creates', async () => {
+    const tmux = fakeTmux();
+    const service = stackService(tmux);
+
+    await expect(service.start(fern.id, 'start')).resolves.toBe('started');
+    expect([...tmux.sessions.keys()]).toEqual(['fern']);
+    expect(tmux.sessions.get('fern')?.get('@rac_place')).toBe(fern.id);
+    expect(names(tmux)).toEqual(['sync', 'api', 'web']);
+    expect(processWindows(tmux).map(entry => entry.command.at(-1))).toEqual([expect.stringContaining('ods exec sync'), expect.stringContaining('ods exec api'), expect.stringContaining('ods exec web')]);
+    await expect(service.state(fern)).resolves.toEqual({ running: true, transition: 'starting', processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'running' }, { name: 'web', state: 'running' }] });
+  });
+
+  it('leaves a live process alone and starts the rest', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('fern', fern.id);
+    const api = tmux.seedProcess('fern', '/worktrees/fern', 'api');
+    await expect(stackService(tmux).start(fern.id, 'start')).resolves.toBe('started');
+    expect(names(tmux)).toEqual(['api', 'sync', 'web']);
+    expect(tmux.events).not.toContain(`respawn ${api.id}`);
+  });
+
+  it('stops every process in reverse config order: Ctrl+C, then its window', async () => {
+    const tmux = fakeTmux();
+    const windows = seedStack(tmux);
+    const service = stackService(tmux);
+
+    await expect(service.start(fern.id, 'stop')).resolves.toBe('started');
+    expect(steps(tmux, windows)).toEqual(['keys web', 'kill web', 'keys api', 'kill api', 'keys sync', 'kill sync']);
+    expect(processWindows(tmux)).toEqual([]);
+    await expect(service.state(fern)).resolves.toEqual({ running: false, processes: [{ name: 'sync', state: 'stopped' }, { name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped' }] });
+  });
+
+  // every process is stopped before any is rerun, each in the window it keeps
+  it('restarts every process in its own pane: stops in reverse, then reruns in order', async () => {
+    const tmux = fakeTmux();
+    const windows = seedStack(tmux);
+    await expect(stackService(tmux).start(fern.id, 'restart')).resolves.toBe('started');
+    expect(steps(tmux, windows)).toEqual(['keys web', 'keys api', 'keys sync', 'respawn sync', 'respawn api', 'respawn web']);
+    expect(processWindows(tmux)).toEqual(windows);
+  });
+
+  it('ends a Start at the first process that fails, leaving those already started running', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('fern', fern.id);
+    const service = stackService(tmux, async (binary, args) => args[0] === 'respawn-pane' && args.at(-1)?.includes('ods exec api') === true ? { code: 1, stdout: '', stderr: 'respawn failed' } : await tmux.command(binary, args));
+
+    await expect(service.start(fern.id, 'start')).resolves.toBe(false);
+    expect(names(tmux)).toEqual(['sync']);
+    await expect(service.state(fern)).resolves.toMatchObject({ processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped' }] });
+  });
+
+  it('ends a Stop at the first process it cannot stop, leaving the rest running', async () => {
+    const tmux = fakeTmux();
+    const windows = seedStack(tmux);
+    const web = windows[2]!;
+    const service = stackService(tmux, async (binary, args) => args[0] === 'kill-window' && args.at(-1) === web.id ? { code: 1, stdout: '', stderr: 'kill failed' } : await tmux.command(binary, args));
+
+    await expect(service.start(fern.id, 'stop')).resolves.toBe(false);
+    expect(steps(tmux, windows)).toEqual(['keys web']);
+    expect(names(tmux)).toEqual(['sync', 'api', 'web']);
+  });
+
+  // `running` summarises the stack only when every process agrees; the list says the rest
+  it('reports running only when every process runs, stopped only when none does', async () => {
+    const tmux = fakeTmux();
+    tmux.seedProcess('fern', '/worktrees/fern', 'sync');
+    tmux.seedProcess('fern', '/worktrees/fern', 'api', true, 1);
+    const service = stackService(tmux);
+    await expect(service.state(fern)).resolves.toEqual({ processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'exited', exitCode: 1 }, { name: 'web', state: 'stopped' }] });
+
+    tmux.seedProcess('fern', '/worktrees/fern', 'web', true, 2);
+    tmux.windows.find(entry => entry.options.get('@rac_process') === 'sync')!.dead = true;
+    await expect(service.state(fern)).resolves.toEqual({ running: false, processes: [{ name: 'sync', state: 'exited', exitCode: 0 }, { name: 'api', state: 'exited', exitCode: 1 }, { name: 'web', state: 'exited', exitCode: 2 }] });
+  });
+
+  it('names every running process as one Remove stops, and stops them in reverse order first', async () => {
+    const tmux = fakeTmux();
+    const windows = seedStack(tmux);
+    Object.assign(windows[1]!, { dead: true, status: 1 });
+    const service = stackService(tmux);
+    await expect(service.runningProcesses(fern)).resolves.toEqual(['sync', 'web']);
+
+    await expect(service.stopForRemoval(fern, async () => { tmux.events.push('remove'); return 'removed'; })).resolves.toBe('removed');
+    expect([...steps(tmux, windows), tmux.events.at(-1)]).toEqual(['keys web', 'kill web', 'kill api', 'keys sync', 'kill sync', 'remove']);
+  });
+
+  it('runs a one-shot build beside the live processes', async () => {
+    const tmux = fakeTmux();
+    seedStack(tmux);
+    const oneShot: string[][] = [];
+    const service = stackService(tmux, async (binary, args) => { if (args.includes('new-session')) { oneShot.push(args); return { code: 0, stdout: '' }; } return await tmux.command(binary, args); });
+    await expect(service.start(fern.id, 'build')).resolves.toBe('started');
+    expect(oneShot[0]?.at(-1)).toContain('pnpm build');
+    expect(names(tmux)).toEqual(['sync', 'api', 'web']);
   });
 });
 

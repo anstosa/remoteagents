@@ -212,6 +212,33 @@ test('shows an exited Stack process with its exit code, ahead of a down tunnel',
   await expect(page.getByRole('button', { name: 'Start stack', exact: true })).toBeEnabled();
 });
 
+// a stack of several processes counts the running ones, names each exited one, and offers each
+// process's own output
+test("summarises several Stack processes on the badge and offers each one's output", async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderSeveralProcessStatuses } = await import('/e2e/project-open-fixture.tsx');
+    renderSeveralProcessStatuses(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  const partial = page.getByRole('button', { name: 'Stack controls: 2 of 3 running', exact: true });
+  await expect(partial.locator('.project-stack-status-text')).toHaveText('2 of 3 running');
+  await expect(partial.locator('.project-stack-status-dot.status-partial')).toBeVisible();
+  const exited = page.getByRole('button', { name: 'Stack controls: api exited (1), web exited (2)', exact: true });
+  await expect(exited.locator('.project-stack-status-text')).toHaveText('exited');
+
+  await partial.click();
+  await expect(page.locator('.stack-log-menu-button')).toHaveText(['Show sync output', 'Show api output', 'Show web output']);
+  await page.getByRole('button', { name: 'Show web output' }).click();
+  const dialog = page.getByRole('dialog', { name: 'web output' });
+  await expect(dialog.locator('pre')).toHaveText('web ready');
+  await dialog.getByRole('button', { name: 'Close stack output' }).click();
+  await partial.click();
+  await page.getByRole('button', { name: 'Show api output' }).click();
+  await expect(page.getByRole('dialog', { name: 'api output' }).locator('pre')).toHaveText('The process is not running.');
+});
+
 // the process's own output and the last one-shot command's output are separate menu entries
 test("shows a Stack process's output in the log dialog, refreshing while it is open", async ({ page }) => {
   await page.goto('/');

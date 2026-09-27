@@ -243,7 +243,7 @@ describe('project configuration', () => {
     await expect(validateConfig(await withProject(repo, { newTask: 'new {unknown}' }))).rejects.toThrow('unknown new task placeholder');
   });
 
-  // a Stack process is one named foreground command; start/stop/restart/status derive from it
+  // a Stack process is a named foreground command; start/stop/restart/status derive from the set
   describe('Stack processes', () => {
     it('accepts one process beside the one-shot build, migrate and setup commands', async () => {
       const repo = await gitRepo();
@@ -252,9 +252,17 @@ describe('project configuration', () => {
       expect(config.projects[0]?.commands).toEqual(commands);
     });
 
-    it('rejects more than one process, and an empty map', async () => {
+    it('accepts up to 20 processes, keeping their order', async () => {
       const repo = await gitRepo();
-      await expect(validateConfig(await withProject(repo, { commands: { processes: { dev: 'pnpm dev', worker: 'pnpm worker' } } }))).rejects.toThrow(/at most one/);
+      const processes = Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`service-${20 - index}`, `run ${index}`]));
+      const config = await validateConfig(await withProject(repo, { commands: { processes } }));
+      expect(Object.keys(config.projects[0]?.commands?.processes ?? {})).toEqual(Object.keys(processes));
+    });
+
+    it('rejects more than 20 processes, and an empty map', async () => {
+      const repo = await gitRepo();
+      const processes = Object.fromEntries(Array.from({ length: 21 }, (_, index) => [`service-${index}`, `run ${index}`]));
+      await expect(validateConfig(await withProject(repo, { commands: { processes } }))).rejects.toThrow(/at most 20/);
       await expect(validateConfig(await withProject(repo, { commands: { processes: {} } }))).rejects.toThrow();
     });
 

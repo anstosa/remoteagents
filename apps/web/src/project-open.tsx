@@ -5,22 +5,30 @@ import { PanelIcon, panelIcons } from './panel-header.js';
 import { processActions, stackActionLabel, stackOperationLabel, type StackAction, type StackOperationLog, type StackProcessOutput, type StackProcessState } from './stack-operations.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 
-type ProjectStack = { actions?: StackAction[]; running?: boolean; operation?: StackAction; transition?: 'starting'|'migrating'; tunnel?: boolean; process?: StackProcessState };
-type ProjectStackStatus = 'working'|'exited'|'healthy'|'down'|'running'|'stopped'|'unknown';
-// which output the log dialog shows: the last one-shot command's, or the Stack process's own
-type StackLogViewer = 'command'|'process';
+type ProjectStack = { actions?: StackAction[]; running?: boolean; operation?: StackAction; transition?: 'starting'|'migrating'; tunnel?: boolean; processes?: StackProcessState[] };
+type ProjectStackStatus = 'working'|'exited'|'partial'|'healthy'|'down'|'running'|'stopped'|'unknown';
+// which output the log dialog shows: the last one-shot command's, or a named Stack process's own
+type StackLogViewer = { kind: 'command' } | { kind: 'process'; name: string };
 
 // the process output dialog's footer: its state, with the exit code once it has died
 const processStatusLabel = (output: StackProcessOutput) => output.state === 'running' ? 'Running' : output.state === 'stopped' ? 'Stopped' : output.exitCode === undefined ? 'Exited' : `Exited (${output.exitCode})`;
+
+// how many of a stack's Stack processes are running
+const runningCount = (processes: StackProcessState[]) => processes.filter(process => process.state === 'running').length;
 
 // derive the stack status badge
 function resolveStackStatus(stack: ProjectStack | undefined, inProgress: boolean): ProjectStackStatus {
   // prioritize active operations
   if (inProgress) return 'working';
-  // a Stack process that died on its own, or was stopped, outranks whatever its tunnel says: a
-  // check from before a Stop can still read healthy, and a failing one would read as broken
-  if (stack?.process?.state === 'exited') return 'exited';
-  if (stack?.process?.state === 'stopped') return 'stopped';
+  // a Stack process that died on its own, a stack only partly running, or one stopped outranks
+  // whatever its tunnel says: a check from before a Stop can still read healthy, and a failing
+  // one would read as broken
+  if (stack?.processes !== undefined) {
+    if (stack.processes.some(process => process.state === 'exited')) return 'exited';
+    const live = runningCount(stack.processes);
+    if (live === 0) return 'stopped';
+    if (live < stack.processes.length) return 'partial';
+  }
   // reflect a healthy tunnel
   if (stack?.tunnel === true) return 'healthy';
   // reflect a failed tunnel
@@ -35,7 +43,7 @@ function resolveStackStatus(stack: ProjectStack | undefined, inProgress: boolean
 // The project's toolbar controls: the stack button and its menu (which also opens the project in
 // a new tab or the browser panel) or, with no stack commands, a link to the project.
 // `onOpenTerminal` opens a running Stack process's pane as a Terminal panel, named for the process.
-export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, onStackAction, onStackLog, onProcessOutput, onOpenTerminal }: { url?: string; stack?: ProjectStack; browserOpen?: boolean; onBrowserToggle?: () => void; onStackAction?: (action: StackAction) => Promise<unknown> | unknown; onStackLog?: () => Promise<StackOperationLog | undefined>; onProcessOutput?: () => Promise<StackProcessOutput | undefined>; onOpenTerminal?: (paneId: string, name: string) => void }) {
+export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, onStackAction, onStackLog, onProcessOutput, onOpenTerminal }: { url?: string; stack?: ProjectStack; browserOpen?: boolean; onBrowserToggle?: () => void; onStackAction?: (action: StackAction) => Promise<unknown> | unknown; onStackLog?: () => Promise<StackOperationLog | undefined>; onProcessOutput?: (name: string) => Promise<StackProcessOutput | undefined>; onOpenTerminal?: (paneId: string, name: string) => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [running, setRunning] = useState<StackAction>();
   const [viewer, setViewer] = useState<StackLogViewer>();
@@ -53,8 +61,8 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
   const actions = stack?.actions ?? [];
   const hasStackActions = actions.length > 0 && onStackAction !== undefined;
   // a Stack process's own actions leave no command output; only one-shot actions do
-  const hasStackLogs = actions.some(action => stack?.process === undefined || !processActions.includes(action)) && onStackLog !== undefined;
-  const outputProcess = onProcessOutput === undefined ? undefined : stack?.process?.name;
+  const hasStackLogs = actions.some(action => stack?.processes === undefined || !processActions.includes(action)) && onStackLog !== undefined;
+  const outputProcesses = onProcessOutput === undefined ? [] : (stack?.processes ?? []).map(process => process.name);
   // require only a usable target and handler
   const hasBrowserControl = url !== undefined && onBrowserToggle !== undefined;
   useEffect(() => {
@@ -63,8 +71,8 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
     let active = true;
     let loading = false;
     // fetch the viewer's output, returning how to show it once the dialog is known to be open
-    const read = viewer === 'process'
-      ? async () => { const next = await processOutputRef.current?.(); return () => setProcessOutput(next); }
+    const read = viewer.kind === 'process'
+      ? async () => { const next = await processOutputRef.current?.(viewer.name); return () => setProcessOutput(next); }
       : async () => { const next = await stackLogRef.current?.(); return () => setLog(next); };
     // refresh the retained command output, or the process pane's
     const refresh = async () => {
@@ -86,7 +94,8 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
     const interval = window.setInterval(() => { void refresh(); }, 750);
     return () => { active = false; window.clearInterval(interval); };
   }, [viewer]);
-  const shownOutput = viewer === 'process' ? processOutput?.output : log?.output;
+  const processViewer = viewer?.kind === 'process' ? viewer : undefined;
+  const shownOutput = processViewer !== undefined ? processOutput?.output : log?.output;
   useEffect(() => {
     // follow new output while the viewer is open, unless the operator scrolled up to read
     if (viewer === undefined || logOutputRef.current === null || !followOutputRef.current) return;
@@ -100,7 +109,7 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
     return () => window.removeEventListener('keydown', close);
   }, [viewer]);
   // open the latest retained output, starting from nothing so another viewer's text never shows
-  const openLogs = (next: StackLogViewer) => { setLogError(''); if (next === 'process') setProcessOutput(undefined); followOutputRef.current = true; setMenuOpen(false); setViewer(next); };
+  const openLogs = (next: StackLogViewer) => { setLogError(''); if (next.kind === 'process') setProcessOutput(undefined); followOutputRef.current = true; setMenuOpen(false); setViewer(next); };
   // a stack still Starting is already up, just not yet healthy, so it can be stopped or
   // restarted; only another Start, or anything during a migration, would overlap
   const allowed = (action: StackAction) => running === undefined && stack?.operation === undefined && (stack?.transition === undefined || (stack.transition === 'starting' && (action === 'stop' || action === 'restart')));
@@ -130,19 +139,23 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
   const inProgress = busy || transitionLabel !== undefined;
   // describe the server badge state
   const stackStatus = resolveStackStatus(stack, inProgress);
-  // name an exited process and its code for the tooltip and screen readers
-  const stackDescription = stackStatus === 'exited' && stack?.process !== undefined ? `${stack.process.name} exited${stack.process.exitCode === undefined ? '' : ` (${stack.process.exitCode})`}` : stackStatus;
+  // a partial stack counts its running processes on the badge
+  const processes = stack?.processes ?? [];
+  const stackStatusText = stackStatus === 'partial' ? `${runningCount(processes)} of ${processes.length} running` : stackStatus;
+  // name each exited process and its code for the tooltip and screen readers
+  const exited = processes.filter(process => process.state === 'exited');
+  const stackDescription = stackStatus === 'exited' && exited.length > 0 ? exited.map(process => `${process.name} exited${process.exitCode === undefined ? '' : ` (${process.exitCode})`}`).join(', ') : stackStatusText;
   const label = operation !== undefined ? `${stackOperationLabel(operation)}…` : transitionLabel !== undefined ? `${transitionLabel}…` : 'Open';
   const title = operation !== undefined ? `${stackOperationLabel(operation)} stack` : transitionLabel !== undefined ? `${transitionLabel} stack` : `Project is ${status}`;
   // what the log dialog shows for each viewer: its accessible name, heading, text and footer
-  const processTitle = `${processOutput?.name ?? outputProcess ?? 'Process'} output`;
+  const processTitle = `${processOutput?.name ?? processViewer?.name ?? 'Process'} output`;
   const processWaiting = 'Waiting for process output…';
   const commandWaiting = 'Waiting for command output…';
-  const logView = viewer === 'process'
+  const logView = processViewer !== undefined
     ? { name: processTitle, title: processTitle, busy: false, text: processOutput?.output || (processOutput === undefined ? processWaiting : processOutput.state === 'stopped' ? 'The process is not running.' : 'The process has not produced output yet.'), status: processOutput === undefined ? processWaiting : processStatusLabel(processOutput) }
     : { name: 'Stack output', title: log === undefined ? 'Stack output' : log.active ? `${stackOperationLabel(log.action)} stack` : `${stackActionLabel(log.action)} output`, busy: log?.active === true, text: log?.output || (log === undefined ? commandWaiting : 'The command has not produced output yet.'), status: log === undefined ? commandWaiting : log.active ? `${stackOperationLabel(log.action)}…` : `Finished ${new Date(log.completedAt ?? log.startedAt).toLocaleTimeString()}` };
   // only a live process pane can be streamed as a Terminal
-  const terminalPane = viewer === 'process' && onOpenTerminal !== undefined && processOutput?.paneId !== undefined ? { paneId: processOutput.paneId, name: processOutput.name } : undefined;
+  const terminalPane = processViewer !== undefined && onOpenTerminal !== undefined && processOutput?.paneId !== undefined ? { paneId: processOutput.paneId, name: processOutput.name } : undefined;
   const openTerminal = terminalPane === undefined ? null : <button type="button" className="stack-log-open-terminal" title={`Open ${terminalPane.name} as a Terminal panel`} onClick={() => { setViewer(undefined); onOpenTerminal?.(terminalPane.paneId, terminalPane.name); }}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM7 9l3 3-3 3M12 15h5" /></svg>Open as Terminal</button>;
   const logIcon = <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14v12H5zM8 10l2 2-2 2M12 14h4" /></svg>;
   const splitTitle = browserOpen ? 'Close split view' : 'Open split view';
@@ -158,9 +171,9 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
   }}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1" /><path d="M12 4v16" /></svg><span>{browserOpen ? 'Close' : 'Split'}</span></button>;
   return <>
     <span className={`project-open-group${url === undefined ? ' stack-only' : ''}${hasStackActions ? ' has-stack-actions' : ''}`} ref={anchorRef} role="group" aria-label={url === undefined ? 'Stack controls' : 'Project controls'}>
-      {hasStackActions ? <button className="project-stack-toggle project-stack-trigger toolbar-button" type="button" aria-label={`Stack controls: ${stackDescription}`} data-context-flyout aria-expanded={menuOpen} title={`Stack controls · ${stackDescription}`} onClick={() => setMenuOpen(open => !open)}><span className="flyout-caret" aria-hidden="true" /><svg className="project-stack-server-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2" /><rect x="3" y="14" width="18" height="7" rx="2" /><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6" /></svg><span className="toolbar-label">Stack</span><span className="project-stack-status-text">{stackStatus}</span><i className={`project-stack-status-dot status-${stackStatus}`} aria-hidden="true" /></button> : url !== undefined && <a className={`project-open status-${status}${inProgress ? ' busy' : ''}`} href={url} target="_blank" rel="noreferrer" aria-busy={inProgress || undefined} title={title}>{inProgress ? <span className="spinner" aria-hidden="true" /> : <i aria-hidden="true" />}{label}</a>}
+      {hasStackActions ? <button className="project-stack-toggle project-stack-trigger toolbar-button" type="button" aria-label={`Stack controls: ${stackDescription}`} data-context-flyout aria-expanded={menuOpen} title={`Stack controls · ${stackDescription}`} onClick={() => setMenuOpen(open => !open)}><span className="flyout-caret" aria-hidden="true" /><svg className="project-stack-server-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2" /><rect x="3" y="14" width="18" height="7" rx="2" /><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6" /></svg><span className="toolbar-label">Stack</span><span className="project-stack-status-text">{stackStatusText}</span><i className={`project-stack-status-dot status-${stackStatus}`} aria-hidden="true" /></button> : url !== undefined && <a className={`project-open status-${status}${inProgress ? ' busy' : ''}`} href={url} target="_blank" rel="noreferrer" aria-busy={inProgress || undefined} title={title}>{inProgress ? <span className="spinner" aria-hidden="true" /> : <i aria-hidden="true" />}{label}</a>}
     </span>
-    {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="stack-menu more-menu flyout-menu" ref={flyoutRef} style={style}>{actions.map(action => <button key={action} disabled={!allowed(action)} onClick={() => void run(action)}>{operation === action ? <><span className="spinner" />{stackOperationLabel(action)}…</> : stackActionLabel(action)}</button>)}{(outputProcess !== undefined || hasStackLogs) && <hr className="more-menu-divider" />}{outputProcess !== undefined && <button className="stack-log-menu-button" type="button" onClick={() => openLogs('process')}>{logIcon}Show {outputProcess} output</button>}{hasStackLogs && <button className="stack-log-menu-button" type="button" onClick={() => openLogs('command')}>{logIcon}Show last command output</button>}{url !== undefined && <span className="project-stack-view-actions" role="group" aria-label="Project view controls">{externalControl}{splitControl}</span>}</div></FlyoutPortal>}
+    {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="stack-menu more-menu flyout-menu" ref={flyoutRef} style={style}>{actions.map(action => <button key={action} disabled={!allowed(action)} onClick={() => void run(action)}>{operation === action ? <><span className="spinner" />{stackOperationLabel(action)}…</> : stackActionLabel(action)}</button>)}{(outputProcesses.length > 0 || hasStackLogs) && <hr className="more-menu-divider" />}{outputProcesses.map(name => <button key={name} className="stack-log-menu-button" type="button" onClick={() => openLogs({ kind: 'process', name })}>{logIcon}Show {name} output</button>)}{hasStackLogs && <button className="stack-log-menu-button" type="button" onClick={() => openLogs({ kind: 'command' })}>{logIcon}Show last command output</button>}{url !== undefined && <span className="project-stack-view-actions" role="group" aria-label="Project view controls">{externalControl}{splitControl}</span>}</div></FlyoutPortal>}
     {logDialog}
   </>;
 }

@@ -12,7 +12,8 @@ import { testConfig, testWorktree } from './helpers/config.js';
 // Stack processes against a throwaway tmux server on a private socket: a real long-running
 // command stays live in its tagged window, a fresh service instance (a restarted console)
 // finds it again by those tags, a command that dies at once leaves a findable dead pane, and
-// Stop ends a command with Ctrl+C (or a kill, when it ignores that). Unix sockets are blocked
+// Stop ends a command with Ctrl+C (or a kill, when it ignores that), and several processes of
+// one Worktree share its Workspace session. Unix sockets are blocked
 // in the build sandbox, so this is skipped there and runs on the host and in CI.
 
 const tmux = execFileSync('/bin/sh', ['-c', 'command -v tmux || true'], { encoding: 'utf8' }).trim();
@@ -80,7 +81,7 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     // kept on exit, and its pane marked as a process
     expect(await tmuxAt('list-sessions', '-F', '#{session_name}')).toBe('fixture');
     await vi.waitFor(async () => { expect(await tmuxAt('display-message', '-p', '-t', '=fixture:dev', '#{@rac_worktree}|#{@rac_process}|#{remain-on-exit}|#{pane_dead}|#{@rac_role}')).toBe(`${root}|dev|on|0|process`); }, { timeout: 10_000, interval: 100 });
-    expect(await first.state(worktree)).toMatchObject({ running: true, process: { name: 'dev', state: 'running' } });
+    expect(await first.state(worktree)).toMatchObject({ running: true, processes: [{ name: 'dev', state: 'running' }] });
     const pane = await tmuxAt('display-message', '-p', '-t', '=fixture:dev', '#{pane_id}');
     expect(await first.processOutput(worktree.id, 'dev')).toMatchObject({ state: 'running', paneId: pane, output: expect.stringContaining(`dev server up in ${root}`) });
     // the Place pane listing, which admits a pane to a Terminal, holds it named for its process
@@ -89,7 +90,7 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
 
     // a restarted console keeps no memory of the process yet finds it, and Start is a no-op
     const second = service();
-    await expect(second.state(worktree)).resolves.toEqual({ running: true, process: { name: 'dev', state: 'running' } });
+    await expect(second.state(worktree)).resolves.toEqual({ running: true, processes: [{ name: 'dev', state: 'running' }] });
     await expect(second.start(worktree.id, 'start')).resolves.toBe('started');
     // still one process window beside the fixture's own (whose empty tag the trim drops)
     expect(await tmuxAt('list-windows', '-t', '=fixture:', '-F', '#{@rac_process}')).toBe('dev');
@@ -107,7 +108,7 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     const session = basename(root);
     expect((await tmuxAt('list-sessions', '-F', '#{session_name}')).split('\n').sort()).toEqual(['fixture', session].sort());
     expect(await tmuxAt('show-options', '-v', '-t', `=${session}:`, '@rac_place')).toBe(worktree.id);
-    await vi.waitFor(async () => { expect(await instance.state(worktree)).toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 3 } }); }, { timeout: 10_000, interval: 100 });
+    await vi.waitFor(async () => { expect(await instance.state(worktree)).toEqual({ running: false, processes: [{ name: 'dev', state: 'exited', exitCode: 3 }] }); }, { timeout: 10_000, interval: 100 });
     expect(await tmuxAt('capture-pane', '-p', '-J', '-S', '-', '-t', `=${session}:dev`)).toContain('missing binary');
     // "Show dev output" reads the same dead pane, with its code
     const exited = await instance.processOutput(worktree.id, 'dev');
@@ -121,7 +122,7 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     // Start after the crash respawns the command in the same pane, not a second window
     await expect(instance.start(worktree.id, 'start')).resolves.toBe('started');
     await vi.waitFor(async () => { expect(await runs()).toBe(2); }, { timeout: 10_000, interval: 100 });
-    await vi.waitFor(async () => { expect(await instance.state(worktree)).toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 3 } }); }, { timeout: 10_000, interval: 100 });
+    await vi.waitFor(async () => { expect(await instance.state(worktree)).toEqual({ running: false, processes: [{ name: 'dev', state: 'exited', exitCode: 3 }] }); }, { timeout: 10_000, interval: 100 });
     expect(await tmuxAt('list-panes', '-s', '-t', `=${session}:`, '-F', '#{pane_id}')).toBe(pane);
   });
 
@@ -160,7 +161,7 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     const [restartedPane, restartedPid] = (await tmuxAt('display-message', '-p', '-t', '=fixture:dev', '#{pane_id} #{pane_pid}')).split(' ');
     expect(restartedPane).toBe(pane);
     expect(restartedPid).not.toBe(pid);
-    await vi.waitFor(async () => { expect(await instance.state(worktree)).toMatchObject({ running: true, process: { name: 'dev', state: 'running' } }); }, { timeout: 10_000, interval: 100 });
+    await vi.waitFor(async () => { expect(await instance.state(worktree)).toMatchObject({ running: true, processes: [{ name: 'dev', state: 'running' }] }); }, { timeout: 10_000, interval: 100 });
     await vi.waitFor(async () => { expect(await tmuxAt('capture-pane', '-p', '-J', '-t', '=fixture:dev')).toContain('dev up'); }, { timeout: 10_000, interval: 100 });
 
     await tmuxAt('copy-mode', '-t', '=fixture:dev');
@@ -169,7 +170,7 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     // well inside the 10 s budget, so Ctrl+C ended it rather than the kill
     expect(Date.now() - began).toBeLessThan(5_000);
     expect(await interrupts()).toBe(2);
-    await expect(instance.state(worktree)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    await expect(instance.state(worktree)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
     // the Workspace session and its own window outlive the process window
     expect(await tmuxAt('list-windows', '-t', '=fixture:', '-F', '#{window_name}')).not.toContain('dev');
   }, 40_000);
@@ -183,15 +184,32 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     await vi.waitFor(async () => { expect(await tmuxAt('capture-pane', '-p', '-J', '-t', '=fixture:dev')).toContain('stubborn up'); }, { timeout: 10_000, interval: 100 });
     const pid = Number((await readFile(join(root, 'pid'), 'utf8')).trim());
     await expect(instance.start(worktree.id, 'stop')).resolves.toBe('started');
-    await expect(instance.state(worktree)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    await expect(instance.state(worktree)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
     expect(await tmuxAt('list-windows', '-t', '=fixture:', '-F', '#{window_name}')).not.toContain('dev');
     // the command itself is gone, not just its window
     await vi.waitFor(() => { expect(() => process.kill(pid, 0)).toThrow(); }, { timeout: 5_000, interval: 100 });
   }, 30_000);
 
+  // several processes of one Worktree share the Workspace session the first one makes
+  it('runs two processes as one stack in one Workspace session, and stops them both', async () => {
+    const { root, tmuxAt } = await fixture('exec sleep 300');
+    const worktree = testWorktree({ id: `proj:${root}`, projectId: 'proj', path: root, commands: { processes: { api: 'echo "api up"; exec sleep 300', web: 'echo "web up"; exec sleep 300' } } });
+    const instance = new WorktreeCommandService(testConfig(), { worktreesNow: () => [worktree] } as never);
+
+    await expect(instance.start(worktree.id, 'start')).resolves.toBe('started');
+    const session = basename(root);
+    expect((await tmuxAt('list-sessions', '-F', '#{session_name}')).split('\n').sort()).toEqual(['fixture', session].sort());
+    expect((await tmuxAt('list-windows', '-t', `=${session}:`, '-F', '#{@rac_process}')).split('\n')).toEqual(['api', 'web']);
+    for (const name of ['api', 'web']) await vi.waitFor(async () => { expect(await tmuxAt('capture-pane', '-p', '-J', '-t', `=${session}:${name}`)).toContain(`${name} up`); }, { timeout: 10_000, interval: 100 });
+    await expect(instance.state(worktree)).resolves.toMatchObject({ running: true, processes: [{ name: 'api', state: 'running' }, { name: 'web', state: 'running' }] });
+
+    await expect(instance.start(worktree.id, 'stop')).resolves.toBe('started');
+    await expect(instance.state(worktree)).resolves.toEqual({ running: false, processes: [{ name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped' }] });
+  }, 40_000);
+
   it('reports a process stopped before it ever ran, and makes no session by reading', async () => {
     const { worktree, service, tmuxAt } = await fixture('exec sleep 300');
-    await expect(service().state(worktree)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    await expect(service().state(worktree)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
     expect(await tmuxAt('list-sessions', '-F', '#{session_name}')).toBe('fixture');
   });
 });

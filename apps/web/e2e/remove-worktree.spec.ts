@@ -141,6 +141,15 @@ test('prunes a project\'s stale checkouts from the launcher header', async ({ pa
   await expect(dialog).toBeHidden();
 });
 
+test('lists every running Stack process the removal stops', async ({ page }) => {
+  await stub(page, { removal: { ...facts, dirtyCount: 0, stopsProcesses: ['sync', 'web'] } });
+  await page.goto('/');
+  await page.locator('.new-agent-tab').click();
+  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Remove Repo · feat' }).click();
+  const stops = page.getByRole('dialog', { name: 'Remove worktree' }).locator('.remove-worktree-facts li').filter({ hasText: 'running Stack process' });
+  await expect(stops).toHaveText(['Stops sync, its running Stack process', 'Stops web, its running Stack process']);
+});
+
 test('names the running Stack process the removal stops, without blocking it', async ({ page }) => {
   let deleted: unknown;
   await stub(page, { removal: { ...facts, dirtyCount: 0, stopsProcesses: ['dev'] }, onDelete: body => { deleted = body; } });

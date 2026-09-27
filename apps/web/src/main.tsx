@@ -49,7 +49,7 @@ const actionIconPaths = {
 // the fields the web reads off the server's inline-question payload; the server
 // also carries targetPaneId for its own keystroke targeting, which the web ignores
 type InlineQuestion = { id: string; text: string; choices: string[]; descriptions?: string[]; source: 'structured' | 'parsed' };
-type Stack = { actions: StackAction[]; running?: boolean; transition?: 'starting'|'migrating'; operation?: StackAction; tunnel?: boolean; process?: StackProcessState };
+type Stack = { actions: StackAction[]; running?: boolean; transition?: 'starting'|'migrating'; operation?: StackAction; tunnel?: boolean; processes?: StackProcessState[] };
 type PullRequestChoice = { number: number; title: string; branch: string; draft: boolean; url: string } & Pick<PullRequestSummary, 'checks' | 'issues'>;
 type PullRequestWorktree = { worktreeId: string; worktreeName: string; agentId?: string };
 type SwitchablePullRequest = PullRequestChoice & { checkedOut: boolean; openIn?: PullRequestWorktree };
@@ -6672,7 +6672,6 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, 
   const visibleLaunch = launch ?? globalLaunch;
   const place = workspace?.place;
   const worktreeId = place?.worktreeId;
-  const processName = place?.stack?.process?.name;
   // the Place whose Terminals a Stack process's "Open as Terminal" joins
   const placeId = place?.id;
   // a Worktree shows its git status, a directory-Project or Scratch Place its path; an Agent the
@@ -6697,7 +6696,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, 
     {phone && !settingsSplit?.open && workspace?.carousel !== undefined && workspace.carousel.panels.length > 1 ? <PanelDots carousel={workspace.carousel} /> : <span className="toolbar-spacer" aria-hidden="true" />}
     {cleanupControl}
     {workspace !== undefined && (hasGit ? <WorkspaceGitStatus workspace={workspace} actions={git} onToggle={onGitToggle} /> : place?.path !== undefined && <span className="toolbar-path" title={place.path}>{place.path}</span>)}
-    {workspace !== undefined && <ProjectOpen url={place?.projectUrl} stack={place?.stack} browserOpen={workspace.browser.open} onBrowserToggle={workspace.browser.toggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} onProcessOutput={worktreeId === undefined || processName === undefined ? undefined : () => processOutput(worktreeId, processName)} onOpenTerminal={placeId === undefined ? undefined : (paneId, name) => { /* on a phone an already-open panel is scrolled to; a new one comes into view as it opens */ workspace.carousel?.show(paneId); requestTerminalFocus(placeId, { paneId, name }); }} />}
+    {workspace !== undefined && <ProjectOpen url={place?.projectUrl} stack={place?.stack} browserOpen={workspace.browser.open} onBrowserToggle={workspace.browser.toggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} onProcessOutput={worktreeId === undefined ? undefined : name => processOutput(worktreeId, name)} onOpenTerminal={placeId === undefined ? undefined : (paneId, name) => { /* on a phone an already-open panel is scrolled to; a new one comes into view as it opens */ workspace.carousel?.show(paneId); requestTerminalFocus(placeId, { paneId, name }); }} />}
     {menu !== undefined && <PlaceMenu {...menu} panels={menuPanels} />}
   </div></section>;
 }

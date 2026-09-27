@@ -106,8 +106,8 @@ export const renderStartingProcessControls = (root: HTMLElement) => {
 export const renderExitedProcessStatuses = (root: HTMLElement) => {
   const ignoreStackAction = () => {};
   createRoot(root).render(createElement('div', {},
-    createElement(ProjectOpen, { stack: { actions: ['start', 'stop', 'restart'], running: false, tunnel: false, process: { name: 'dev', state: 'exited', exitCode: 127 } }, onStackAction: ignoreStackAction }),
-    createElement(ProjectOpen, { stack: { actions: ['start', 'stop', 'restart'], running: false, process: { name: 'dev', state: 'exited' } }, onStackAction: ignoreStackAction })
+    createElement(ProjectOpen, { stack: { actions: ['start', 'stop', 'restart'], running: false, tunnel: false, processes: [{ name: 'dev', state: 'exited', exitCode: 127 }] }, onStackAction: ignoreStackAction }),
+    createElement(ProjectOpen, { stack: { actions: ['start', 'stop', 'restart'], running: false, processes: [{ name: 'dev', state: 'exited' }] }, onStackAction: ignoreStackAction })
   ));
 };
 
@@ -125,9 +125,9 @@ export const renderStoppedProcessStatuses = (root: HTMLElement) => {
   const ignoreStackAction = () => {};
   const processActions: StackAction[] = ['start', 'stop', 'restart'];
   createRoot(root).render(createElement('div', {},
-    createElement(ProjectOpen, { stack: { actions: processActions, running: false, tunnel: true, process: { name: 'dev', state: 'stopped' } }, onStackAction: ignoreStackAction }),
-    createElement(ProjectOpen, { stack: { actions: processActions, running: false, tunnel: false, process: { name: 'dev', state: 'stopped' } }, onStackAction: ignoreStackAction }),
-    createElement(ProjectOpen, { stack: { actions: processActions, running: true, tunnel: false, process: { name: 'dev', state: 'running' } }, onStackAction: ignoreStackAction }),
+    createElement(ProjectOpen, { stack: { actions: processActions, running: false, tunnel: true, processes: [{ name: 'dev', state: 'stopped' }] }, onStackAction: ignoreStackAction }),
+    createElement(ProjectOpen, { stack: { actions: processActions, running: false, tunnel: false, processes: [{ name: 'dev', state: 'stopped' }] }, onStackAction: ignoreStackAction }),
+    createElement(ProjectOpen, { stack: { actions: processActions, running: true, tunnel: false, processes: [{ name: 'dev', state: 'running' }] }, onStackAction: ignoreStackAction }),
     createElement(ProjectOpen, { stack: { actions: ['start', 'stop'], running: false, tunnel: false }, onStackAction: ignoreStackAction })
   ));
 };
@@ -138,7 +138,7 @@ export const renderStoppedProcessStatuses = (root: HTMLElement) => {
 export const renderProcessOutputControls = (root: HTMLElement) => {
   let reads = 0;
   createRoot(root).render(createElement(ProjectOpen, {
-    stack: { actions: ['start', 'stop', 'build', 'restart'], running: true, process: { name: 'dev', state: 'running' } },
+    stack: { actions: ['start', 'stop', 'build', 'restart'], running: true, processes: [{ name: 'dev', state: 'running' }] },
     onStackAction: () => {},
     onStackLog: async () => ({ action: 'build', active: false, startedAt: '2026-09-26T10:00:00.000Z', completedAt: '2026-09-26T10:01:00.000Z', output: 'built in 3s' }),
     onOpenTerminal: recordOpenedTerminal,
@@ -154,10 +154,25 @@ export const renderProcessOutputControls = (root: HTMLElement) => {
 // render a Stack process with no one-shot commands, which has died
 export const renderExitedProcessOutputControls = (root: HTMLElement) => {
   createRoot(root).render(createElement(ProjectOpen, {
-    stack: { actions: ['start', 'stop', 'restart'], running: false, process: { name: 'dev', state: 'exited', exitCode: 127 } },
+    stack: { actions: ['start', 'stop', 'restart'], running: false, processes: [{ name: 'dev', state: 'exited', exitCode: 127 }] },
     onStackAction: () => {},
     onStackLog: async () => undefined,
     onOpenTerminal: recordOpenedTerminal,
     onProcessOutput: async () => ({ name: 'dev', state: 'exited', exitCode: 127, output: 'bash: line 1: pnpm: command not found' })
   }));
+};
+
+// render a stack of several Stack processes: partly running with a healthy tunnel (the partial
+// count wins), and with one crashed (exited wins, naming it). The first reads each process's
+// output by the name it is asked for.
+export const renderSeveralProcessStatuses = (root: HTMLElement) => {
+  const processActions: StackAction[] = ['start', 'stop', 'restart'];
+  createRoot(root).render(createElement('div', {},
+    createElement(ProjectOpen, {
+      stack: { actions: processActions, tunnel: true, processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'stopped' }, { name: 'web', state: 'running' }] },
+      onStackAction: () => {},
+      onProcessOutput: async (name: string) => ({ name, state: name === 'api' ? 'stopped' : 'running', output: name === 'api' ? '' : `${name} ready` })
+    }),
+    createElement(ProjectOpen, { stack: { actions: processActions, tunnel: false, processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'exited', exitCode: 1 }, { name: 'web', state: 'exited', exitCode: 2 }] }, onStackAction: () => {} })
+  ));
 };
