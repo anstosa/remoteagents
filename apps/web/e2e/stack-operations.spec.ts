@@ -392,3 +392,100 @@ test('keeps the menu of a single Stack process compact, without a process sectio
   await expect(page.locator('.stack-menu .stack-process')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Show dev output', exact: true })).toBeVisible();
 });
+
+// a process's notices show in its own section, and a warning marks the badge on top of its state
+test("shows a Stack process's notices in its menu section, and a warning marker on the badge", async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderProcessNoticeControls } = await import('/e2e/project-open-fixture.tsx');
+    renderProcessNoticeControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  const warned = page.getByRole('button', { name: 'Stack controls: running, warning: static is not running (obsidian-static master)', exact: true });
+  await expect(warned.locator('.project-stack-status-text')).toHaveText('running');
+  await expect(warned.locator('.project-stack-status-dot.status-running')).toBeVisible();
+  await expect(warned.locator('.project-stack-warning')).toBeVisible();
+  await expect(warned).toHaveAttribute('title', 'Stack controls · running\n⚠ static is not running (obsidian-static master)');
+
+  await warned.click();
+  const api = page.getByRole('group', { name: 'api process' });
+  await expect(api.getByRole('listitem')).toHaveText(['static is not running (obsidian-static master)', 'using the cached schema']);
+  await expect(api.locator('.stack-process-notice.level-warning')).toHaveCount(1);
+  await expect(page.getByRole('group', { name: 'web process' }).getByRole('listitem')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  // a lone process has no section; its notices show in the compact menu, and info marks nothing
+  const lone = page.getByRole('button', { name: 'Stack controls: dev exited (1)', exact: true });
+  await expect(lone.locator('.project-stack-warning')).toHaveCount(0);
+  await lone.click();
+  await expect(page.locator('.stack-menu .stack-process')).toHaveCount(0);
+  await expect(page.getByRole('list', { name: 'dev notices' }).getByRole('listitem')).toHaveText(['waiting for the database']);
+});
+
+// a notice naming another Worktree's stopped process starts it there while this menu stays open
+test("starts a notice's process in another Worktree from the stack menu, showing a failure inline", async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderNoticeTargetControls } = await import('/e2e/project-open-fixture.tsx');
+    renderNoticeTargetControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+  const starts = () => page.evaluate(() => (window as unknown as { noticeStarts?: string[] }).noticeStarts);
+
+  await page.getByRole('button', { name: /^Stack controls: running, warning/u }).click();
+  const menu = page.locator('.stack-menu');
+  const notices = menu.getByRole('list', { name: 'api notices' }).getByRole('listitem');
+  const down = notices.filter({ hasText: 'static is not running' });
+  // a resolved target offers Open, and Start only for a declared process that is not running
+  await expect(down.getByRole('button', { name: 'Open Static · master', exact: true })).toBeVisible();
+  await expect(down.getByRole('button', { name: 'Start static in Static · master', exact: true })).toBeVisible();
+  const undeclared = notices.filter({ hasText: 'docs are stale' });
+  await expect(undeclared.getByRole('button', { name: 'Open Static · master', exact: true })).toBeVisible();
+  await expect(undeclared.getByRole('button', { name: /^Start/u })).toHaveCount(0);
+  await expect(notices.filter({ hasText: 'using the cached schema' }).getByRole('button')).toHaveCount(0);
+  // a notice naming this stack's own Worktree has nothing to Open
+  await expect(notices.filter({ hasText: 'reloading the config' }).getByRole('button')).toHaveCount(0);
+
+  // a failed Start shows its error on the notice and offers Start again
+  await page.evaluate(() => { (window as unknown as { noticeStartError?: string }).noticeStartError = 'stack operation already running'; });
+  await down.getByRole('button', { name: 'Start static in Static · master', exact: true }).click();
+  await expect(down.getByRole('status')).toHaveText('Starting static…');
+  await expect(down.getByRole('button')).toHaveCount(0);
+  await expect(down.getByRole('alert')).toHaveText('Start failed: stack operation already running');
+  await expect(down.getByRole('button', { name: 'Start static in Static · master', exact: true })).toBeVisible();
+  await expect(menu).toBeVisible();
+
+  // a Start sends the other Worktree's request, shows Starting with the menu open, and the
+  // notice hides once the next state shows the process running
+  await down.getByRole('button', { name: 'Start static in Static · master', exact: true }).click();
+  await expect(down.getByRole('status')).toHaveText('Starting static…');
+  await expect(down.getByRole('alert')).toHaveCount(0);
+  // the request returned, but the state still reads stopped: the notice keeps showing Starting
+  await page.waitForFunction(() => (window as unknown as { releaseNoticeStart?: unknown }).releaseNoticeStart !== undefined);
+  await page.waitForTimeout(500);
+  await expect(down.getByRole('status')).toHaveText('Starting static…');
+  await expect(down.getByRole('button')).toHaveCount(0);
+  await page.evaluate(() => (window as unknown as { releaseNoticeStart: () => void }).releaseNoticeStart());
+  await expect(down).toHaveCount(0);
+  await expect(menu).toBeVisible();
+  await expect(notices).toHaveText(['docs are stale', 'using the cached schema', 'reloading the config'].map(message => new RegExp(`^${message}`, 'u')));
+  expect(await starts()).toEqual(['site:/code/static static', 'site:/code/static static']);
+  await expect(page.getByRole('button', { name: 'Stack controls: running', exact: true })).toBeVisible();
+});
+
+// Open switches to the notice's Worktree and opens that Worktree's stack menu
+test("opens a notice's Worktree with its stack menu open", async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderNoticeTargetControls } = await import('/e2e/project-open-fixture.tsx');
+    renderNoticeTargetControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  await page.getByRole('button', { name: /^Stack controls: running, warning/u }).click();
+  await page.getByRole('list', { name: 'api notices' }).getByRole('listitem').filter({ hasText: 'static is not running' }).getByRole('button', { name: 'Open Static · master', exact: true }).click();
+  expect(await page.evaluate(() => (window as unknown as { openedTargets?: string[] }).openedTargets)).toEqual(['site:/code/static']);
+  await expect(page.getByRole('button', { name: 'Stack controls: stopped', exact: true })).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('.stack-menu').getByRole('button', { name: 'Start stack', exact: true })).toBeEnabled();
+});

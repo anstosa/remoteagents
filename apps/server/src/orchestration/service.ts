@@ -13,7 +13,7 @@ import type { TmuxAdapter } from '../tmux/adapter.js';
 import type { NewTaskService } from '../new-task/service.js';
 import type { WorkspaceFileService, WorkspaceFilePreview } from '../workspace-files/service.js';
 import { configuredWorktreeForWorkspace, worktreeById } from '../workspaces/resolver.js';
-import { processActions, type WorktreeCommandService } from '../worktree-commands/service.js';
+import { processActions, type StackState, type WorktreeCommandService } from '../worktree-commands/service.js';
 import type {
   AgentStatusV1,
   AnswerQuestionInputV1,
@@ -33,6 +33,7 @@ import type {
   RemoveQueuedPromptInputV1,
   ReviewStatusV1,
   RunStackActionInputV1,
+  StackStateV1,
   StackStatusV1,
   SwitchPullRequestInputV1,
   StartReviewInputV1,
@@ -41,6 +42,13 @@ import type {
   WorktreeStatusV1
 } from './contracts.js';
 import { orchestrationContractVersion } from './contracts.js';
+
+// A stack's state as integrations read it: each process carries only the fields the contract
+// names, so Process notices, and whatever else the console's own menu gains, stay out of it.
+const integrationStack = (state: StackState): Omit<StackStateV1, 'actions'> => state.processes === undefined ? state : {
+  ...state,
+  processes: state.processes.map(({ name, state: processState, exitCode, operation }) => ({ name, state: processState, ...(exitCode === undefined ? {} : { exitCode }), ...(operation === undefined ? {} : { operation }) }))
+};
 
 const maxIdentifierLength = 240;
 const maxFilePathLength = 512;
@@ -236,7 +244,7 @@ export class OrchestrationService {
         ...(primary?.gitPrStatus === undefined ? {} : { gitPrStatus: primary.gitPrStatus }),
         ...(primary?.gitUpstream === undefined ? {} : { gitUpstream: primary.gitUpstream }),
         ...(primary?.pullRequest === undefined ? {} : { pullRequest: primary.pullRequest }),
-        ...(stack === undefined ? {} : { stack: { actions: this.dependencies.worktreeCommands.actions(worktree), ...stack } }),
+        ...(stack === undefined ? {} : { stack: { actions: this.dependencies.worktreeCommands.actions(worktree), ...integrationStack(stack) } }),
         ...(review === undefined ? {} : { review })
       };
     });
@@ -441,7 +449,7 @@ export class OrchestrationService {
         this.dependencies.worktreeCommands.state(worktree),
         this.dependencies.worktreeCommands.log(worktreeId)
       ]);
-      return success({ actions: this.dependencies.worktreeCommands.actions(worktree), ...state, ...(log === undefined ? {} : { log: { ...log, output: redactIntegrationText(log.output) } }) });
+      return success({ actions: this.dependencies.worktreeCommands.actions(worktree), ...integrationStack(state), ...(log === undefined ? {} : { log: { ...log, output: redactIntegrationText(log.output) } }) });
     });
   }
 

@@ -1,7 +1,7 @@
 import { createElement, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ProjectOpen } from '../src/project-open.js';
-import { isStackProcessOutput, type StackAction, type StackProcessState } from '../src/stack-operations.js';
+import { isStackProcessOutput, type ProcessNotice, type ProcessNoticeTarget, type StackAction, type StackProcessState, type StartableNoticeTarget } from '../src/stack-operations.js';
 
 // render controls during an active operation
 export const renderProjectOpen = (root: HTMLElement) => {
@@ -212,4 +212,68 @@ export const renderProcessOperationControls = (root: HTMLElement) => {
     }),
     createElement(ProjectOpen, { stack: { actions: ['start', 'stop', 'restart'], running: true, processes: [{ name: 'dev', state: 'running', operation: 'stop' }] }, onStackAction: () => {}, onProcessAction: () => {} })
   ));
+};
+
+// render stacks whose processes reported Process notices: several processes, one carrying a
+// warning that names another Worktree's process and an info notice, and a lone process whose
+// only notice is info, which puts no warning on the badge
+export const renderProcessNoticeControls = (root: HTMLElement) => {
+  const processActions: StackAction[] = ['start', 'stop', 'restart'];
+  createRoot(root).render(createElement('div', {},
+    createElement(ProjectOpen, {
+      stack: { actions: processActions, running: true, processes: [
+        { name: 'api', state: 'running', notices: [
+          { level: 'warning', message: 'static is not running (obsidian-static master)', target: { worktreeId: 'site:/code/static', label: 'Static · master', process: 'static', state: 'stopped' } },
+          { level: 'info', message: 'using the cached schema' }
+        ] },
+        { name: 'web', state: 'running' }
+      ] },
+      onStackAction: () => {},
+      onProcessAction: () => {}
+    }),
+    createElement(ProjectOpen, {
+      stack: { actions: processActions, running: false, processes: [{ name: 'dev', state: 'exited', exitCode: 1, notices: [{ level: 'info', message: 'waiting for the database' }] }] },
+      onStackAction: () => {}
+    })
+  ));
+};
+
+// what a notice's Open and Start asked for, the error the next Start fails with, and how a spec
+// lets a successful Start land in the next state
+type NoticeActions = { openedTargets?: string[]; noticeStarts?: string[]; noticeStartError?: string; releaseNoticeStart?: () => void };
+
+// render the stack controls of two Worktrees, only one showing at a time as a tab does: App's
+// `api` reports that Static's `static` is down, and the notice hides while `static` runs, as the
+// console hides it, and another names App itself. A notice's Open shows Static with its stack
+// menu requested; its Start is held briefly, fails with `noticeStartError` when a spec sets one,
+// and otherwise returns, landing in the next state only when the spec calls `releaseNoticeStart`.
+export const renderNoticeTargetControls = (root: HTMLElement) => {
+  const processActions: StackAction[] = ['start', 'stop', 'restart'];
+  const Controls = () => {
+    const [shown, setShown] = useState<'app'|'static'>('app');
+    const [staticState, setStaticState] = useState<'running'|'stopped'>('stopped');
+    const record = window as unknown as NoticeActions;
+    const staticTarget = { worktreeId: 'site:/code/static', label: 'Static · master' };
+    const notices: ProcessNotice[] = [
+      ...staticState === 'running' ? [] : [{ level: 'warning' as const, message: 'static is not running (obsidian-static master)', target: { ...staticTarget, process: 'static', state: staticState } }],
+      { level: 'info', message: 'docs are stale', target: { ...staticTarget, process: 'docs' } },
+      { level: 'info', message: 'using the cached schema' },
+      { level: 'info', message: 'reloading the config', target: { worktreeId: 'app:/code/app', label: 'App · main' } }
+    ];
+    const onOpenNoticeTarget = (target: ProcessNoticeTarget) => {
+      record.openedTargets = [...record.openedTargets ?? [], target.worktreeId];
+      setShown('static');
+    };
+    const onStartNoticeTarget = async (target: StartableNoticeTarget) => {
+      record.noticeStarts = [...record.noticeStarts ?? [], `${target.worktreeId} ${target.process}`];
+      await new Promise(resolve => window.setTimeout(resolve, 300));
+      const error = record.noticeStartError;
+      if (error !== undefined) { delete record.noticeStartError; throw new Error(error); }
+      record.releaseNoticeStart = () => setStaticState('running');
+    };
+    return shown === 'app'
+      ? createElement(ProjectOpen, { key: 'app', worktreeId: 'app:/code/app', stack: { actions: processActions, running: true, processes: [{ name: 'api', state: 'running', notices }, { name: 'web', state: 'running' }] }, onStackAction: () => {}, onProcessAction: () => {}, onOpenNoticeTarget, onStartNoticeTarget })
+      : createElement(ProjectOpen, { key: 'static', stack: { actions: processActions, running: staticState === 'running', processes: [{ name: 'static', state: staticState }] }, onStackAction: () => {}, menuRequested: true });
+  };
+  createRoot(root).render(createElement(Controls));
 };

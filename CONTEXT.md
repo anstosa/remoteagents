@@ -160,6 +160,10 @@ _Avoid_: Scripts, tasks
 A named, long-running foreground command a Project or Worktree declares (`dev: pnpm dev`), in place of daemon-style start/stop/status commands. A Worktree may declare several, run as one stack, and a process may name others of the same Worktree it `dependsOn`: Start opens them dependencies first, ties in config order, and Stop stops them in reverse. Each can also be started, stopped or restarted alone; starting one first starts whatever it depends on that is not running. `dependsOn` orders starts only and never waits for readiness. Each runs as a tagged window of its Worktree's Workspace session, found again by those tags, so it outlives a console restart; the console starts, stops (Ctrl+C, then a kill), and reads its state straight from that window. Its output since it last started is also written to `rac/processes/<name>.log` in the Worktree's git directory, where an agent finds it with `git rev-parse --git-path`. The one-shot Stack commands still run beside it. It never blocks a Remove: the Remove stops it first.
 _Avoid_: Dev server, daemon, service, background job
 
+**Process notice**:
+A short message a Stack process reports to the console about its own run, by writing JSON to the file the console names in `RAC_PROCESS_NOTICES`, optionally naming a process in another Worktree that it needs. It shows under its process in the stack menu, a warning marks the stack badge, and one naming a process hides while that process runs. One naming another Worktree offers Open, which switches to it, and, for a declared process there that is not running, Start, which the operator clicks; the console never starts it on its own. It lasts until its process next starts or stops.
+_Avoid_: Alert, health check, status message
+
 ### Reviewing changes
 
 **Change**:

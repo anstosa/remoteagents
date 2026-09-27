@@ -340,6 +340,31 @@ within a tick — no config edit or restart.
   cannot set the log up (git cannot name the git directory, or `rac/processes`
   cannot be made or is a symlink), the process still starts without it and the
   console logs why; a file the host cannot create goes unreported.
+  A process can report **Process notices** to the console: every Start
+  exports `RAC_PROCESS_NOTICES`, the host path of
+  `rac/processes/<name>.notices.json` beside the log, after removing that
+  file, and a Stop removes it too, so a notice lasts until the process next
+  starts or stops. The process writes a JSON array to it:
+  `[{ "level": "warning", "message": "static is not running", "worktree": "/code/static", "process": "static" }]`.
+  `level` is `warning` (the default) or `info`; `message` is plain text of at
+  most 500 characters; `worktree` (optional) is the absolute path of a
+  checkout of any configured Project, and `process` (optional, needs
+  `worktree`) a Stack process that checkout declares. The notices show in the
+  process's part of the stack menu, and a `warning` puts a marker on the stack
+  badge whose tooltip lists them. A notice naming a declared process hides
+  while that process runs and shows again when it stops or exits. A notice
+  naming a checkout offers **Open**, which switches to that Worktree (in a
+  new tab if it has none) with its stack menu open, and one naming a declared
+  process that is not running offers **Start**, which sends that Worktree's
+  own Start for the process (starting its `dependsOn` too) while the current
+  menu stays open. Only the
+  operator's click starts it; the console never does on its own. The console
+  rereads the file only when it changes; a file over 64 KB, not valid JSON,
+  or not matching that shape is ignored whole and logged, and only the first
+  20 notices are read. One-shot commands get no notices file. An agent in the
+  checkout can write that file as well as the process can, so a notice is
+  plain text the console shows, never markup, and is only as trustworthy as
+  whatever can write the Worktree's git directory.
   "Show last command output" is the
   latest `build` or `migrate` run. Remove stops every running process before it
   removes the checkout, and its confirmation lists them. A process name is

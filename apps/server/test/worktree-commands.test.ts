@@ -1754,6 +1754,218 @@ describe('Stack process log file', () => {
   });
 });
 
+describe('Stack process notices', () => {
+  const warn = quietWarnings();
+  const stopTiming = { timeoutMs: 60, pollMs: 5 };
+  const repositories: string[] = [];
+  beforeEach(() => { delete process.env.RAC_HOST_TMUX_DIR; delete process.env.RAC_HOST_PATH; });
+  afterEach(async () => { for (const root of repositories.splice(0)) await rm(root, { recursive: true, force: true }); });
+  // a real checkout, so git names its git directory, where each process's notices file goes
+  const checkout = async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'rac-process-notices-')));
+    repositories.push(root);
+    execFileSync('/usr/bin/git', ['init', '-q', root]);
+    return root;
+  };
+  const noticesFile = (root: string, name: string) => join(root, '.git', 'rac', 'processes', `${name}.notices.json`);
+  const report = async (root: string, name: string, notices: unknown) => {
+    await mkdir(dirname(noticesFile(root, name)), { recursive: true });
+    await writeFile(noticesFile(root, name), JSON.stringify(notices));
+  };
+  const service = (tmux: ReturnType<typeof fakeTmux>, worktrees: Worktree[]) => new WorktreeCommandService(config, { worktreesNow: () => worktrees } as never, tmux.command, undefined, undefined, undefined, stopTiming);
+  const processWindow = (tmux: ReturnType<typeof fakeTmux>, name: string) => tmux.windows.find(entry => entry.options.get('@rac_process') === name);
+  // the Worktree whose process reports, and another Project's Worktree whose `static` it names
+  const reporter = (root: string) => testWorktree({ id: `proj:${root}`, projectId: 'proj', path: root, commands: { processes: { api: 'ods exec api', web: 'ods exec web' } } });
+  const peer = testWorktree({ id: 'site:/worktrees/static', projectId: 'site', label: 'Static · master', path: '/worktrees/static', commands: { processes: { static: 'ods exec static' } } });
+  const statesOf = async (instance: WorktreeCommandService, worktree: Worktree) => (await instance.state(worktree)).processes;
+
+  it("clears a process's notices file and names it in RAC_PROCESS_NOTICES on every Start", async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    await report(root, 'api', [{ message: 'from the last run' }]);
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    // whether the file was still there when the command started, which could then write its own
+    const leftForCommand: boolean[] = [];
+    const command = async (binary: string, args: string[]) => {
+      if (args[0] === 'respawn-pane' && args.includes('/bin/bash')) leftForCommand.push(existsSync(noticesFile(root, 'api')));
+      return await tmux.command(binary, args);
+    };
+
+    await expect(new WorktreeCommandService(config, { worktreesNow: () => [cora] } as never, command).start(cora.id, 'start', 'api')).resolves.toBe('started');
+
+    expect(leftForCommand).toEqual([false]);
+    expect(existsSync(noticesFile(root, 'api'))).toBe(false);
+    expect(processWindow(tmux, 'api')?.command.at(-1)).toContain(`export RAC_PROCESS_NOTICES='${noticesFile(root, 'api')}'; `);
+  });
+
+  it('names the host path of a bridged checkout in RAC_PROCESS_NOTICES', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    const root = await checkout();
+    const cora = testWorktree({ id: `proj:${root}`, projectId: 'proj', path: root, hostPath: '/host/cora', commands: { processes: { dev: 'pnpm dev' } } });
+    const tmux = fakeTmux();
+
+    await expect(service(tmux, [cora]).start(cora.id, 'start')).resolves.toBe('started');
+
+    expect(processWindow(tmux, 'dev')?.command.at(-1)).toContain("export RAC_PROCESS_NOTICES='/host/cora/.git/rac/processes/dev.notices.json'; ");
+  });
+
+  it('clears the notices of a process Stop or Restart touches, and keeps those of one Start leaves alone', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    tmux.seedProcess('cora', root, 'api');
+    tmux.seedProcess('cora', root, 'web');
+    const instance = service(tmux, [cora]);
+
+    await report(root, 'api', [{ message: 'api' }]);
+    await report(root, 'web', [{ message: 'web' }]);
+    await expect(instance.start(cora.id, 'start')).resolves.toBe('started');
+    expect([existsSync(noticesFile(root, 'api')), existsSync(noticesFile(root, 'web'))]).toEqual([true, true]);
+
+    await expect(instance.start(cora.id, 'stop', 'web')).resolves.toBe('started');
+    expect([existsSync(noticesFile(root, 'api')), existsSync(noticesFile(root, 'web'))]).toEqual([true, false]);
+
+    await expect(instance.start(cora.id, 'restart', 'api')).resolves.toBe('started');
+    expect(existsSync(noticesFile(root, 'api'))).toBe(false);
+
+    await report(root, 'api', [{ message: 'api' }]);
+    await report(root, 'web', [{ message: 'web' }]);
+    await expect(instance.start(cora.id, 'stop')).resolves.toBe('started');
+    expect([existsSync(noticesFile(root, 'api')), existsSync(noticesFile(root, 'web'))]).toEqual([false, false]);
+  });
+
+  it('makes no directory to stop a process that never had one', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const tmux = fakeTmux();
+    tmux.seedProcess('cora', root, 'api');
+
+    await expect(service(tmux, [cora]).start(cora.id, 'stop')).resolves.toBe('started');
+
+    expect(existsSync(join(root, '.git', 'rac'))).toBe(false);
+  });
+
+  // Start refuses to write there, so a notices file behind a symlink is not one it could clear
+  it('reads no notices through a symlinked directory', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const elsewhere = join(root, 'elsewhere');
+    await mkdir(join(elsewhere, 'processes'), { recursive: true });
+    await writeFile(join(elsewhere, 'processes', 'api.notices.json'), JSON.stringify([{ message: 'planted' }]));
+    await symlink(elsewhere, join(root, '.git', 'rac'));
+
+    await expect(statesOf(service(fakeTmux(), [cora]), cora)).resolves.toEqual([{ name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped' }]);
+  });
+
+  it('asks git for the directory only once a while, even when it cannot name one', async () => {
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', commands: { processes: { dev: 'pnpm dev' } } });
+    const tmux = fakeTmux();
+    const instance = service(tmux, [cora]);
+
+    await instance.state(cora);
+    await instance.state(cora);
+
+    expect(tmux.gitCalls).toHaveLength(1);
+  });
+
+  it('gives a one-shot command no notices file', async () => {
+    const root = await checkout();
+    const cora = testWorktree({ id: `proj:${root}`, projectId: 'proj', path: root, commands: { processes: { dev: 'pnpm dev' }, build: 'pnpm build' } });
+    const tmux = fakeTmux();
+
+    await expect(service(tmux, [cora]).start(cora.id, 'build')).resolves.toBe('started');
+
+    const build = tmux.windows.find(entry => entry.session.endsWith('-exclusive'));
+    expect(build?.command.at(-1)).toContain('pnpm build');
+    expect(build?.command.at(-1)).not.toContain('RAC_PROCESS_NOTICES');
+  });
+
+  it('serves the notices a process wrote on that process, and none on the rest', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const tmux = fakeTmux();
+    tmux.seedProcess('cora', root, 'api');
+    tmux.seedProcess('cora', root, 'web', true, 1);
+    const instance = service(tmux, [cora]);
+    await expect(statesOf(instance, cora)).resolves.toEqual([{ name: 'api', state: 'running' }, { name: 'web', state: 'exited', exitCode: 1 }]);
+
+    // an exited process keeps its notices
+    await report(root, 'web', [{ level: 'info', message: 'warming up' }, { message: 'cache is cold' }]);
+    await expect(statesOf(instance, cora)).resolves.toEqual([
+      { name: 'api', state: 'running' },
+      { name: 'web', state: 'exited', exitCode: 1, notices: [{ level: 'info', message: 'warming up' }, { level: 'warning', message: 'cache is cold' }] }
+    ]);
+  });
+
+  it("names another Project's Worktree and its process as the notice's target, hidden while that process runs", async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const tmux = fakeTmux();
+    tmux.seedProcess('cora', root, 'api');
+    const instance = service(tmux, [cora, peer]);
+    await report(root, 'api', [{ message: 'static is not running', worktree: peer.path, process: 'static' }]);
+
+    await expect(statesOf(instance, cora)).resolves.toEqual([
+      { name: 'api', state: 'running', notices: [{ level: 'warning', message: 'static is not running', target: { worktreeId: peer.id, label: 'Static · master', process: 'static', state: 'stopped' } }] },
+      { name: 'web', state: 'stopped' }
+    ]);
+
+    const running = tmux.seedProcess('static', peer.path, 'static');
+    await expect(statesOf(instance, cora)).resolves.toEqual([{ name: 'api', state: 'running' }, { name: 'web', state: 'stopped' }]);
+
+    Object.assign(running, { dead: true, status: 2 });
+    await expect(statesOf(instance, cora)).resolves.toMatchObject([{ name: 'api', notices: [{ target: { worktreeId: peer.id, process: 'static', state: 'exited' } }] }, { name: 'web' }]);
+
+    // its window gone, as a Stop leaves it
+    tmux.windows.splice(tmux.windows.indexOf(running), 1);
+    await expect(statesOf(instance, cora)).resolves.toMatchObject([{ name: 'api', notices: [{ target: { worktreeId: peer.id, process: 'static', state: 'stopped' } }] }, { name: 'web' }]);
+  });
+
+  it('keeps a notice naming a process its Worktree does not declare, targeting the Worktree alone and never hiding', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const tmux = fakeTmux();
+    tmux.seedProcess('static', peer.path, 'preview');
+    const instance = service(tmux, [cora, peer]);
+    await report(root, 'api', [{ message: 'preview is down', worktree: peer.path, process: 'preview' }]);
+
+    await expect(statesOf(instance, cora)).resolves.toEqual([{ name: 'api', state: 'stopped', notices: [{ level: 'warning', message: 'preview is down', target: { worktreeId: peer.id, label: 'Static · master' } }] }, { name: 'web', state: 'stopped' }]);
+  });
+
+  it('keeps the message of a notice whose worktree is no discovered Worktree, without a target', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const instance = service(fakeTmux(), [cora, peer]);
+    await report(root, 'api', [{ message: 'somewhere else', worktree: '/nowhere/known', process: 'static' }]);
+
+    await expect(statesOf(instance, cora)).resolves.toEqual([{ name: 'api', state: 'stopped', notices: [{ level: 'warning', message: 'somewhere else' }] }, { name: 'web', state: 'stopped' }]);
+  });
+
+  it('matches a notice to a bridged Worktree by its host path', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const bridged = { ...peer, hostPath: '/host/static' };
+    const instance = service(fakeTmux(), [cora, bridged]);
+    await report(root, 'api', [{ message: 'static is down', worktree: '/host/static', process: 'static' }]);
+
+    await expect(statesOf(instance, cora)).resolves.toMatchObject([{ notices: [{ target: { worktreeId: peer.id, process: 'static', state: 'stopped' } }] }, {}]);
+  });
+
+  it('ignores a malformed notices file, and says so once', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const instance = service(fakeTmux(), [cora]);
+    await report(root, 'api', [{ message: 'x'.repeat(501) }]);
+
+    await expect(statesOf(instance, cora)).resolves.toEqual([{ name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped' }]);
+    await expect(statesOf(instance, cora)).resolves.toEqual([{ name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped' }]);
+    expect(warn()).toHaveBeenCalledTimes(1);
+    expect(warn()).toHaveBeenCalledWith(expect.stringContaining('api'));
+  });
+});
+
 describe('worktree setup command', () => {
   type FakeCommand = (binary: string, args: string[]) => Promise<{ code: number; stdout: string }>;
   const fastTiming = { timeoutMs: 2_000, pollMs: 10 };

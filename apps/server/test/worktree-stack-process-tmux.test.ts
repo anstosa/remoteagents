@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -13,8 +13,8 @@ import { testConfig, testWorktree } from './helpers/config.js';
 // command stays live in its tagged window, a fresh service instance (a restarted console)
 // finds it again by those tags, a command that dies at once leaves a findable dead pane, and
 // Stop ends a command with Ctrl+C (or a kill, when it ignores that), several processes of
-// one Worktree share its Workspace session, and each run's output lands in the process's log
-// file. Unix sockets are blocked
+// one Worktree share its Workspace session, each run's output lands in the process's log
+// file, and a notice the process writes shows in its state. Unix sockets are blocked
 // in the build sandbox, so this is skipped there and runs on the host and in CI.
 
 const tmux = execFileSync('/bin/sh', ['-c', 'command -v tmux || true'], { encoding: 'utf8' }).trim();
@@ -232,6 +232,20 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     await expect(instance.start(worktree.id, 'restart')).resolves.toBe('started');
     await vi.waitFor(async () => { expect(await read()).toContain('run 2 up'); }, { timeout: 10_000, interval: 100 });
     expect(await read()).not.toContain('run 1 up');
+  }, 40_000);
+
+  // a process reports a notice by writing the file the console names in RAC_PROCESS_NOTICES
+  it('shows a notice a process writes to $RAC_PROCESS_NOTICES in the next state, and clears it on Stop', async () => {
+    const { root, worktree, service } = await fixture(`printf '%s' '[{"message": "static is not running"}]' > "$RAC_PROCESS_NOTICES"; exec sleep 300`);
+    execFileSync('/usr/bin/git', ['init', '-q', root]);
+    const instance = service();
+
+    await expect(instance.start(worktree.id, 'start')).resolves.toBe('started');
+    await vi.waitFor(async () => { expect(await instance.state(worktree)).toMatchObject({ processes: [{ name: 'dev', state: 'running', notices: [{ level: 'warning', message: 'static is not running' }] }] }); }, { timeout: 10_000, interval: 100 });
+
+    await expect(instance.start(worktree.id, 'stop')).resolves.toBe('started');
+    await expect(instance.state(worktree)).resolves.toEqual({ running: false, processes: [{ name: 'dev', state: 'stopped' }] });
+    expect(existsSync(join(root, '.git', 'rac', 'processes', 'dev.notices.json'))).toBe(false);
   }, 40_000);
 
   it('reports a process stopped before it ever ran, and makes no session by reading', async () => {

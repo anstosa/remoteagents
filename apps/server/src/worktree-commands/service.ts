@@ -3,10 +3,11 @@ import { dirname, join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
-import { stackActions, type StackAction, type StackProcessState, type Worktree } from '../domain/models.js';
+import { stackActions, type ProcessNotice, type StackAction, type StackProcessState, type Worktree } from '../domain/models.js';
 import { declaredProcesses, dependenciesOf, startOrder, type StackProcess } from '../domain/stack-processes.js';
-import { worktreeById, worktreeHostPath, worktreeHostRoot } from '../workspaces/resolver.js';
+import { worktreeById, worktreeHostPath, worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { serverCheckout, serverCheckoutOnHost } from '../workspaces/server-checkout.js';
+import { ProcessNoticeFiles, type ReportedNotice } from './process-notices.js';
 import { run, tmuxLiteralArg, tmuxFormatLiteral, tmuxTimeFormatLiteral } from '../tmux/command.js';
 import { probeHolderSession, processNameOption, processPaneRole, processWorktreeOption } from '../tmux/stack-sessions.js';
 import { availableSessionName, worktreeSessionName } from '../tmux/session-name.js';
@@ -47,6 +48,7 @@ const stackProcesses = (worktree: Worktree): StackProcess[] => declaredProcesses
 type ListedPane = { sessionId: string; windowId: string; paneId: string; place: string; role: string; name: string; worktree: string; dead: boolean; exitCode?: number };
 // a listed process pane's state: live, or dead with the exit status tmux kept (absent after a signal)
 const processStateOf = (pane: ListedPane, name: string): StackProcessState => pane.dead ? { name, state: 'exited', ...(pane.exitCode === undefined ? {} : { exitCode: pane.exitCode }) } : { name, state: 'running' };
+type PaneListing = Promise<ListedPane[] | undefined>;
 // the actions a Stack process derives; any other action is a one-shot command (the web mirrors
 // this list in stack-operations.ts)
 export const processActions: readonly StackAction[] = ['start', 'stop', 'restart'];
@@ -62,6 +64,15 @@ const processLogDirectory = ['rac', 'processes'];
 const pipeToLog = (file: string) => tmuxTimeFormatLiteral(`umask 077; rm -f -- ${quote(file)}; set -C; exec cat > ${quote(file)}`);
 // the console's note that a Stack process starts without its log file, and why
 const warnWithoutLog = (worktree: Worktree, name: string, reason: string) => console.warn(`[stack] ${worktree.identity}: ${name} starts without its log, as ${reason}`);
+// Beside its log, the file a Stack process reports its Process notices in: the console names it to
+// the command in RAC_PROCESS_NOTICES and removes it on every Start and Stop, so a notice lasts
+// from its process writing it until that process next starts or stops.
+const noticesFile = (name: string) => `${name}.notices.json`;
+// how long a dashboard build remembers the git directory it reads notices under, or that git
+// could not name one: a checkout's git directory stays put, and a Worktree made again at the same
+// path is found within this
+const gitDirectoryTtlMs = 60_000;
+type GitDirectory = { path: string } | { failure: string };
 
 // prepend an explicitly configured host executable path
 const hostPathExport = () => {
@@ -120,6 +131,8 @@ export class WorktreeCommandService {
   private readonly processOperations = new Map<string, { action: StackAction; process?: string }>();
   // one `list-panes` answers every Worktree's state during a dashboard build
   private processListing: Promise<ListedPane[] | undefined> | undefined;
+  private readonly noticeFiles = new ProcessNoticeFiles();
+  private readonly gitDirectories = new Map<string, { value: GitDirectory; expiresAt: number }>();
 
   constructor(config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly command: Command = run, private readonly checkout: string = serverCheckout(), private readonly setupTiming: { timeoutMs: number; pollMs: number } = defaultSetupTiming, private readonly statusTiming: { timeoutMs: number; pollMs: number } = defaultStatusTiming, private readonly stopTiming: { timeoutMs: number; pollMs: number } = defaultStopTiming) {
     // status and log files live under the server's own checkout (see server-checkout.ts). A
@@ -304,10 +317,15 @@ export class WorktreeCommandService {
   // probe; that probe is for daemon-style stacks only.
   async state(worktree: Worktree): Promise<StackState> {
     const withProcess = stackProcesses(worktree).length > 0;
-    const [listed, probed, tunnel, operation] = await Promise.all([this.processStates(worktree), withProcess ? undefined : this.running(worktree), this.tunnel(worktree), this.operation(worktree)]);
-    // a process action in flight shows on its process
+    // one listing answers both the processes' states and those of the processes their notices name
+    const listing = withProcess ? this.stackPanes() : undefined;
+    const [listed, notices, probed, tunnel, operation] = await Promise.all([listing === undefined ? undefined : this.processStates(worktree, listing), listing === undefined ? undefined : this.processNotices(worktree, listing), withProcess ? undefined : this.running(worktree), this.tunnel(worktree), this.operation(worktree)]);
+    // a process action in flight, and the notices a process reported, show on that process
     const targeted = this.processOperations.get(worktree.id);
-    const processes = targeted?.process === undefined ? listed : listed?.map(entry => entry.name === targeted.process ? { ...entry, operation: targeted.action } : entry);
+    const processes = listed?.map(entry => {
+      const shown = notices?.get(entry.name);
+      return { ...entry, ...(entry.name === targeted?.process ? { operation: targeted.action } : {}), ...(shown === undefined ? {} : { notices: shown }) };
+    });
     const runningCount = processes?.filter(entry => entry.state === 'running').length;
     const running = withProcess ? processes === undefined ? undefined : runningCount === processes.length ? true : runningCount === 0 ? false : undefined : probed;
     const transition = this.transitions.get(worktree.id);
@@ -324,15 +342,51 @@ export class WorktreeCommandService {
   // each of a Worktree's Stack processes, in config order, as its tagged window shows it: live,
   // dead with its exit code, or no window at all. Undefined without a configured process, or
   // when tmux cannot answer.
-  private async processStates(worktree: Worktree): Promise<StackProcessState[] | undefined> {
+  private async processStates(worktree: Worktree, listing?: PaneListing): Promise<StackProcessState[] | undefined> {
     const declared = stackProcesses(worktree);
     if (declared.length === 0) return undefined;
-    const panes = await this.stackPanes();
+    const panes = await (listing ?? this.stackPanes());
     if (panes === undefined) return undefined;
-    return declared.map(({ name }) => {
-      const window = this.processWindow(panes, worktree, name);
-      return window === undefined ? { name, state: 'stopped' } : processStateOf(window, name);
-    });
+    return declared.map(({ name }) => this.processState(panes, worktree, name));
+  }
+
+  // one Stack process's state, as its tagged window in the listing shows it
+  private processState(panes: ListedPane[], worktree: Worktree, name: string): StackProcessState {
+    const window = this.processWindow(panes, worktree, name);
+    return window === undefined ? { name, state: 'stopped' } : processStateOf(window, name);
+  }
+
+  // Each of a Worktree's Stack processes' Process notices that are showing, by process name; a
+  // process with none is left out. A notice naming a discovered Worktree targets it; one naming a
+  // process that Worktree declares also carries that process's state, and hides while it runs.
+  // Nothing when the directory the files are in is missing, or is not one Start would write to.
+  private async processNotices(worktree: Worktree, listing: PaneListing): Promise<Map<string, ProcessNotice[]>> {
+    const files = await this.processFiles(worktree, { cached: true });
+    if ('failure' in files) return new Map();
+    const reported = await Promise.all(stackProcesses(worktree).map(async ({ name }) => [name, await this.noticeFiles.read(join(files.directory, noticesFile(name)), reason => console.warn(`[stack] ${worktree.identity}: ${name}'s notices are ignored, as ${reason}`))] as const));
+    if (reported.every(([, notices]) => notices.length === 0)) return new Map();
+    const [panes, worktrees] = [await listing, this.discovery.worktreesNow()];
+    return new Map(reported.flatMap(([name, notices]) => {
+      const shown = notices.flatMap(notice => this.shownNotice(notice, worktrees, panes) ?? []);
+      return shown.length === 0 ? [] : [[name, shown] as const];
+    }));
+  }
+
+  // A reported notice as the dashboard shows it, or undefined while the process it names runs.
+  // Its checkout is matched to a Worktree of any Project by the path the console sees it at or the
+  // host path it is bridged from; a process the Worktree does not declare targets the Worktree
+  // alone and never hides. When tmux cannot answer, a named process carries no state.
+  private shownNotice(notice: ReportedNotice, worktrees: readonly Worktree[], panes: ListedPane[] | undefined): ProcessNotice | undefined {
+    const shown = { level: notice.level, message: notice.message };
+    const path = notice.worktree;
+    const target = path === undefined ? undefined : worktrees.find(candidate => worktreeMatchesWorkspace(candidate, path));
+    if (target === undefined) return shown;
+    const at = { worktreeId: target.id, label: target.label };
+    const name = notice.process;
+    if (name === undefined || !stackProcesses(target).some(declared => declared.name === name)) return { ...shown, target: at };
+    if (panes === undefined) return { ...shown, target: { ...at, process: name } };
+    const { state } = this.processState(panes, target, name);
+    return state === 'running' ? undefined : { ...shown, target: { ...at, process: name, state } };
   }
 
   async running(worktree: Worktree): Promise<boolean | undefined> {
@@ -501,9 +555,9 @@ export class WorktreeCommandService {
   // once leaves a findable dead pane.
   // A Restart's Start (`rerun`) respawns even a live pane: one that outlived Ctrl+C.
   // Before the command runs, the pane is piped into a fresh log file, so the file holds
-  // everything since this Start. tmux pipes only a live pane, so a window that already exists
-  // first goes back to the placeholder. A process whose log cannot be set up still starts,
-  // without one.
+  // everything since this Start, and the previous run's notices file is removed. tmux pipes only
+  // a live pane, so a window that already exists first goes back to the placeholder. A process
+  // whose log cannot be set up still starts, without a log or a notices file.
   private async startProcess(worktree: Worktree, declared: StackProcess, rerun = false): Promise<boolean> {
     // a listing already in flight may predate a window a just-finished Start opened
     const panes = await this.stackPanes(true);
@@ -511,9 +565,12 @@ export class WorktreeCommandService {
     const existing = this.processWindow(panes, worktree, declared.name);
     if (existing !== undefined && !existing.dead && !rerun) return true;
     const directory = worktreeHostRoot(worktree);
-    const logs = await this.processLogs(worktree);
+    const logs = await this.processFiles(worktree, { make: true });
     if ('failure' in logs) warnWithoutLog(worktree, declared.name, logs.failure);
     const log = 'failure' in logs ? undefined : join(logs.host, `${declared.name}.log`);
+    // a new run starts with no notices, and is told where to write its own
+    if (!('failure' in logs)) await unlink(join(logs.directory, noticesFile(declared.name))).catch(() => {});
+    const notices = 'failure' in logs ? '' : `export RAC_PROCESS_NOTICES=${quote(join(logs.host, noticesFile(declared.name)))}; `;
     let pane = existing?.paneId;
     if (pane === undefined) {
       const workspace = panes.find(candidate => candidate.place === worktree.id)?.sessionId;
@@ -536,7 +593,7 @@ export class WorktreeCommandService {
       const piped = await this.tmux(['pipe-pane', '-t', pane, pipeToLog(log)]);
       if (piped.code !== 0) warnWithoutLog(worktree, declared.name, `tmux could not pipe it: ${piped.stderr?.trim() ?? ''}`);
     }
-    const script = `${hostPathExport()}( cd -- ${quote(directory)} && { ${declared.command}; } )`;
+    const script = `${hostPathExport()}${notices}( cd -- ${quote(directory)} && { ${declared.command}; } )`;
     const respawned = await this.tmux(['respawn-pane', '-k', '-t', pane, '-c', tmuxFormatLiteral(directory), '/bin/bash', '-lc', script]);
     // a window left on its placeholder would read as a running process, so remove it
     if (respawned.code !== 0) { if (existing === undefined || log !== undefined) await this.tmux(['kill-window', '-t', pane]); return false; }
@@ -544,26 +601,51 @@ export class WorktreeCommandService {
     return true;
   }
 
-  // The directory a Worktree's Stack process logs live in, as the tmux host sees it:
-  // `rac/processes` in the Worktree's own git directory (`.git/` for the Main worktree,
-  // `.git/worktrees/<id>/` for a Linked one), which git names for the console's view of the
-  // checkout. It is made here, private to the operator, and moved onto the host the way the
-  // checkout is. Neither `rac` nor `processes` may be a symlink, which an agent in the checkout
-  // could point anywhere. A failure, when git cannot name the git directory, the directory cannot
-  // be made or is not a real one, or a bridged git directory lies outside the checkout.
-  private async processLogs(worktree: Worktree): Promise<{ host: string } | { failure: string }> {
-    const resolved = await this.command('/usr/bin/git', ['-C', worktree.identity, 'rev-parse', '--absolute-git-dir']).catch(() => undefined);
-    const gitDirectory = resolved?.code === 0 ? resolved.stdout.trim() : '';
-    if (gitDirectory === '') return { failure: `git could not name its git directory: ${resolved?.stderr?.trim() || 'git did not run'}` };
-    const directory = join(gitDirectory, ...processLogDirectory);
+  // The directory a Worktree's Stack process files — each one's log and notices file — live in,
+  // as the console sees it and as the tmux host does: `rac/processes` in the Worktree's own git
+  // directory (`.git/` for the Main worktree, `.git/worktrees/<id>/` for a Linked one), which git
+  // names for the console's view of the checkout, moved onto the host the way the checkout is.
+  // A Start `make`s it, private to the operator; a Stop or a read finds it or does without.
+  // Neither `rac` nor `processes` may be a symlink, which an agent in the checkout could point
+  // anywhere. A read, on every dashboard build, asks git only once a while (`cached`). A failure,
+  // when git cannot name the git directory, the directory cannot be made or found or is not a real
+  // one, or a bridged git directory lies outside the checkout.
+  private async processFiles(worktree: Worktree, { make = false, cached = false } = {}): Promise<{ directory: string; host: string } | { failure: string }> {
+    const gitDirectory = cached ? await this.cachedGitDirectory(worktree) : await this.gitDirectory(worktree);
+    if ('failure' in gitDirectory) return gitDirectory;
+    const directory = join(gitDirectory.path, ...processLogDirectory);
     const host = worktreeHostPath(worktree, directory);
-    if (host === undefined) return { failure: `its git directory ${gitDirectory} lies outside the bridged checkout` };
+    if (host === undefined) return { failure: `its git directory ${gitDirectory.path} lies outside the bridged checkout` };
     try {
-      await mkdir(directory, { recursive: true, mode: 0o700 });
+      if (make) await mkdir(directory, { recursive: true, mode: 0o700 });
       const parts = await Promise.all([lstat(dirname(directory)), lstat(directory)]);
       if (!parts.every(part => part.isDirectory())) return { failure: `${directory} is not a directory of its own` };
-    } catch (error) { return { failure: `${directory} could not be made: ${error instanceof Error ? error.message : String(error)}` }; }
-    return { host };
+    } catch (error) { return { failure: `${directory} could not be ${make ? 'made' : 'found'}: ${error instanceof Error ? error.message : String(error)}` }; }
+    return { directory, host };
+  }
+
+  // the Worktree's own git directory as the console sees it, which git names for its checkout
+  private async gitDirectory(worktree: Worktree): Promise<GitDirectory> {
+    const resolved = await this.command('/usr/bin/git', ['-C', worktree.identity, 'rev-parse', '--absolute-git-dir']).catch(() => undefined);
+    const path = resolved?.code === 0 ? resolved.stdout.trim() : '';
+    return path === '' ? { failure: `git could not name its git directory: ${resolved?.stderr?.trim() || 'git did not run'}` } : { path };
+  }
+
+  // the git directory as `gitDirectory` last named it, or that it could not, asked again once
+  // that is a while old
+  private async cachedGitDirectory(worktree: Worktree): Promise<GitDirectory> {
+    const cached = this.gitDirectories.get(worktree.id);
+    if (cached !== undefined && cached.expiresAt > Date.now()) return cached.value;
+    const value = await this.gitDirectory(worktree);
+    this.gitDirectories.set(worktree.id, { value, expiresAt: Date.now() + gitDirectoryTtlMs });
+    return value;
+  }
+
+  // remove a Stack process's notices file once its process has stopped; nothing to remove when
+  // its directory is not there
+  private async clearNotices(worktree: Worktree, name: string): Promise<void> {
+    const files = await this.processFiles(worktree);
+    if (!('failure' in files)) await unlink(join(files.directory, noticesFile(name))).catch(() => {});
   }
 
   // A Start waits, as Starting, until its Project answers or a minute passes. What the tunnel
@@ -584,8 +666,9 @@ export class WorktreeCommandService {
   // Stop a Worktree's Stack process: a live pane is sent Ctrl+C (after leaving any mode that
   // would swallow it) and given up to the stop budget to exit, then its window is killed
   // whether or not it did; a dead pane's window is just killed, which clears the exited state.
-  // No window is nothing to stop. Every window of the process goes, should a race or an
-  // operator have left two, except the one a Restart `keep`s to rerun the command in. Killing
+  // No window is nothing to stop. A stopped process's notices file goes with it. Every window of
+  // the process goes, should a race or an operator have left two, except the one a Restart
+  // `keep`s to rerun the command in. Killing
   // a window that is the last in its session closes the session and fires the operator's
   // `session-closed` hook; that is accepted for now, since a process lives in its Workspace
   // session beside the Place's Agents and Terminals (ADR 0009).
@@ -602,10 +685,11 @@ export class WorktreeCommandService {
       if ((await Promise.all(live.map(pane => this.paneDead(pane.paneId)))).every(Boolean)) break;
     }
     const killed = await Promise.all(matching.filter(pane => pane.windowId !== kept).map(pane => this.tmux(['kill-window', '-t', pane.windowId])));
-    if (killed.every(result => result.code === 0)) return true;
     // a failed kill still stopped the process if its window is gone (the operator closed it)
-    const remaining = await this.stackPanes(true);
-    return remaining !== undefined && this.processPanes(remaining, worktree, declared.name).every(pane => pane.windowId === kept);
+    const remaining = killed.every(result => result.code === 0) ? [] : await this.stackPanes(true);
+    const stopped = remaining !== undefined && this.processPanes(remaining, worktree, declared.name).every(pane => pane.windowId === kept);
+    if (stopped) await this.clearNotices(worktree, declared.name);
+    return stopped;
   }
 
   // whether a pane has exited; a pane that is gone altogether counts as exited, but a tmux that

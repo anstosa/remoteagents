@@ -222,6 +222,30 @@ describe('OrchestrationService', () => {
     expect(calls).toEqual(['stack:erin:restart:api', 'stack:erin:restart', 'stack:erin:stop:sync']);
   });
 
+  // Process notices are for the console's own stack menu, not integrations
+  it("keeps a Stack process's notices out of the stack state integrations read", async () => {
+    const service = new OrchestrationService(dependencies({
+      worktreeCommands: {
+        actions: () => ['start', 'stop', 'restart'],
+        state: async () => ({ running: true, processes: [{ name: 'api', state: 'running', notices: [{ level: 'warning', message: 'static is not running' }] }] }),
+        start: async () => 'started',
+        log: async () => undefined
+      }
+    }));
+
+    const status = await service.stackStatus(cora.id);
+    expect(status).toMatchObject({ ok: true, value: { processes: [{ name: 'api', state: 'running' }] } });
+    expect(status.ok && status.value.processes?.[0]).not.toHaveProperty('notices');
+
+    // the worktree listing reads the dashboard's stack, which carries them
+    const dashboard = await dependencies().loadDashboard();
+    const withNotices = { ...dashboard, projects: dashboard.projects.map(project => ({ ...project, worktrees: project.worktrees.map(view => view.id === dave.id ? { ...view, stack: { running: false, processes: [{ name: 'api', state: 'exited' as const, exitCode: 1, notices: [{ level: 'warning' as const, message: 'static is not running' }] }] } } : view) })) };
+    const listing = new OrchestrationService(dependencies({ loadDashboard: async () => withNotices }));
+    const listed = await listing.worktreeStatus(dave.id);
+    expect(listed).toMatchObject({ ok: true, value: { stack: { processes: [{ name: 'api', state: 'exited', exitCode: 1 }] } } });
+    expect(listed.ok && listed.value.stack?.processes?.[0]).not.toHaveProperty('notices');
+  });
+
   it('deactivates only idle agents in configured worktrees', async () => {
     let agent: Agent = stated({ ...activeAgent, title: '⠋ Working' });
     let closed = 0;

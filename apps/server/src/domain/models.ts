@@ -23,9 +23,14 @@ export type StackAction = typeof stackActions[number];
 // they derive start/stop/restart and the running state, so they never sit beside those.
 export type StackProcessCommand = string | { command: string; dependsOn?: string[] };
 export type StackCommands = Partial<Record<StackAction | 'status' | 'setup', string>> & { processes?: Record<string, StackProcessCommand> };
+// A Process notice as the dashboard serves it: a message a Stack process reported about its own
+// run, and, when it names a discovered Worktree, that Worktree as the dashboard labels it, with
+// the process it names there and that process's state when the Worktree declares it
+export type ProcessNotice = { level: 'warning' | 'info'; message: string; target?: { worktreeId: string; label: string; process?: string; state?: 'exited' | 'stopped' } };
 // one Stack process as tmux shows it: its pane live, dead with the exit status tmux kept
-// (absent after a signal), or no window at all; `operation` is an action on it alone in flight
-export type StackProcessState = { name: string; state: 'running' | 'exited' | 'stopped'; exitCode?: number; operation?: StackAction };
+// (absent after a signal), or no window at all; `operation` is an action on it alone in flight,
+// and `notices` the Process notices it reported that are showing, absent when there are none
+export type StackProcessState = { name: string; state: 'running' | 'exited' | 'stopped'; exitCode?: number; operation?: StackAction; notices?: ProcessNotice[] };
 // canonical checkout settings with project defaults already resolved
 export type WorktreeOverride = { path: string; commands?: StackCommands; projectUrl?: string; projectPort?: number };
 export type PromptAction = { label: string; prompt: string };

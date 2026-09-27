@@ -1,7 +1,16 @@
 export type StackAction = 'start'|'stop'|'build'|'restart'|'migrate';
-// a Worktree's Stack process as its pane shows it; `exitCode` is absent after a signal, and
-// `operation` is an action on this process alone in flight
-export type StackProcessState = { name: string; state: 'running'|'exited'|'stopped'; exitCode?: number; operation?: StackAction };
+// the discovered Worktree a Process notice names, with the process it names there and that
+// process's state when the Worktree declares it
+export type ProcessNoticeTarget = { worktreeId: string; label: string; process?: string; state?: 'exited'|'stopped' };
+// a notice target whose declared process is not running, which a notice's Start starts; the
+// console hides a notice while the process it names runs, which is what ends that Start's progress
+export type StartableNoticeTarget = ProcessNoticeTarget & { process: string };
+// a message a Stack process reported about its own run, and the Worktree it names
+export type ProcessNotice = { level: 'warning'|'info'; message: string; target?: ProcessNoticeTarget };
+// a Worktree's Stack process as its pane shows it; `exitCode` is absent after a signal,
+// `operation` is an action on this process alone in flight, and `notices` its Process notices
+// that are showing
+export type StackProcessState = { name: string; state: 'running'|'exited'|'stopped'; exitCode?: number; operation?: StackAction; notices?: ProcessNotice[] };
 // what "Show <name> output" reads: the process's state and its pane's recent output, and while
 // it runs the pane's id, which "Open as Terminal" opens
 export type StackProcessOutput = StackProcessState & { paneId?: string; output: string };
