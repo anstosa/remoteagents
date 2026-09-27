@@ -9,10 +9,10 @@ test('keeps phone icon controls square and aligned with the workspace tab', asyn
       <div class="tab-row-lead">
         <button class="server-switcher-button server-selector" aria-label="Switch server"><img src="/instance-icons/terminal.svg" alt=""><span class="server-selector-name">Server</span><svg class="server-selector-chevron" viewBox="0 0 24 24"></svg><i class="server-switcher-attention working"></i></button>
         <button class="server-switcher-button server-switcher-voice" aria-label="Call"><svg viewBox="0 0 24 24"></svg><span>Call</span></button>
-        <span class="server-switcher-settings-wrap"><button class="server-switcher-button server-switcher-settings" aria-label="Settings"><svg viewBox="0 0 24 24"></svg><span class="server-switcher-settings-update-dot"></span></button></span>
       </div>
       <button class="workspace-dropdown active" role="tab" aria-selected="true"><span class="tab-kind-stack"><span class="tab-place-mark">◈</span></span><span class="workspace-dropdown-label">Workspace</span><svg class="workspace-dropdown-chevron" viewBox="0 0 24 24"></svg></button>
       <span class="launcher"><button class="new-agent-tab" aria-label="Launch agent">+</button></span>
+      <span class="server-switcher-settings-wrap"><button class="server-switcher-button server-switcher-settings" aria-label="Settings"><svg viewBox="0 0 24 24"></svg><span class="server-switcher-settings-update-dot"></span></button></span>
     </nav>
   `);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -32,6 +32,10 @@ test('keeps phone icon controls square and aligned with the workspace tab', asyn
     await expect(control).not.toHaveCSS('border-radius', '0px');
   }
   expect(tabBox!.height).toBeCloseTo(41.6, 1);
+  const phoneNav = await page.locator('.tabs').boundingBox();
+  // balance the two left controls against launch and settings on the right
+  expect(tabBox!.x + tabBox!.width / 2).toBeCloseTo(phoneNav!.x + phoneNav!.width / 2, 1);
+  expect((await controls[2].boundingBox())!.x).toBeGreaterThan((await controls[3].boundingBox())!.x);
   await expect(tab).toHaveCSS('border-top-width', '1px');
   // align both corner dots to the same outer button inset despite different borders
   const [serverBox, serverDotBox, mobileSettingsBox, settingsDotBox] = await Promise.all([controls[0].boundingBox(), controls[0].locator('.server-switcher-attention').boundingBox(), controls[2].boundingBox(), controls[2].locator('.server-switcher-settings-update-dot').boundingBox()]);
@@ -52,4 +56,26 @@ test('keeps phone icon controls square and aligned with the workspace tab', asyn
   expect(plusBox!.height).toBeCloseTo(desktopTab!.height, 1);
   expect(settingsBox!.width).toBeCloseTo(settingsBox!.height, 1);
   expect(plusBox!.width).toBeCloseTo(plusBox!.height, 1);
+  const desktopNav = await page.locator('.tabs').boundingBox();
+  expect(settingsBox!.x + settingsBox!.width).toBeCloseTo(desktopNav!.x + desktopNav!.width - 6, 1);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: 'Call' }).evaluate(button => button.remove());
+  const noCallTab = await tab.boundingBox();
+  const noCallNav = await page.locator('.tabs').boundingBox();
+  expect(noCallTab!.x + noCallTab!.width / 2).toBeCloseTo(noCallNav!.x + noCallNav!.width / 2, 1);
+
+  // keep enrollment visible below the centered control row
+  await page.locator('.launcher').evaluate(element => element.insertAdjacentHTML('beforebegin', '<button class="notification-control">Enable alerts</button>'));
+  const enrollment = await page.locator('.notification-control').boundingBox();
+  const enrollmentTab = await tab.boundingBox();
+  expect(enrollment!.y).toBeGreaterThanOrEqual(enrollmentTab!.y + enrollmentTab!.height);
+  expect(enrollmentTab!.x + enrollmentTab!.width / 2).toBeCloseTo(noCallNav!.x + noCallNav!.width / 2, 1);
+
+  // keep denied status on the second row too
+  await page.locator('.notification-control').evaluate(element => { element.outerHTML = '<span class="notification-status">Alerts blocked</span>'; });
+  const blocked = await page.locator('.notification-status').boundingBox();
+  const blockedTab = await tab.boundingBox();
+  expect(blocked!.y).toBeGreaterThanOrEqual(blockedTab!.y + blockedTab!.height);
+  expect(blockedTab!.x + blockedTab!.width / 2).toBeCloseTo(noCallNav!.x + noCallNav!.width / 2, 1);
 });

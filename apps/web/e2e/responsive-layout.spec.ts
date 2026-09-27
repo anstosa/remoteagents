@@ -126,7 +126,7 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       gitSummary: bounds('.workspace-toolbar .git-status-summary'),
       gitBranchDisplay: getComputedStyle(document.querySelector<HTMLElement>('.workspace-toolbar .git-branch')!).display,
       tabRowLead: bounds('.tab-row-lead'),
-      serverSettings: bounds('.tab-row-lead .server-switcher-settings'),
+      serverSettings: bounds('.tabs > .server-switcher-settings-wrap .server-switcher-settings'),
       tabs: bounds('.tabs'),
       tabsBorder: getComputedStyle(document.querySelector<HTMLElement>('.tabs')!).borderBottomWidth,
       tabsShadow: getComputedStyle(document.querySelector<HTMLElement>('.tabs')!).boxShadow,
@@ -164,9 +164,11 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(layout.queued.bottom).toBeLessThanOrEqual(layout.send.top);
   expect(layout.send.left).toBeGreaterThanOrEqual(layout.prompt.right);
   expect(layout.send.right).toBeLessThanOrEqual(layout.viewportWidth);
-  // the server selector, Call and settings sit inside the tab bar's outlined inset
+  // the server selector and Call balance the launcher and trailing settings button
   expect(Math.abs(layout.tabRowLead.left - layout.tabs.left - 6)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.tabRowLead.top - layout.tabs.top - 6)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.activeTab.left + layout.activeTab.width / 2 - layout.tabs.left - layout.tabs.width / 2)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.serverSettings.right - layout.tabs.right + 6)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.serverSettings.height - layout.activeTab.height)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.serverSettings.width - layout.serverSettings.height)).toBeLessThanOrEqual(1);
   // the upper toolbar is gone: tabs sit directly under the output, and no .log-topbar exists
@@ -252,16 +254,18 @@ test('a phone shows only the current Workspace, as a dropdown over a sheet of ev
   // the marks stand apart from the title
   await expect(dropdown).toHaveCSS('gap', '9.6px');
 
-  // one outlined row with gaps: server selector, Call, settings, the dropdown filling the rest, +
+  // one outlined row with balanced controls around the centered Workspace dropdown
   const row = await tabs.evaluate(nav => {
     const box = (element: Element) => { const rect = element.getBoundingClientRect(); return { left: rect.left, right: rect.right, middle: Math.round(rect.top + rect.height / 2) }; };
-    return { overflow: nav.scrollWidth - nav.clientWidth, width: nav.getBoundingClientRect().width, lead: box(nav.querySelector('.tab-row-lead')!), dropdown: box(nav.querySelector('.workspace-dropdown')!), plus: box(nav.querySelector('.launcher')!) };
+    return { overflow: nav.scrollWidth - nav.clientWidth, width: nav.getBoundingClientRect().width, lead: box(nav.querySelector('.tab-row-lead')!), dropdown: box(nav.querySelector('.workspace-dropdown')!), plus: box(nav.querySelector('.launcher')!), settings: box(nav.querySelector('.server-switcher-settings-wrap')!) };
   });
   expect(row.overflow).toBeLessThanOrEqual(0);
-  expect(new Set([row.lead.middle, row.dropdown.middle, row.plus.middle]).size).toBe(1);
+  expect(new Set([row.lead.middle, row.dropdown.middle, row.plus.middle, row.settings.middle]).size).toBe(1);
   expect(Math.abs(row.dropdown.left - row.lead.right - 6)).toBeLessThanOrEqual(1);
   expect(Math.abs(row.plus.left - row.dropdown.right - 6)).toBeLessThanOrEqual(1);
-  expect(Math.abs(row.plus.right - (row.width - 6))).toBeLessThanOrEqual(1);
+  expect(Math.abs(row.settings.left - row.plus.right - 6)).toBeLessThanOrEqual(1);
+  expect(Math.abs(row.settings.right - (row.width - 6))).toBeLessThanOrEqual(1);
+  expect(Math.abs((row.dropdown.left + row.dropdown.right) / 2 - row.width / 2)).toBeLessThanOrEqual(1);
 
   // the sheet lists every Workspace with its Agent and shell counts and its state, then New Workspace…
   await dropdown.click();

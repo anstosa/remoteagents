@@ -85,7 +85,7 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
 
   await page.goto('/');
   const settings = page.getByRole('button', { name: 'Global settings' });
-  await expect(page.locator('.tabs > .tab-row-lead > :last-child').getByRole('button', { name: 'Global settings' })).toBeVisible();
+  await expect(page.locator('.tabs > .server-switcher-settings-wrap').getByRole('button', { name: 'Global settings' })).toBeVisible();
   await expect(settings).toHaveText('');
   await expect(settings.locator('svg')).toHaveCount(1);
   await expect.poll(() => settings.evaluate(button => { const box = button.getBoundingClientRect(); return Math.abs(box.width - box.height); })).toBeLessThanOrEqual(1);

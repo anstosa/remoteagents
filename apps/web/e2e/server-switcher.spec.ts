@@ -148,7 +148,7 @@ test('shows and switches the configured server on authentication and output scre
   await expect(tabRow.locator('> :first-child')).toHaveClass(/tab-row-lead/u);
   const selector = lead.getByRole('button', { name: /^Switch server \(X1 Carbon\)/u });
   await expect(lead.locator('> :first-child')).toHaveAccessibleName(/^Switch server/u);
-  await expect(lead.locator('> :last-child').getByRole('button', { name: 'Global settings' })).toBeVisible();
+  await expect(tabRow.locator('> .server-switcher-settings-wrap').getByRole('button', { name: 'Global settings' })).toBeVisible();
   await expect(selector.locator('img')).toHaveAttribute('src', '/instance-icons/potato.svg');
   await expect.poll(async () => selector.locator('img').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
   await expect(selector.locator('.server-selector-name')).toBeHidden();
@@ -291,7 +291,7 @@ test('leads the empty console tab row with the server selector', async ({ page }
   await expect(page.locator('.server-switcher, .output-server-switcher')).toHaveCount(0);
   const lead = page.locator('.tabs > .tab-row-lead');
   await expect(lead.getByRole('button', { name: 'Switch server (X1 Carbon)' })).toBeVisible();
-  await expect(lead.getByRole('button', { name: 'Global settings' })).toBeVisible();
+  await expect(page.locator('.tabs > .server-switcher-settings-wrap').getByRole('button', { name: 'Global settings' })).toBeVisible();
   await lead.getByRole('button', { name: 'Switch server (X1 Carbon)' }).click();
   const menu = page.getByRole('group', { name: 'Remote Agents servers' });
   await expect(menu.locator('a, button')).toHaveCount(1);

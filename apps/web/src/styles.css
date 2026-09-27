@@ -192,7 +192,7 @@ main { max-width: 1100px; margin: auto; padding: var(--edge); }
 .server-switcher-attention.completed { background: var(--green); box-shadow: 0 0 .55rem color-mix(in srgb, var(--green) 55%, transparent); opacity: 1; }
 .server-switcher-attention.unavailable { background: var(--overlay-0); opacity: 1; }
 .auth-server-switcher { justify-self: start; margin-bottom: .15rem; }
-/* the tab row opens on the server selector, then Call and settings as outlined controls */
+/* the tab row opens on the server selector and Call */
 .tabs > .tab-row-lead { display: flex; flex: 0 1 auto; align-items: center; gap: .375rem; min-width: 0; }
 .tab-row-lead .server-switcher-button { flex: none; height: var(--standard-control-size); min-height: var(--standard-control-size); max-width: 14rem; margin: 0; border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: .35rem .6rem; background: color-mix(in srgb, var(--mantle) 88%, transparent); font: 700 .72rem var(--font-mono); letter-spacing: normal; box-shadow: none; }
 /* keep active call and update accents; only the quiet controls use the standard hover */
@@ -203,8 +203,10 @@ main { max-width: 1100px; margin: auto; padding: var(--edge); }
 .tab-row-lead .server-selector :is(.server-selector-name, .server-selector-chevron) { display: none; }
 .server-selector-chevron { width: .85rem; height: .85rem; flex: none; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; color: var(--overlay-1); }
 .tab-row-lead .server-switcher-voice:not(.active) { color: var(--mauve); }
-.tab-row-lead .server-switcher-settings { width: var(--standard-control-size); min-width: var(--standard-control-size); padding: 0; }
-.tab-row-lead .server-switcher-settings:not(.updates-available) { color: var(--overlay-1); }
+/* keep settings at the far edge with the same standalone outline as the other controls */
+.tabs > .server-switcher-settings-wrap { height: var(--standard-control-size); margin-left: auto; }
+.tabs > .server-switcher-settings-wrap .server-switcher-settings { width: var(--standard-control-size); min-width: var(--standard-control-size); height: var(--standard-control-size); border-width: 1px; border-style: solid; border-radius: var(--control-radius); padding: 0; background: color-mix(in srgb, var(--mantle) 88%, transparent); }
+.tabs > .server-switcher-settings-wrap .server-switcher-settings:not(.updates-available) { border-color: var(--surface-1); color: var(--overlay-1); }
 @media (max-width: 600px) {
   /* match the call button to the selector, settings and launch squares */
   .tabs .tab-row-lead .server-switcher-voice { flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); min-width: var(--standard-control-size); justify-content: center; padding: 0; }
@@ -1830,9 +1832,13 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .tab-place-mark { display: inline-grid; width: 1.25rem; height: 1.25rem; place-items: center; color: var(--overlay-1); }
 .tab-place-mark svg { width: 1.05rem; height: 1.05rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .tab-place-mark.shells { color: var(--green); }
-/* On a phone the tab row keeps to one line: the lead, the current Workspace's dropdown taking
-   whatever the other controls leave, and +. */
+/* keep primary phone controls on one line around the Workspace dropdown */
 .tabs.workspace-dropdown-row { flex-wrap: nowrap; overflow: hidden; }
+/* reserve the Call slot when voice is disabled so the Workspace stays centered */
+.tabs.workspace-dropdown-row > .tab-row-lead { flex: 0 0 calc(2 * var(--standard-control-size) + .375rem); }
+/* keep optional notification enrollment visible without shifting the balanced control row */
+.tabs.workspace-dropdown-row:has(> :is(.notification-control, .notification-status)) { flex-wrap: wrap; }
+.tabs.workspace-dropdown-row > :is(.notification-control, .notification-status) { order: 1; flex: 1 0 100%; }
 .tabs > .workspace-dropdown { flex: 1 1 auto; justify-content: flex-start; white-space: nowrap; }
 /* the marks, title, badge and chevron sit further apart than a desktop tab's tight glyph gap */
 .tabs > .workspace-dropdown[role='tab'] { gap: .6rem; }
