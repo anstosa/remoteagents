@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, unlink as unlinkFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import type { Worktree } from '../src/domain/models.js';
 import { WorktreeCommandService } from '../src/worktree-commands/service.js';
+import { run } from '../src/tmux/command.js';
 import { testConfig, testProject, testWorktree } from './helpers/config.js';
 
 // mirror the service's tmux-safe worktree token: `<projectId>-<sha256(path)[0:12]>`
@@ -20,6 +24,14 @@ const config = testConfig();
 const discovery = { worktreesNow: () => [worktree] };
 
 let checkoutRoot: string | undefined;
+// A Stack process Start in a made-up checkout warns that it starts without its log: the suites
+// that start one keep those warnings quiet, and read them through what this returns.
+function quietWarnings() {
+  let spy: ReturnType<typeof vi.spyOn> | undefined;
+  beforeEach(() => { spy = vi.spyOn(console, 'warn').mockImplementation(() => {}); });
+  afterEach(() => { spy?.mockRestore(); });
+  return () => spy!;
+}
 
 afterEach(async () => {
   // restore the host socket setting
@@ -369,8 +381,11 @@ describe('worktree stack commands', () => {
 // `formatCommands`), `set-option` scoped by `-p`/`-w` or else to the target's session, and a
 // `list-panes` that lists every session with `-a`, a session's windows with `-s`, else its
 // active window only. A session target must be `=name:`, as real tmux reads a bare `=name` as
-// a window. `fail` makes every call fail as tmux does when it cannot run.
-type FakeWindow = { id: string; paneId: string; session: string; options: Map<string, string>; paneOptions: Map<string, string>; dead: boolean; status?: number; command: string[]; cwd?: string; ignoresInterrupt?: boolean; inMode?: boolean; output?: string };
+// a window. `pipe-pane` refuses a dead pane, a respawn keeps the pipe and the pane's death
+// closes it, as in tmux. `fail` makes every call fail as tmux does when it cannot run. Git runs
+// for real in a checkout that exists, so a real repository answers `rev-parse`; its calls are
+// kept apart in `gitCalls`.
+type FakeWindow = { id: string; paneId: string; session: string; options: Map<string, string>; paneOptions: Map<string, string>; dead: boolean; status?: number; command: string[]; cwd?: string; ignoresInterrupt?: boolean; inMode?: boolean; output?: string; pipe?: string; runs?: string[][] };
 function fakeTmux() {
   const sessions = new Map<string, Map<string, string>>();
   // tmux's stable `$N` session ids, by name
@@ -442,7 +457,20 @@ function fakeTmux() {
       if (entry === undefined) return { code: 1, stdout: '', stderr: "can't find pane" };
       if (!entry.dead && !args.includes('-k')) return { code: 1, stdout: '', stderr: 'pane still active' };
       Object.assign(entry, { dead: false, status: undefined, command: commandOf(args, ['-t', '-c']), cwd: expand(value(args, '-c')) });
+      entry.runs = [...entry.runs ?? [], entry.command];
       events.push(`respawn ${entry.id}`);
+      return { code: 0, stdout: '' };
+    }
+    if (verb === 'pipe-pane') {
+      const entry = find(value(args, '-t'));
+      if (entry === undefined) return { code: 1, stdout: '', stderr: "can't find pane" };
+      if (entry.dead) return { code: 1, stdout: '', stderr: 'target pane has exited' };
+      // with -o, only when the pane has no pipe
+      if (args.includes('-o') && entry.pipe !== undefined) return { code: 0, stdout: '' };
+      // strftime, then format expansion: an escaped `%%` or `##` comes back single, and anything
+      // tmux would expand is marked so an assertion sees it
+      entry.pipe = expand(args.at(-1)!.replace(/%(.)/gu, (_match, next: string) => next === '%' ? '%' : `<strftime %${next}>`).replace(/(?<!#)((?:##)*)#\{([^}]*)\}/gu, '$1<format $2>'))!;
+      events.push(`pipe ${entry.id} ${entry.pipe}`);
       return { code: 0, stdout: '' };
     }
     if (verb === 'kill-window') {
@@ -466,7 +494,7 @@ function fakeTmux() {
       const keys = commandOf(args, ['-t']);
       events.push(`keys ${entry.paneId} ${keys.join(' ')}`);
       if (keys.includes('C-c') && entry.inMode === true) entry.inMode = false;
-      else if (keys.includes('C-c') && !entry.dead && entry.ignoresInterrupt !== true) Object.assign(entry, { dead: true, status: 130 });
+      else if (keys.includes('C-c') && !entry.dead && entry.ignoresInterrupt !== true) { Object.assign(entry, { dead: true, status: 130 }); delete entry.pipe; }
       return { code: 0, stdout: '' };
     }
     if (verb === 'capture-pane') {
@@ -493,7 +521,14 @@ function fakeTmux() {
     }
     return { code: 1, stdout: '' };
   };
-  const command = async (_binary: string, argv: string[]) => {
+  const gitCalls: string[][] = [];
+  const command = async (binary: string, argv: string[]) => {
+    if (binary.endsWith('/git')) {
+      gitCalls.push(argv);
+      // answer at once for a made-up checkout, as git would, so it adds no subprocess delay
+      const checkout = argv[argv.indexOf('-C') + 1] ?? '';
+      return existsSync(checkout) ? await run(binary, argv) : { code: 128, stdout: '', stderr: `fatal: cannot change to '${checkout}': No such file or directory` };
+    }
     calls.push(argv);
     if (state.fail) throw new Error('spawn /usr/bin/tmux ENOENT');
     const args = argv[0] === '-S' ? argv.slice(2) : argv;
@@ -520,10 +555,11 @@ function fakeTmux() {
     Object.assign(entry, { dead, ...(status === undefined ? {} : { status }) });
     return entry;
   };
-  return { command, calls, events, sessions, windows, state, formatCommands, seedWorkspace, seedProcess };
+  return { command, calls, gitCalls, events, sessions, windows, state, formatCommands, seedWorkspace, seedProcess };
 }
 
 describe('worktree Stack process', () => {
+  quietWarnings();
   const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', hostPath: '/host/cora', commands: { processes: { dev: 'pnpm dev' }, build: 'pnpm build' } });
   const dana = testWorktree({ id: 'proj:/worktrees/dana', projectId: 'proj', path: '/worktrees/dana', main: false, commands: { processes: { dev: 'pnpm dev' } } });
   const erin = testWorktree({ id: 'proj:/worktrees/erin', projectId: 'proj', path: '/worktrees/erin', main: false, commands: { processes: { web: 'cd web && pnpm dev' } } });
@@ -1117,6 +1153,7 @@ describe('worktree Stack process', () => {
 
 // several Stack processes run as one stack: Start in config order, Stop in reverse
 describe('worktree with several Stack processes', () => {
+  quietWarnings();
   const fern = testWorktree({ id: 'proj:/worktrees/fern', projectId: 'proj', path: '/worktrees/fern', main: false, commands: { processes: { sync: 'ods exec sync', api: 'ods exec api', web: 'ods exec web' }, build: 'pnpm build' } });
   const stopTiming = { timeoutMs: 60, pollMs: 5 };
   const stackService = (tmux: ReturnType<typeof fakeTmux>, command: ReturnType<typeof fakeTmux>['command'] = tmux.command) => new WorktreeCommandService(config, { worktreesNow: () => [fern] } as never, command, undefined, undefined, undefined, stopTiming);
@@ -1367,6 +1404,7 @@ describe('worktree with several Stack processes', () => {
 // `web` needs `api`, which needs `sync`; `docs` needs nothing. Config order is the display
 // order, so the start order is sync, api, web, docs: dependencies first, ties by config order.
 describe('Stack processes ordered by dependsOn', () => {
+  quietWarnings();
   const ivy = testWorktree({ id: 'proj:/worktrees/ivy', projectId: 'proj', path: '/worktrees/ivy', main: false, commands: { processes: { web: { command: 'ods exec web', dependsOn: ['api'] }, api: { command: 'ods exec api', dependsOn: ['sync'] }, sync: 'ods exec sync', docs: { command: 'ods exec docs' } } } });
   const stopTiming = { timeoutMs: 60, pollMs: 5 };
   // every window seen before each tmux call, by window and pane id, so `steps` can still name
@@ -1480,6 +1518,239 @@ describe('Stack processes ordered by dependsOn', () => {
     seed(tmux, ['web', 'api', 'sync', 'docs']);
     await expect(stackService(tmux).stopForRemoval(ivy, async () => 'removed')).resolves.toBe('removed');
     expect(steps(tmux).filter(step => step.startsWith('kill'))).toEqual(['kill docs', 'kill web', 'kill api', 'kill sync']);
+  });
+});
+
+describe('Stack process log file', () => {
+  const warn = quietWarnings();
+  const stopTiming = { timeoutMs: 60, pollMs: 5 };
+  const repositories: string[] = [];
+  beforeEach(() => { delete process.env.RAC_HOST_TMUX_DIR; delete process.env.RAC_HOST_PATH; });
+  afterEach(async () => { for (const root of repositories.splice(0)) await rm(root, { recursive: true, force: true }); });
+  // a real repository with one commit and a Linked worktree beside it, so git names the git
+  // directory as it does for a Worktree the console discovered
+  const repository = async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'rac-process-log-')));
+    repositories.push(root);
+    const main = join(root, 'main');
+    const linked = join(root, 'linked');
+    const git = (...args: string[]) => execFileSync('/usr/bin/git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args], { stdio: 'ignore' });
+    git('init', '-q', main);
+    git('-C', main, 'commit', '-q', '--allow-empty', '-m', 'init');
+    git('-C', main, 'worktree', 'add', '-q', linked);
+    return { root, main, linked };
+  };
+  // the file an agent in the checkout finds with `git rev-parse --git-path`
+  const agentPath = (checkout: string, name: string) => execFileSync('/usr/bin/git', ['-C', checkout, 'rev-parse', '--path-format=absolute', '--git-path', `rac/processes/${name}.log`], { encoding: 'utf8' }).trim();
+  const service = (tmux: ReturnType<typeof fakeTmux>, worktrees: Worktree[]) => new WorktreeCommandService(config, { worktreesNow: () => worktrees } as never, tmux.command, undefined, undefined, undefined, stopTiming);
+  const pipeTo = (file: string) => `umask 077; rm -f -- '${file}'; set -C; exec cat > '${file}'`;
+  const processWindow = (tmux: ReturnType<typeof fakeTmux>, name: string) => tmux.windows.find(entry => entry.options.get('@rac_process') === name);
+  // the pipes and respawns on one window, in order, each respawn named for what it ran: the
+  // placeholder, or the process's command
+  const pipesAndRespawns = (tmux: ReturnType<typeof fakeTmux>, window: FakeWindow) => {
+    const runs = [...window.runs ?? []];
+    return tmux.events.flatMap(event => {
+      const [verb, target, ...rest] = event.split(' ');
+      if (target !== window.id) return [];
+      if (verb === 'pipe') return [`pipe ${rest.join(' ')}`];
+      return verb === 'respawn' ? [runs.shift()?.at(-1) === 'sleep 30' ? 'placeholder' : 'command'] : [];
+    });
+  };
+
+  it("pipes a new process window into a fresh log in the Main worktree's git directory before its command runs", async () => {
+    const { main } = await repository();
+    const cora = testWorktree({ id: `proj:${main}`, projectId: 'proj', path: main, commands: { processes: { dev: 'pnpm dev' } } });
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+
+    await expect(service(tmux, [cora]).start(cora.id, 'start')).resolves.toBe('started');
+
+    const window = processWindow(tmux, 'dev')!;
+    const file = agentPath(main, 'dev');
+    expect(file).toBe(join(main, '.git', 'rac', 'processes', 'dev.log'));
+    // made private to the operator
+    expect((await stat(dirname(file))).mode & 0o777).toBe(0o700);
+    // piped while the placeholder runs, then respawned with the command
+    expect(pipesAndRespawns(tmux, window)).toEqual([`pipe ${pipeTo(file)}`, 'command']);
+    expect(window.command.at(-1)).toContain('pnpm dev');
+    expect(window.pipe).toBe(pipeTo(file));
+    // git never lists it
+    expect(execFileSync('/usr/bin/git', ['-C', main, 'status', '--porcelain', '--ignored'], { encoding: 'utf8' })).toBe('');
+  });
+
+  it("writes a Linked worktree's log in its own git directory", async () => {
+    const { main, linked } = await repository();
+    const dana = testWorktree({ id: `proj:${linked}`, projectId: 'proj', path: linked, main: false, commands: { processes: { web: 'pnpm web' } } });
+    const tmux = fakeTmux();
+
+    await expect(service(tmux, [dana]).start(dana.id, 'start')).resolves.toBe('started');
+
+    const file = agentPath(linked, 'web');
+    expect(file).toBe(join(main, '.git', 'worktrees', 'linked', 'rac', 'processes', 'web.log'));
+    expect((await stat(dirname(file))).isDirectory()).toBe(true);
+    expect(processWindow(tmux, 'web')?.pipe).toBe(pipeTo(file));
+  });
+
+  // a bridged console sees the checkout at its own path; the host tmux writes the file where it
+  // sees it, under the Worktree's host path
+  it('pipes to the host path of a bridged checkout, and makes the directory at its own', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    const { main } = await repository();
+    const cora = testWorktree({ id: `proj:${main}`, projectId: 'proj', path: main, hostPath: '/host/cora', commands: { processes: { dev: 'pnpm dev' } } });
+    const tmux = fakeTmux();
+
+    await expect(service(tmux, [cora]).start(cora.id, 'start')).resolves.toBe('started');
+
+    expect((await stat(join(main, '.git', 'rac', 'processes'))).isDirectory()).toBe(true);
+    expect(processWindow(tmux, 'dev')?.pipe).toBe(pipeTo('/host/cora/.git/rac/processes/dev.log'));
+  });
+
+  // tmux refuses to pipe a dead pane, so an exited process reruns the placeholder to take the pipe
+  it('pipes an exited process pane, through the placeholder, before its command reruns', async () => {
+    const { main } = await repository();
+    const cora = testWorktree({ id: `proj:${main}`, projectId: 'proj', path: main, commands: { processes: { dev: 'pnpm dev' } } });
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const crashed = tmux.seedProcess('cora', main, 'dev', true, 1);
+
+    await expect(service(tmux, [cora]).start(cora.id, 'start')).resolves.toBe('started');
+
+    const file = agentPath(main, 'dev');
+    expect(pipesAndRespawns(tmux, crashed)).toEqual(['placeholder', `pipe ${pipeTo(file)}`, 'command']);
+    expect(crashed.command.at(-1)).toContain('pnpm dev');
+  });
+
+  it("pipes a restarted process's pane afresh before its command reruns, the whole stack's or its own", async () => {
+    const { main } = await repository();
+    const cora = testWorktree({ id: `proj:${main}`, projectId: 'proj', path: main, commands: { processes: { api: 'pnpm api', web: 'pnpm web' } } });
+    const file = agentPath(main, 'web');
+    for (const target of [undefined, 'web'] as const) {
+      // one pane that dies on Ctrl+C, and one that outlives it with its old pipe still open
+      for (const ignoresInterrupt of [false, true]) {
+        const tmux = fakeTmux();
+        tmux.seedWorkspace('cora', cora.id);
+        const web = tmux.seedProcess('cora', main, 'web');
+        Object.assign(web, { pipe: 'the previous run', ignoresInterrupt });
+
+        await expect(service(tmux, [cora]).start(cora.id, 'restart', target)).resolves.toBe('started');
+
+        expect(pipesAndRespawns(tmux, web)).toEqual(['placeholder', `pipe ${pipeTo(file)}`, 'command']);
+        expect(web.command.at(-1)).toContain('pnpm web');
+        expect(web.pipe).toBe(pipeTo(file));
+      }
+    }
+  });
+
+  // a checkout path carrying a format or a strftime sequence reaches the pipe literally
+  it('quotes the log path for the shell and for tmux format expansion', async () => {
+    const { root } = await repository();
+    const checkout = join(root, "it's #{pid} %d");
+    execFileSync('/usr/bin/git', ['init', '-q', checkout]);
+    const odd = testWorktree({ id: `proj:${checkout}`, projectId: 'proj', path: checkout, commands: { processes: { dev: 'pnpm dev' } } });
+    const tmux = fakeTmux();
+
+    await expect(service(tmux, [odd]).start(odd.id, 'start')).resolves.toBe('started');
+
+    const quoted = `'${root}/it'\\''s #{pid} %d/.git/rac/processes/dev.log'`;
+    expect(processWindow(tmux, 'dev')?.pipe).toBe(`umask 077; rm -f -- ${quoted}; set -C; exec cat > ${quoted}`);
+    expect(tmux.formatCommands).toEqual([]);
+  });
+
+  // An agent in the checkout can put a symlink where the log goes. The host shell runs the
+  // pipe's own command here: it replaces a symlinked log rather than writing through it, and
+  // refuses a symlink put back before it creates the file.
+  it('never writes through a symlink put where the log goes', async () => {
+    const { root, main } = await repository();
+    const cora = testWorktree({ id: `proj:${main}`, projectId: 'proj', path: main, commands: { processes: { dev: 'pnpm dev' } } });
+    const tmux = fakeTmux();
+    await service(tmux, [cora]).start(cora.id, 'start');
+    const pipe = processWindow(tmux, 'dev')!.pipe!;
+    const file = agentPath(main, 'dev');
+    const victim = join(root, 'victim');
+    await writeFile(victim, 'keep\n');
+
+    await symlink(victim, file);
+    execFileSync('/bin/sh', ['-c', pipe], { input: 'pane output\n' });
+    expect(await readFile(victim, 'utf8')).toBe('keep\n');
+    expect((await lstat(file)).isSymbolicLink()).toBe(false);
+    expect(await readFile(file, 'utf8')).toBe('pane output\n');
+
+    // the exclusive create after the removal: a symlink there is refused, not followed
+    const create = pipe.slice(pipe.indexOf('set -C'));
+    await unlinkFile(file);
+    await symlink(victim, file);
+    expect(() => execFileSync('/bin/sh', ['-c', `umask 077; ${create}`], { input: 'pane output\n', stdio: ['pipe', 'ignore', 'ignore'] })).toThrow();
+    expect(await readFile(victim, 'utf8')).toBe('keep\n');
+  });
+
+  it('starts the process without a log when the log directory is a symlink', async () => {
+    const { root, main } = await repository();
+    const cora = testWorktree({ id: `proj:${main}`, projectId: 'proj', path: main, commands: { processes: { dev: 'pnpm dev' } } });
+    await mkdir(join(root, 'elsewhere'));
+    await symlink(join(root, 'elsewhere'), join(main, '.git', 'rac'));
+    const tmux = fakeTmux();
+
+    await expect(service(tmux, [cora]).start(cora.id, 'start')).resolves.toBe('started');
+
+    expect(tmux.calls.some(args => args.includes('pipe-pane'))).toBe(false);
+    expect(processWindow(tmux, 'dev')?.command.at(-1)).toContain('pnpm dev');
+    expect(warn()).toHaveBeenCalledWith(expect.stringContaining('not a directory of its own'));
+  });
+
+  it('starts the process without a log, and says so, when git cannot name its directory', async () => {
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', commands: { processes: { dev: 'pnpm dev' } } });
+    const tmux = fakeTmux();
+
+    await expect(service(tmux, [cora]).start(cora.id, 'start')).resolves.toBe('started');
+
+    expect(tmux.calls.some(args => args.includes('pipe-pane'))).toBe(false);
+    expect(processWindow(tmux, 'dev')?.command.at(-1)).toContain('pnpm dev');
+    expect(warn()).toHaveBeenCalledWith(expect.stringContaining('/worktrees/cora'));
+  });
+
+  // a bridged Main worktree whose git directory lies outside its checkout has no host path the
+  // console can derive for it
+  it('starts the process without a log when a bridged git directory lies outside the checkout', async () => {
+    const { root } = await repository();
+    const checkout = join(root, 'separate');
+    execFileSync('/usr/bin/git', ['init', '-q', '--separate-git-dir', join(root, 'separate.git'), checkout]);
+    const cora = testWorktree({ id: `proj:${checkout}`, projectId: 'proj', path: checkout, hostPath: '/host/separate', commands: { processes: { dev: 'pnpm dev' } } });
+    const tmux = fakeTmux();
+
+    await expect(service(tmux, [cora]).start(cora.id, 'start')).resolves.toBe('started');
+
+    expect(tmux.calls.some(args => args.includes('pipe-pane'))).toBe(false);
+    expect(processWindow(tmux, 'dev')?.command.at(-1)).toContain('pnpm dev');
+    expect(warn()).toHaveBeenCalledWith(expect.stringContaining('lies outside the bridged checkout'));
+  });
+
+  // a pane put back on the placeholder would read as running, so a failed rerun removes it
+  it('removes a pane left on the placeholder when its command cannot be respawned', async () => {
+    const { main } = await repository();
+    const cora = testWorktree({ id: `proj:${main}`, projectId: 'proj', path: main, commands: { processes: { dev: 'pnpm dev' } } });
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    tmux.seedProcess('cora', main, 'dev', true, 1);
+    const failing = async (binary: string, args: string[]) => args[0] === 'respawn-pane' && args.includes('/bin/bash') ? { code: 1, stdout: '', stderr: 'respawn failed' } : await tmux.command(binary, args);
+
+    await expect(new WorktreeCommandService(config, { worktreesNow: () => [cora] } as never, failing).start(cora.id, 'start')).resolves.toBe(false);
+
+    expect(processWindow(tmux, 'dev')).toBeUndefined();
+  });
+
+  it('asks git nothing and pipes nothing for a live process Start leaves alone, or a one-shot build', async () => {
+    const { main } = await repository();
+    const cora = testWorktree({ id: `proj:${main}`, projectId: 'proj', path: main, commands: { processes: { dev: 'pnpm dev' }, build: 'pnpm build' } });
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    tmux.seedProcess('cora', main, 'dev');
+    const instance = service(tmux, [cora]);
+
+    await expect(instance.start(cora.id, 'start')).resolves.toBe('started');
+    await expect(instance.start(cora.id, 'build')).resolves.toBe('started');
+
+    expect(tmux.gitCalls).toEqual([]);
+    expect(tmux.calls.some(args => args.includes('pipe-pane'))).toBe(false);
   });
 });
 

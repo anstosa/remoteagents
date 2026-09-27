@@ -326,7 +326,21 @@ within a tick — no config edit or restart.
   dialog and keeps it refreshing; while the process runs, that
   dialog's "Open as Terminal" opens its pane as a live Terminal panel, where
   dev-server hotkeys such as Vite's `r` work. The pane is also in the Place's
-  Terminal switcher, named for the process. "Show last command output" is the
+  Terminal switcher, named for the process. A process's output is also
+  written to `rac/processes/<name>.log` in the Worktree's own git directory
+  (`.git/` for the Main worktree, `.git/worktrees/<id>/` for a Linked one), so
+  an agent that reaches neither tmux nor the console reads it from its
+  checkout: `cat "$(git rev-parse --git-path rac/processes/<name>.log)"`. The
+  file is replaced with an empty one each time the process starts (a Start of
+  a process already running leaves it alone), so it holds everything since
+  then; it keeps the pane's raw bytes, terminal controls included, is never
+  capped or rotated, is readable by the operator's user only, never shows in
+  `git status`, and goes with a Linked worktree when that is removed. A
+  symlink in its place is replaced, never written through. When the console
+  cannot set the log up (git cannot name the git directory, or `rac/processes`
+  cannot be made or is a symlink), the process still starts without it and the
+  console logs why; a file the host cannot create goes unreported.
+  "Show last command output" is the
   latest `build` or `migrate` run. Remove stops every running process before it
   removes the checkout, and its confirmation lists them. A process name is
   letters, digits, `_` and `-`, and the map holds up to 20 processes. The

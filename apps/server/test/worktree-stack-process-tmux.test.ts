@@ -12,8 +12,9 @@ import { testConfig, testWorktree } from './helpers/config.js';
 // Stack processes against a throwaway tmux server on a private socket: a real long-running
 // command stays live in its tagged window, a fresh service instance (a restarted console)
 // finds it again by those tags, a command that dies at once leaves a findable dead pane, and
-// Stop ends a command with Ctrl+C (or a kill, when it ignores that), and several processes of
-// one Worktree share its Workspace session. Unix sockets are blocked
+// Stop ends a command with Ctrl+C (or a kill, when it ignores that), several processes of
+// one Worktree share its Workspace session, and each run's output lands in the process's log
+// file. Unix sockets are blocked
 // in the build sandbox, so this is skipped there and runs on the host and in CI.
 
 const tmux = execFileSync('/bin/sh', ['-c', 'command -v tmux || true'], { encoding: 'utf8' }).trim();
@@ -213,6 +214,24 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
 
     await expect(instance.start(worktree.id, 'stop')).resolves.toBe('started');
     await expect(instance.state(worktree)).resolves.toEqual({ running: false, processes: [{ name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped' }] });
+  }, 40_000);
+
+  // an agent that reaches neither tmux nor the console reads the output from its checkout's git
+  // directory; each run counts itself in `count`, so the log shows which run it holds
+  it("writes a process's output to its log in the git directory, afresh on each run", async () => {
+    const { root, worktree, service } = await fixture('n=$(( $(cat count 2>/dev/null || echo 0) + 1 )); echo "$n" > count; echo "run $n up"; exec sleep 300');
+    execFileSync('/usr/bin/git', ['init', '-q', root]);
+    const log = join(root, '.git', 'rac', 'processes', 'dev.log');
+    const read = () => readFile(log, 'utf8').catch(() => '');
+    const instance = service();
+
+    await expect(instance.start(worktree.id, 'start')).resolves.toBe('started');
+    await vi.waitFor(async () => { expect(await read()).toContain('run 1 up'); }, { timeout: 10_000, interval: 100 });
+
+    // a Restart's rerun (in the pane Ctrl+C left dead) starts the file again
+    await expect(instance.start(worktree.id, 'restart')).resolves.toBe('started');
+    await vi.waitFor(async () => { expect(await read()).toContain('run 2 up'); }, { timeout: 10_000, interval: 100 });
+    expect(await read()).not.toContain('run 1 up');
   }, 40_000);
 
   it('reports a process stopped before it ever ran, and makes no session by reading', async () => {

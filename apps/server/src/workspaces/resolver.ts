@@ -44,6 +44,17 @@ export function worktreeHostRoot(worktree: Pick<Worktree, 'identity' | 'hostPath
   return worktree.hostPath ?? worktree.identity;
 }
 
+// A console-side path as the launching/command host sees it: one inside the Worktree's
+// checkout is moved onto its host root. One outside it needs no moving where the console and the
+// host see the checkout at the same path; a bridged checkout seen elsewhere gives no host path
+// for it. A Linked worktree carries no host path, since the console manages Linked worktrees only
+// where it sees their Project at its host path (ADR 0003).
+export function worktreeHostPath(worktree: Pick<Worktree, 'identity' | 'hostPath'>, path: string): string | undefined {
+  const host = worktreeHostRoot(worktree);
+  if (path === worktree.identity || path.startsWith(`${worktree.identity}/`)) return `${host}${path.slice(worktree.identity.length)}`;
+  return host === worktree.identity ? path : undefined;
+}
+
 // the merge target the dashboard already resolved for one Worktree — from its live Agent when it has
 // one, else from the idle Worktree view — so a worktree-scoped consumer's All PR base equals what the
 // dashboard flyout shows. The single place that reads a worktree's resolved PR base off the dashboard.

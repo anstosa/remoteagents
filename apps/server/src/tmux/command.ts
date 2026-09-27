@@ -18,6 +18,9 @@ export const tmuxLiteralArg = (value: string): string => value.endsWith(';') ? `
 // server. Doubling every `#` makes tmux collapse it back to the literal text (as `runShell`
 // does for its command).
 export const tmuxFormatLiteral = (value: string): string => tmuxLiteralArg(value.replaceAll('#', '##'));
+// `pipe-pane` runs its shell command through strftime before format expansion, so a `%` is
+// doubled as well as a `#` for the command to reach the shell as written
+export const tmuxTimeFormatLiteral = (value: string): string => tmuxFormatLiteral(value.replaceAll('%', '%%'));
 // build one restricted subprocess environment; SHELL names the console's interactive shell,
 // resolved by the one reader of RAC_INTERACTIVE_SHELL
 export const safeEnv = (): NodeJS.ProcessEnv => { const user = userInfo(); return { HOME: user.homedir, USER: user.username, LOGNAME: user.username, SHELL: interactiveShellPath(), TERM: 'xterm-256color', COLORTERM: 'truecolor', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', PATH: '/usr/local/bin:/usr/bin:/bin' }; };
