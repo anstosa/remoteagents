@@ -219,7 +219,8 @@ export class WorktreeCommandService {
         // discard only completed output files
         if (previous?.logFile !== undefined) await unlink(previous.logFile).catch(() => {});
         this.statusCache.delete(worktree.id);
-        if (action === 'start' || action === 'migrate') this.transitions.set(worktree.id, { value: action === 'start' ? 'starting' : 'migrating', expiresAt: Date.now() + (action === 'start' ? 60_000 : 10 * 60_000) });
+        if (action === 'start') this.beginStarting(worktree);
+        else if (action === 'migrate') this.transitions.set(worktree.id, { value: 'migrating', expiresAt: Date.now() + 10 * 60_000 });
         else if (action === 'stop') this.endStarting(worktree);
       }
       // recognize existing sessions and preserve safety after probe failures
@@ -269,9 +270,12 @@ export class WorktreeCommandService {
     const [process, probed, tunnel, operation] = await Promise.all([this.processState(worktree), withProcess ? undefined : this.running(worktree), this.tunnel(worktree), this.operation(worktree)]);
     const running = withProcess ? process === undefined ? undefined : process.state === 'running' : probed;
     const transition = this.transitions.get(worktree.id);
-    // a process that is not running has nothing left to start, so it no longer reads as
-    // Starting — a command that dies at once shows as down straight away
-    if (transition !== undefined && (transition.expiresAt <= Date.now() || (transition.value === 'starting' && process !== undefined && process.state !== 'running'))) this.transitions.delete(worktree.id);
+    // A Start is done once its Project answers. The cache is read again here, not `tunnel`: a
+    // Start that landed while this read awaited has cleared it, so what it holds postdates the
+    // Start. A process that is not running has nothing left to start either, so a command that
+    // dies at once shows as down straight away rather than Starting.
+    const answered = this.tunnelCache.get(worktree.id)?.value === true;
+    if (transition !== undefined && (transition.expiresAt <= Date.now() || (transition.value === 'starting' && (answered || (process !== undefined && process.state !== 'running'))))) this.transitions.delete(worktree.id);
     const activeTransition = this.transitions.get(worktree.id)?.value;
     return { ...(running === undefined ? {} : { running }), ...(activeTransition === undefined ? {} : { transition: activeTransition }), ...(operation === undefined ? {} : { operation }), ...(tunnel === undefined ? {} : { tunnel }), ...(process === undefined ? {} : { process }) };
   }
@@ -342,11 +346,14 @@ export class WorktreeCommandService {
   private refreshTunnel(worktree: Worktree): Promise<void> {
     const active = this.tunnelRefreshes.get(worktree.id);
     if (active !== undefined) return active;
-    const refresh = fetch(worktree.projectUrl!, { redirect: 'manual', signal: AbortSignal.timeout(5_000) })
+    // a check a Start has since forgotten records nothing; while Starting, checks come quicker
+    // so the wait ends soon after the Project answers
+    const current = () => this.tunnelRefreshes.get(worktree.id) === refresh;
+    const refresh: Promise<void> = fetch(worktree.projectUrl!, { redirect: 'manual', signal: AbortSignal.timeout(5_000) })
       .then(response => response.status >= 200 && response.status < 500)
       .catch(() => false)
-      .then(value => { this.tunnelCache.set(worktree.id, { value, expiresAt: Date.now() + 10_000 }); })
-      .finally(() => { this.tunnelRefreshes.delete(worktree.id); });
+      .then(value => { if (current()) this.tunnelCache.set(worktree.id, { value, expiresAt: Date.now() + (this.transitions.get(worktree.id)?.value === 'starting' ? 2_000 : 10_000) }); })
+      .finally(() => { if (current()) this.tunnelRefreshes.delete(worktree.id); });
     this.tunnelRefreshes.set(worktree.id, refresh);
     return refresh;
   }
@@ -439,8 +446,17 @@ export class WorktreeCommandService {
     const respawned = await this.tmux(['respawn-pane', '-k', '-t', pane, '-c', tmuxFormatLiteral(directory), '/bin/bash', '-lc', script]);
     // a fresh window left on its placeholder would read as a running process, so remove it
     if (respawned.code !== 0) { if (existing === undefined) await this.tmux(['kill-window', '-t', pane]); return false; }
-    this.transitions.set(worktree.id, { value: 'starting', expiresAt: Date.now() + 60_000 });
+    this.beginStarting(worktree);
     return true;
+  }
+
+  // A Start waits, as Starting, until its Project answers or a minute passes. What the tunnel
+  // said before the Start is forgotten, a check still in flight included, so only a check made
+  // after it can end the wait: the old stack answering (a Restart) says nothing about the new.
+  private beginStarting(worktree: Worktree) {
+    this.transitions.set(worktree.id, { value: 'starting', expiresAt: Date.now() + 60_000 });
+    this.tunnelCache.delete(worktree.id);
+    this.tunnelRefreshes.delete(worktree.id);
   }
 
   // a Stop or Restart ends a Start's wait on the tunnel; a Migrating one-shot beside the

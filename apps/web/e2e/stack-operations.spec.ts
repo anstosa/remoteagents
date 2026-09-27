@@ -179,6 +179,19 @@ test('offers Stop and Restart while the stack is Starting', async ({ page }) => 
   await expect(page.getByRole('button', { name: 'Restart stack', exact: true })).toBeDisabled();
 });
 
+// a Stack process stopped on purpose reads stopped, whatever its tunnel last said; a failing
+// tunnel still reads down for a running process and for a daemon-style stack
+test('shows a stopped Stack process as stopped ahead of its tunnel', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderStoppedProcessStatuses } = await import('/e2e/project-open-fixture.tsx');
+    renderStoppedProcessStatuses(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  await expect(page.locator('.project-stack-status-text')).toHaveText(['stopped', 'stopped', 'down', 'down']);
+});
+
 // a crashed Stack process reads apart from a deliberate stop, and its code is in the tooltip
 test('shows an exited Stack process with its exit code, ahead of a down tunnel', async ({ page }) => {
   await page.goto('/');

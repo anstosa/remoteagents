@@ -1,7 +1,7 @@
 import { createElement, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ProjectOpen } from '../src/project-open.js';
-import { isStackProcessOutput } from '../src/stack-operations.js';
+import { isStackProcessOutput, type StackAction } from '../src/stack-operations.js';
 
 // render controls during an active operation
 export const renderProjectOpen = (root: HTMLElement) => {
@@ -116,6 +116,20 @@ type OpenedTerminals = { openedTerminals?: { paneId: string; name: string }[] };
 const recordOpenedTerminal = (paneId: string, name: string) => {
   const record = window as unknown as OpenedTerminals;
   record.openedTerminals = [...record.openedTerminals ?? [], { paneId, name }];
+};
+
+// render a Stack process stopped on purpose, beside what its tunnel still says (a check from
+// before the Stop, or one that now fails), and the tunnel-led states a stopped process must not
+// take from the rest: a running process whose tunnel fails, and a daemon stack that is down
+export const renderStoppedProcessStatuses = (root: HTMLElement) => {
+  const ignoreStackAction = () => {};
+  const processActions: StackAction[] = ['start', 'stop', 'restart'];
+  createRoot(root).render(createElement('div', {},
+    createElement(ProjectOpen, { stack: { actions: processActions, running: false, tunnel: true, process: { name: 'dev', state: 'stopped' } }, onStackAction: ignoreStackAction }),
+    createElement(ProjectOpen, { stack: { actions: processActions, running: false, tunnel: false, process: { name: 'dev', state: 'stopped' } }, onStackAction: ignoreStackAction }),
+    createElement(ProjectOpen, { stack: { actions: processActions, running: true, tunnel: false, process: { name: 'dev', state: 'running' } }, onStackAction: ignoreStackAction }),
+    createElement(ProjectOpen, { stack: { actions: ['start', 'stop'], running: false, tunnel: false }, onStackAction: ignoreStackAction })
+  ));
 };
 
 // render a Stack process Worktree that also has a one-shot `build`: its process output grows a

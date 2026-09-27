@@ -17,8 +17,10 @@ const processStatusLabel = (output: StackProcessOutput) => output.state === 'run
 function resolveStackStatus(stack: ProjectStack | undefined, inProgress: boolean): ProjectStackStatus {
   // prioritize active operations
   if (inProgress) return 'working';
-  // a Stack process that died on its own outranks whatever its tunnel says
+  // a Stack process that died on its own, or was stopped, outranks whatever its tunnel says: a
+  // check from before a Stop can still read healthy, and a failing one would read as broken
   if (stack?.process?.state === 'exited') return 'exited';
+  if (stack?.process?.state === 'stopped') return 'stopped';
   // reflect a healthy tunnel
   if (stack?.tunnel === true) return 'healthy';
   // reflect a failed tunnel

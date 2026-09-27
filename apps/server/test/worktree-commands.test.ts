@@ -38,6 +38,21 @@ afterEach(async () => {
   if (checkoutRoot !== undefined) { await rm(checkoutRoot, { recursive: true, force: true }); checkoutRoot = undefined; }
 });
 
+// A Project's preview for the tunnel check to fetch: healthy (200) or not (503), decided when a
+// request arrives and answered after that state's delay, so a test can hold a check in flight.
+async function projectPreview() {
+  const state = { healthy: true, healthyDelayMs: 0, unhealthyDelayMs: 0, requests: 0 };
+  const server = createServer((_request, response) => {
+    state.requests += 1;
+    const healthy = state.healthy;
+    setTimeout(() => { response.statusCode = healthy ? 200 : 503; response.end(); }, healthy ? state.healthyDelayMs : state.unhealthyDelayMs);
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+  const address = server.address();
+  const url = `http://127.0.0.1:${typeof address === 'object' && address !== null ? address.port : 0}`;
+  return { url, state, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
+}
+
 describe('worktree stack commands', () => {
   it('reports the active operation until its tmux session exits', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
@@ -91,6 +106,32 @@ describe('worktree stack commands', () => {
       live.clear();
       await expect(service.state(daemon)).resolves.toEqual(after);
     }
+  });
+
+  // Starting ends once the Project answers, on a check made after the Start: a check cached from
+  // before it (the stack was up, or a Restart) never ends it early
+  it("ends a Start's Starting transition on the first fresh healthy tunnel check", async () => {
+    delete process.env.RAC_HOST_TMUX_DIR;
+    const preview = await projectPreview();
+    try {
+      const daemon = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', projectUrl: preview.url, commands: { start: 'up', stop: 'down' } });
+      const live = new Set<string>();
+      const command = async (_binary: string, args: string[]) => {
+        if (args.includes('new-session')) { live.add(args[args.indexOf('-s') + 1] ?? ''); return { code: 0, stdout: '' }; }
+        if (args.includes('has-session')) return { code: live.has((args[args.indexOf('-t') + 1] ?? '').replace(/^=/u, '')) ? 0 : 1, stdout: '' };
+        return { code: 1, stdout: '' };
+      };
+      const service = new WorktreeCommandService(config, { worktreesNow: () => [daemon] } as never, command);
+      await vi.waitFor(async () => { expect(await service.state(daemon)).toEqual({ tunnel: true }); });
+
+      preview.state.healthy = false;
+      await expect(service.start(daemon.id, 'start')).resolves.toBe('started');
+      live.clear();
+      await expect(service.state(daemon)).resolves.toEqual({ transition: 'starting' });
+      await vi.waitFor(async () => { expect(await service.state(daemon)).toEqual({ transition: 'starting', tunnel: false }); });
+      preview.state.healthy = true;
+      await vi.waitFor(async () => { expect(await service.state(daemon)).toEqual({ tunnel: true }); }, { timeout: 5_000, interval: 100 });
+    } finally { await preview.close(); }
   });
 
   it('detects a running stack operation but ignores transient status probes (Remove blocker)', async () => {
@@ -619,6 +660,49 @@ describe('worktree Stack process', () => {
     await expect(service.state(cora)).resolves.toMatchObject({ transition: 'starting' });
     Object.assign(processWindows(tmux)[0]!, { dead: true, status: 127 });
     await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 127 } });
+  });
+
+  it('ends Starting once the Project answers after the Start, never on a check from before it', async () => {
+    const preview = await projectPreview();
+    try {
+      const tmux = fakeTmux();
+      tmux.seedWorkspace('cora', cora.id);
+      const reachable = testWorktree({ ...cora, projectUrl: preview.url });
+      const service = new WorktreeCommandService(config, { worktreesNow: () => [reachable] } as never, tmux.command);
+      const running = { name: 'dev', state: 'running' };
+      await vi.waitFor(async () => { expect(await service.state(reachable)).toMatchObject({ tunnel: true }); });
+
+      preview.state.healthy = false;
+      await expect(service.start(reachable.id, 'start')).resolves.toBe('started');
+      await expect(service.state(reachable)).resolves.toEqual({ running: true, transition: 'starting', process: running });
+      await vi.waitFor(async () => { expect(await service.state(reachable)).toEqual({ running: true, transition: 'starting', tunnel: false, process: running }); });
+      preview.state.healthy = true;
+      await vi.waitFor(async () => { expect(await service.state(reachable)).toEqual({ running: true, tunnel: true, process: running }); }, { timeout: 5_000, interval: 100 });
+    } finally { await preview.close(); }
+  });
+
+  // a check already in flight at the Start began while the old stack answered; its late
+  // "healthy" must not be what ends the new Start's wait
+  it('ignores a tunnel check that was in flight when the Start began', async () => {
+    const preview = await projectPreview();
+    try {
+      const tmux = fakeTmux();
+      tmux.seedWorkspace('cora', cora.id);
+      const reachable = testWorktree({ ...cora, projectUrl: preview.url });
+      const service = new WorktreeCommandService(config, { worktreesNow: () => [reachable] } as never, tmux.command);
+      Object.assign(preview.state, { healthyDelayMs: 100, unhealthyDelayMs: 600 });
+      await expect(service.state(reachable)).resolves.not.toHaveProperty('tunnel');
+      await vi.waitFor(() => { expect(preview.state.requests).toBe(1); });
+
+      await expect(service.start(reachable.id, 'start')).resolves.toBe('started');
+      preview.state.healthy = false;
+      await service.state(reachable);
+      // the stale check has landed by now, the fresh one has not
+      await new Promise(resolve => setTimeout(resolve, 250));
+      await expect(service.state(reachable)).resolves.toMatchObject({ transition: 'starting' });
+      await expect(service.state(reachable)).resolves.not.toHaveProperty('tunnel');
+      await vi.waitFor(async () => { expect(await service.state(reachable)).toMatchObject({ transition: 'starting', tunnel: false }); });
+    } finally { await preview.close(); }
   });
 
   // "Show dev output": a Capture of the process pane itself, full history with wrapped lines
