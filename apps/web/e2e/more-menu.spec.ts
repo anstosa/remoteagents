@@ -39,11 +39,16 @@ test('keeps attachments and repository choices out of the more menu', async ({ p
   await expect(menu.getByText('Pull requests', { exact: true })).toHaveCount(0);
   await expect(menu.getByText('Branches', { exact: true })).toHaveCount(0);
   await expect(menu.getByRole('button', { name: 'GitHub Actions', exact: true }).locator('.spinner')).toBeVisible();
-  await expect(menu.getByRole('button', { name: 'New Task', exact: true }).locator('.spinner')).toBeVisible();
   finishGithubActions();
-  finishNewTask();
   await expect(menu.getByRole('link', { name: 'GitHub Actions', exact: true })).toHaveAttribute('href', 'https://github.com/octo/repo/actions');
-  await expect(menu.locator('.new-task-option .more-menu-reason')).toHaveText('Start a fresh task for this worktree.');
+  await page.keyboard.press('Escape');
+
+  // new task now waits in the agent power flyout
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  const powerMenu = page.getByRole('menu', { name: 'Agent power options' });
+  await expect(powerMenu.getByRole('menuitem', { name: 'New Task', exact: true }).locator('.spinner')).toBeVisible();
+  finishNewTask();
+  await expect(powerMenu.locator('.new-task-option .more-menu-reason')).toHaveText('Start a fresh task for this worktree.');
   await page.keyboard.press('Escape');
 
   const fileChooserPromise = page.waitForEvent('filechooser');

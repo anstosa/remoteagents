@@ -227,6 +227,50 @@ const workspacesDashboard = {
   projects: []
 };
 
+test('the phone workspace switcher renames a worktree without selecting it', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  let worktreeLabel = 'Cora';
+  const labels: string[] = [];
+  // serve the updated label during the rename reconciliation
+  await page.route('**/api/**', route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // keep the phone session active
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // expose one worktree and one non-worktree workspace
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [{ id: 'cora', projectId: 'repo', label: worktreeLabel, path: '/worktrees/cora', main: false, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'cora' }] }], places: [{ id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', pinned: true }] } });
+    // skip optional push setup
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // record only the worktree label mutation
+    if (url.pathname === '/api/worktrees/cora/label' && request.method() === 'PATCH') {
+      worktreeLabel = (request.postDataJSON() as { label: string }).label;
+      labels.push(worktreeLabel);
+      return route.fulfill({ status: 204 });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  const dropdown = page.getByRole('tab', { selected: true });
+  await dropdown.click();
+  const sheet = page.getByRole('dialog', { name: 'Workspaces' });
+  await sheet.getByRole('button', { name: /^Notes\b/u }).click();
+  await expect(dropdown).toContainText('Notes');
+  await dropdown.click();
+  const rename = sheet.getByRole('button', { name: 'Rename Cora' });
+  await expect(rename).toBeVisible();
+  await expect(sheet.getByRole('button', { name: 'Rename Notes' })).toHaveCount(0);
+  await rename.click();
+  await expect(sheet).toHaveCount(0);
+  await expect(dropdown).toContainText('Notes');
+  const dialog = page.getByRole('dialog', { name: 'Rename worktree' });
+  await dialog.getByRole('textbox', { name: 'Worktree name' }).fill('Renamed Cora');
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect.poll(() => labels).toEqual(['Renamed Cora']);
+  await expect(dialog).toHaveCount(0);
+  await dropdown.click();
+  await expect(sheet.getByRole('button', { name: /^Renamed Cora\b/u })).toBeVisible();
+});
+
 test('a phone shows only the current Workspace, as a dropdown over a sheet of every Workspace', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   let dashboard = workspacesDashboard;

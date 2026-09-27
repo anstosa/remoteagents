@@ -83,11 +83,11 @@ test('copies a note and sends its current contents as a prompt', async ({ page }
   await expect(menuEdit.locator('svg')).toHaveCSS('fill', 'none');
   await expect(menuDelete.locator('svg')).toHaveCSS('fill', 'none');
 
-  // reuse the pencil in More
+  // reuse the pencil beside the worktree in the launcher
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
-  await page.getByRole('button', { name: 'More options' }).click();
-  const moreEdit = page.getByRole('button', { name: 'Rename worktree…', exact: true });
-  await expect(moreEdit.locator('path')).toHaveAttribute('d', pencilPath);
-  await expect(moreEdit.locator('svg')).toHaveCSS('fill', 'none');
+  await page.locator('.new-agent-tab').click();
+  const worktreeEdit = page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Rename Cora' });
+  await expect(worktreeEdit.locator('path')).toHaveAttribute('d', pencilPath);
+  await expect(worktreeEdit.locator('svg')).toHaveCSS('fill', 'none');
 });

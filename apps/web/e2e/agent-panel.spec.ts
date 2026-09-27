@@ -51,7 +51,8 @@ test('the agent output is a panel with a floating header and the composer at its
   const power = actions.getByRole('button', { name: 'Agent power options' });
   await power.click();
   const menu = page.getByRole('menu', { name: 'Agent power options' });
-  await expect(menu.getByRole('menuitem')).toHaveText(['Restart', 'Clear', 'Turn off']);
+  await expect(menu.getByRole('menuitem')).toHaveText(['Restart', 'Clear', 'New Task', 'Turn off']);
+  await expect(menu.getByRole('menuitem', { name: 'New Task' })).toBeDisabled();
   await page.keyboard.press('Escape');
   await page.mouse.click(5, 400);
   await expect(menu).toHaveCount(0);
@@ -88,12 +89,19 @@ test('the agent output is a panel with a floating header and the composer at its
   await expect(composer.getByRole('button', { name: 'More options' })).toHaveCount(0);
 });
 
-test('a working agent offers Cancel in its header and holds the power menu', async ({ page }) => {
+test('a working agent offers Cancel beside its hidden power menu', async ({ page }) => {
   await mockConsole(page, { attention: 'working' });
   await page.goto('/');
   const actions = agentPanel(page).getByRole('toolbar', { name: 'Agent output actions' });
-  await expect(actions.getByRole('button', { name: 'Cancel agent' })).toBeVisible();
-  await expect(actions.getByRole('button', { name: 'Agent power options' })).toBeDisabled();
+  const cancel = actions.getByRole('button', { name: 'Cancel agent' });
+  await expect(cancel).toBeVisible();
+  const power = actions.locator('.agent-power');
+  await expect(power).toBeDisabled();
+  await expect(power).toBeHidden();
+  expect(await cancel.evaluate(element => element.nextElementSibling?.classList.contains('power-menu-wrap'))).toBe(true);
+  const expand = await actions.getByRole('button', { name: 'Expand agent output' }).boundingBox();
+  const stop = await cancel.boundingBox();
+  expect(stop!.x).toBeGreaterThan(expand!.x);
   await expect(agentPanel(page).locator('.agent-state-pill')).toHaveText('Working');
 });
 

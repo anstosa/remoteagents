@@ -91,14 +91,18 @@ test('the ⋮ holds the Place actions, and Remove waits until no Agent runs', as
 
   await page.getByRole('tab', { name: /^Idle/u }).click();
   await toolbar(page).getByRole('button', { name: 'More options' }).click();
-  await expect(menu.locator(':scope > button, :scope > a, :scope > div > button')).toHaveText(['Unpin worktree', 'Rename worktree…', 'GitHub Actions', 'New Task', 'Remove worktree…']);
+  await expect(menu.locator(':scope > button, :scope > a')).toHaveText(['GitHub Actions', 'Remove worktree…']);
   // GitHub Actions is looked up by Worktree, so it works with no Agent running
   await expect(menu.getByRole('link', { name: 'GitHub Actions' })).toHaveAttribute('href', 'https://github.com/octo/repo/actions');
-  await expect(menu.getByRole('button', { name: 'New Task' })).toBeDisabled();
-  await expect(menu.locator('.more-menu-reason')).toHaveText('Launch an agent to start a new task.');
   await expect(menu.getByRole('button', { name: 'Remove worktree…' })).toBeEnabled();
-  await menu.getByRole('button', { name: 'Unpin worktree' }).click();
+  await page.keyboard.press('Escape');
+  await page.locator('.new-agent-tab').click();
+  const launcher = page.getByRole('group', { name: 'Agent launcher' });
+  await expect(launcher.getByRole('button', { name: 'Rename Idle' })).toBeVisible();
+  await launcher.getByRole('button', { name: 'Unpin Idle' }).click();
   await expect.poll(harness.pins).toEqual([{ path: `/api/worktrees/${idle}/pin`, body: { pinned: false } }]);
+
+  await page.keyboard.press('Escape');
 
   await page.getByRole('tab', { name: /^Cora/u }).click();
   await toolbar(page).getByRole('button', { name: 'More options' }).click();
@@ -120,7 +124,7 @@ test('a Place without git shows its path instead of Code, git and stack', async 
     await expect(toolbar(page).getByRole('button', { name: 'Open a terminal' })).toBeVisible();
     await expect(toolbar(page).getByRole('button', { name: 'Browser' })).toBeDisabled();
     await expect(toolbar(page).getByRole('button', { name: /^Launch/u }).first()).toBeEnabled();
-    // the ⋮ holds only the pin: GitHub Actions and New Task need a git checkout
+    // the ⋮ holds only the folder pin without a git checkout
     await toolbar(page).getByRole('button', { name: 'More options' }).click();
     await expect(page.locator('.place-menu').getByRole('button')).toHaveText([/^(Pin|Unpin) folder$/u]);
     await page.keyboard.press('Escape');

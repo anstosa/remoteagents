@@ -35,8 +35,8 @@ test('keeps a new-task processing indicator visible until the replacement agent 
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'More options' }).click();
-  await page.locator('.more-menu').getByRole('button', { name: 'New Task', exact: true }).click();
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  await page.getByRole('menu', { name: 'Agent power options' }).getByRole('menuitem', { name: 'New Task', exact: true }).click();
 
   const processing = page.locator('.log-loading[role="status"]');
   await expect(processing).toBeVisible();
@@ -84,8 +84,8 @@ test('shows the new-task banner only on its worktree', async ({ page }) => {
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'More options' }).click();
-  await page.locator('.more-menu').getByRole('button', { name: 'New Task', exact: true }).click();
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  await page.getByRole('menu', { name: 'Agent power options' }).getByRole('menuitem', { name: 'New Task', exact: true }).click();
 
   const banner = page.getByRole('status').filter({ hasText: 'Starting a new task' });
   await expect(banner).toBeVisible();

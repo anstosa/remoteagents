@@ -82,7 +82,7 @@ test('launcher lists per-project sections and pins a worktree', async ({ page })
   await expect(pin).toHaveText('');
   await expect(pin).toHaveAttribute('title', 'Pin worktree');
   await expect(pin.locator('path')).toHaveAttribute('d', 'M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6ZM12 15v5');
-  await expect(rename.locator('path')).toHaveAttribute('d', 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25ZM20.71 7.04a1 1 0 0 0 0-1.42l-2.34-2.34a1 1 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.84Z');
+  await expect(rename.locator('path')).toHaveAttribute('d', 'm4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3');
   // inspect the rendered icon paint
   const pinPaint = await pin.evaluate(element => { const button = getComputedStyle(element); const icon = getComputedStyle(element.querySelector('svg')!); return { background: button.backgroundColor, border: button.borderColor, color: icon.color, fill: icon.fill, stroke: icon.stroke }; });
   expect(pinPaint.background).toBe('rgba(0, 0, 0, 0)');

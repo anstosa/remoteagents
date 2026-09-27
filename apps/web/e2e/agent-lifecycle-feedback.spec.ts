@@ -183,7 +183,7 @@ test('turns off an idle agent and keeps the tab of its pinned worktree', async (
   const harness = await mountTurnOff(page, true);
   await page.getByRole('button', { name: 'Agent power options' }).click();
   const powerMenu = page.getByRole('menu', { name: 'Agent power options' });
-  await expect(powerMenu.getByRole('menuitem')).toHaveText(['Restart', 'Clear', 'Turn off']);
+  await expect(powerMenu.getByRole('menuitem')).toHaveText(['Restart', 'Clear', 'New Task', 'Turn off']);
   await powerMenu.getByRole('menuitem', { name: 'Turn off' }).click();
 
   await expect.poll(harness.turnOffRequests).toBe(1);
@@ -193,11 +193,13 @@ test('turns off an idle agent and keeps the tab of its pinned worktree', async (
   await expect(page.locator('.server-switcher, .output-server-switcher')).toHaveCount(0);
   await expect(page.locator('.tabs > .tab-row-lead .server-selector')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Wake up' })).toHaveCount(0);
-  // with no agent panel, Rename and Remove wait in the toolbar's ⋮ of Place actions
+  // with no agent panel, Remove stays in Place actions and Rename stays by the worktree
   await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'More options' }).click();
   const placeMenu = page.locator('.place-menu');
-  await expect(placeMenu.getByRole('button', { name: 'Rename worktree…' })).toBeEnabled();
   await expect(placeMenu.getByRole('button', { name: 'Remove worktree…' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.locator('.new-agent-tab').click();
+  await expect(page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Rename Cora' })).toBeVisible();
 });
 
 // verify an unpinned Worktree's tab closes with its agent
