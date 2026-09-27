@@ -4924,9 +4924,10 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
   }, [worktreeId, paneId]);
   const secondary: PanelAction[] = [];
   if (onRename !== undefined) secondary.push({ key: 'rename', label: `Rename terminal ${name}`, title: 'Rename terminal', className: 'pane-rename-toggle', disabled: deletePending || renaming, icon: <PanelIcon path={actionIconPaths.pencil} />, onSelect: () => { setRenameDraft(name); setRenaming(true); } });
-  if (onDelete !== undefined) secondary.push({ key: 'delete', label: `Delete terminal ${name}`, title: 'Delete shell (ends the running shell)', className: 'pane-delete', disabled: deletePending || renamePending, icon: deletePending ? <span className="spinner" /> : <PanelIcon path={actionIconPaths.trash} />, onSelect: () => void deleteShell() });
+  // keep managed-shell deletion visible even when rename folds into More
+  const deleteControl = onDelete === undefined ? undefined : <button type="button" className="panel-header-action pane-delete" aria-label={`Delete terminal ${name}`} title="Delete shell (ends the running shell)" disabled={deletePending || renamePending} onClick={() => void deleteShell()}>{deletePending ? <span className="spinner" /> : <PanelIcon path={actionIconPaths.trash} />}</button>;
   return <section className={`terminal-pane${expanded ? ' expanded' : ''}${focused ? ' focused' : ''}${selection ? ' selection-active' : ''}`} data-panel-key={paneId}>
-    <PanelHeader panelKey={paneId} label={`terminal ${name}`} expandDisabled={deletePending} secondary={secondary} close={{ key: 'minimize', label: `Minimize terminal ${name}`, title: 'Minimize terminal (the shell keeps running)', className: 'pane-minimize', disabled: deletePending, icon: <PanelIcon path="M5 12h14" />, onSelect: onMinimize }} title={<>
+    <PanelHeader panelKey={paneId} label={`terminal ${name}`} expandDisabled={deletePending} actions={deleteControl} secondary={secondary} close={{ key: 'minimize', label: `Minimize terminal ${name}`, title: 'Minimize terminal (the shell keeps running)', className: 'pane-minimize', disabled: deletePending, icon: <PanelIcon path="M5 12h14" />, onSelect: onMinimize }} title={<>
       {deleteError
       ? <span className="pane-status error" role="alert" title="Could not delete shell. Try again.">Delete failed</span>
       : connection !== undefined && <span className="pane-status" role="status">{connection}</span>}

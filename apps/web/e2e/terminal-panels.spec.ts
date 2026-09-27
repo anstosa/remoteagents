@@ -1313,7 +1313,7 @@ test('only a Console shell offers a rename affordance', async ({ page }) => {
   const vim = page.locator('.terminal-pane[data-panel-key="%6"]');
   await expect(vim).toBeVisible();
   await expect(vim.getByRole('button', { name: /Rename terminal/u })).toHaveCount(0);
-  // rename and delete are a Terminal's only folding actions, so no ⋮ means neither hides in one
+  // rename is the Terminal's only folding action, so unmanaged panes need no More
   await expect(vim.locator('.panel-header-more')).toHaveCount(0);
 
   // a Console shell does offer it
@@ -1341,6 +1341,11 @@ test('a managed shell header deletes through the pane endpoint while failed dele
   await seedPaneSize(page, '%5', 80, 24);
   const build = page.locator('.terminal-pane[data-panel-key="%5"]');
   const removeBuild = build.getByRole('button', { name: 'Delete terminal build', exact: true });
+  // keep Delete in the top-right header even when Rename folds on a phone
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(build.getByRole('toolbar', { name: 'Terminal build actions' }).getByRole('button', { name: 'Delete terminal build' })).toBeVisible();
+  await expect(build.getByRole('button', { name: 'More terminal build actions' })).toBeVisible();
+  await page.setViewportSize({ width: 1400, height: 900 });
   await expect(removeBuild.locator('svg[aria-hidden="true"]')).toBeVisible();
   await removeBuild.click();
   await expect.poll(() => deleted).toContain('%5');
