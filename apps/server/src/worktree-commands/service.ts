@@ -192,6 +192,25 @@ export class WorktreeCommandService {
     return listed.stdout.split('\n').some(name => { const trimmed = name.trim(); return trimmed.startsWith(prefix) && trimmed.endsWith('-exclusive'); });
   }
 
+  // the names of a Worktree's live Stack processes, which a Remove stops and its confirmation
+  // lists; an exited or stopped process has nothing left to stop. Empty when tmux cannot
+  // answer; the Remove itself still refuses to go ahead unless its Stop succeeds.
+  async runningProcesses(worktree: Worktree): Promise<string[]> {
+    const state = await this.processState(worktree);
+    return state?.state === 'running' ? [state.name] : [];
+  }
+
+  // Remove's Stop: a Worktree's Stack process is not a Remove blocker, so it is stopped (Ctrl+C,
+  // then a kill) and only then is the checkout `remove`d. The process action guard is held
+  // throughout, so a Start cannot reopen the process in a checkout on its way out, and a
+  // Start, Stop or Restart already in flight refuses the Remove as busy. False when tmux could
+  // not stop it, and the checkout stays. A daemon-style stack's own `stop` is never run here.
+  async stopForRemoval<T>(worktree: Worktree, remove: () => Promise<T>): Promise<T | 'busy' | false> {
+    const declared = stackProcess(worktree);
+    if (declared === undefined) return await remove();
+    return await this.guarded(worktree, 'stop', async () => await this.stopProcess(worktree, declared) ? await remove() : false);
+  }
+
   async run(worktreeId: string, action: StackAction): Promise<boolean> {
     return await this.start(worktreeId, action) === 'started';
   }
@@ -400,16 +419,20 @@ export class WorktreeCommandService {
   // Restart stops the process but keeps its window, then reruns the command in that same pane,
   // so a Terminal open on it stays attached; it does not start a process it could not stop.
   private async processAction(worktree: Worktree, declared: StackProcess, action: StackAction): Promise<'started'|'busy'|false> {
-    if (this.processOperations.has(worktree.id)) return 'busy';
-    this.processOperations.set(worktree.id, action);
-    try {
+    return await this.guarded(worktree, action, async () => {
       const done = action === 'start' ? await this.startProcess(worktree, declared)
         : action === 'stop' ? await this.stopProcess(worktree, declared)
         : await this.stopProcess(worktree, declared, true) && await this.startProcess(worktree, declared, true);
       return done ? 'started' : false;
-    } finally {
-      this.processOperations.delete(worktree.id);
-    }
+    });
+  }
+
+  // run `work` as the Worktree's one Stack process action in flight, reported as `action`
+  // meanwhile; busy when another is already under way
+  private async guarded<T>(worktree: Worktree, action: StackAction, work: () => Promise<T>): Promise<T | 'busy'> {
+    if (this.processOperations.has(worktree.id)) return 'busy';
+    this.processOperations.set(worktree.id, action);
+    try { return await work(); } finally { this.processOperations.delete(worktree.id); }
   }
 
   // Start a Worktree's Stack process: a live one is left alone, a dead pane is respawned in

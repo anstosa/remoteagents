@@ -1033,6 +1033,77 @@ describe('worktree Stack process', () => {
     expect(processWindows(tmux)).toHaveLength(1);
   });
 
+  // Remove names only a process it would actually stop: a live one
+  it('names a running process as the one Remove stops, and nothing else', async () => {
+    const tmux = fakeTmux();
+    tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    tmux.seedProcess('dana', '/worktrees/dana', 'dev', true, 1);
+    const service = stoppingService(tmux);
+    await expect(service.runningProcesses(cora)).resolves.toEqual(['dev']);
+    // an exited process, a stopped one, and a Worktree with no process have nothing to stop
+    await expect(service.runningProcesses(dana)).resolves.toEqual([]);
+    await expect(service.runningProcesses(erin)).resolves.toEqual([]);
+    await expect(service.runningProcesses(worktree)).resolves.toEqual([]);
+  });
+
+  it("stops the process for Remove with the Stack process's Stop: Ctrl+C, then a kill", async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const dev = tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    dev.ignoresInterrupt = true;
+    const service = stoppingService(tmux);
+
+    // the checkout goes only once the process is stopped, and no Start gets in meanwhile
+    const removal = service.stopForRemoval(cora, async () => {
+      tmux.events.push('remove');
+      await expect(service.state(cora)).resolves.toEqual({ operation: 'stop', running: false, process: { name: 'dev', state: 'stopped' } });
+      await expect(service.start(cora.id, 'start')).resolves.toBe('busy');
+      return 'removed';
+    });
+    await expect(removal).resolves.toBe('removed');
+    expect(tmux.events.filter(event => event.startsWith('keys') || event.startsWith('kill') || event === 'remove')).toEqual([`keys ${dev.paneId} C-c`, `kill ${dev.id}`, 'remove']);
+    expect(processWindows(tmux)).toEqual([]);
+  });
+
+  // only the one-shot operation session blocks Remove; a live process window is never one
+  it('never reads a live Stack process as a running stack command', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const service = stoppingService(tmux);
+    await expect(service.start(cora.id, 'start')).resolves.toBe('started');
+    await expect(service.state(cora)).resolves.toMatchObject({ running: true });
+    await expect(service.sessionRunning(cora)).resolves.toBe(false);
+  });
+
+  // Remove never runs a daemon-style stack's own `stop` command; it stops only a Stack process
+  it('has nothing to stop for Remove without a Stack process, and asks tmux nothing', async () => {
+    const calls: string[][] = [];
+    const daemon = testWorktree({ ...cora, commands: { start: 'docker compose up -d', stop: 'docker compose down' } });
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [daemon] } as never, async (_binary, args) => { calls.push(args); return { code: 0, stdout: '' }; });
+    await expect(service.stopForRemoval(daemon, async () => 'removed')).resolves.toBe('removed');
+    await expect(service.runningProcesses(daemon)).resolves.toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses Remove's stop while a process action is in flight, and fails it when tmux cannot run", async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const dev = tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    dev.ignoresInterrupt = true;
+    const service = stoppingService(tmux, { timeoutMs: 5_000, pollMs: 5 });
+    const stopping = service.start(cora.id, 'stop');
+    await vi.waitFor(() => { expect(tmux.events).toContain(`keys ${dev.paneId} C-c`); });
+    const removals: string[] = [];
+    await expect(service.stopForRemoval(cora, async () => { removals.push('cora'); })).resolves.toBe('busy');
+    Object.assign(dev, { dead: true, status: 0 });
+    await expect(stopping).resolves.toBe('started');
+
+    const failing = fakeTmux();
+    failing.state.fail = true;
+    await expect(stoppingService(failing).stopForRemoval(cora, async () => { removals.push('cora'); })).resolves.toBe(false);
+    expect(removals).toEqual([]);
+  });
+
   it('runs a one-shot build beside the process on its existing path', async () => {
     const tmux = fakeTmux();
     tmux.seedProcess('cora', '/worktrees/cora', 'dev');

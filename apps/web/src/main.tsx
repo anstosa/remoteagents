@@ -92,7 +92,7 @@ type Project = { id: string; label: string; mode?: 'repository' | 'directory'; a
 // local branch a Worktree already holds — it can base a new branch but not be checked out
 type BranchOption = { name: string; ref: string; remote: boolean; checkedOut: boolean };
 // the fresh facts the Remove dialog decides with (GET /api/worktrees/:id/removal)
-type RemovalFacts = { main: boolean; detached: boolean; locked: boolean; lockedReason?: string; branch?: string; dirtyCount: number; pushed: boolean; merged: boolean; ahead?: number; behind?: number; blockers: string[] };
+type RemovalFacts = { main: boolean; detached: boolean; locked: boolean; lockedReason?: string; branch?: string; dirtyCount: number; pushed: boolean; merged: boolean; ahead?: number; behind?: number; blockers: string[]; stopsProcesses: string[] };
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
@@ -7299,7 +7299,8 @@ function NewWorktreeDialog({ project, request, onClose, onCreated }: { project: 
 // The Remove dialog: fetch the worktree's fresh facts, then let the operator remove it —
 // a dirty tree only behind "Discard uncommitted changes", the branch behind its own tick,
 // which warns first when the branch is neither pushed nor merged (deleting it then loses
-// those commits). A running Agent or stack session is a blocker that refuses it.
+// those commits). A running Agent or stack session is a blocker that refuses it; a running
+// Stack process is not, and the dialog names it as one the Remove stops.
 function RemoveWorktreeDialog({ worktree, request, onClose, onRemoved }: { worktree: Worktree; request: (url: string, init?: RequestInit) => Promise<Response>; onClose: () => void; onRemoved: (message: string) => void }) {
   const [facts, setFacts] = useState<RemovalFacts | undefined>(undefined);
   const [factsError, setFactsError] = useState<string | undefined>(undefined);
@@ -7345,6 +7346,7 @@ function RemoveWorktreeDialog({ worktree, request, onClose, onRemoved }: { workt
           <li>{dirty ? <strong>{facts.dirtyCount} uncommitted {facts.dirtyCount === 1 ? 'change' : 'changes'}</strong> : 'No uncommitted changes'}</li>
           <li>{facts.pushed ? 'Pushed to a remote' : 'Not pushed'}{facts.branch === undefined ? '' : facts.merged ? ' · merged' : ' · not merged'}</li>
           {(facts.ahead !== undefined || facts.behind !== undefined) && <li>{facts.ahead ?? 0} ahead · {facts.behind ?? 0} behind upstream</li>}
+          {facts.stopsProcesses.map(name => <li key={name}>Stops <code>{name}</code>, its running Stack process</li>)}
         </ul>
         {blocked && <p className="remove-worktree-blocked" role="alert">Cannot remove while {facts.blockers.join(' and ')} {facts.blockers.length === 1 ? 'is' : 'are'} running.</p>}
         {dirty && <label className="remove-worktree-option"><input type="checkbox" checked={discard} disabled={blocked} onChange={event => setDiscard(event.target.checked)} />Discard uncommitted changes</label>}

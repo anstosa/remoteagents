@@ -56,7 +56,19 @@ describe('GET /api/worktrees/:id/removal', () => {
     try {
       const response = await server.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent(linked.id)}/removal`, headers: readHeaders });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ ...cleanFacts, blockers: ['a running agent'] });
+      expect(response.json()).toEqual({ ...cleanFacts, blockers: ['a running agent'], stopsProcesses: [] });
+    } finally { await server.close(); }
+  });
+
+  // a running Stack process is no blocker: Remove stops it, and the dialog says so
+  it('names the running Stack process Remove will stop, never as a blocker', async () => {
+    const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }) } as never;
+    const worktreeCommands = { sessionRunning: async () => false, runningProcesses: async () => ['dev'] } as never;
+    const server = await app({ discovery: discoveryStub(), worktreeManagement, worktreeCommands, ...(await stores()) });
+    try {
+      const response = await server.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent(linked.id)}/removal`, headers: readHeaders });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ...cleanFacts, blockers: [], stopsProcesses: ['dev'] });
     } finally { await server.close(); }
   });
 
@@ -160,17 +172,77 @@ describe('DELETE /api/worktrees/:id', () => {
     expect(removeCalls).toBe(0);
   });
 
-  it('refuses removal while a running stack command holds the worktree', async () => {
-    const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => ({ ok: true }) } as never;
+  it('refuses removal while a running stack command holds the worktree, stopping no Stack process', async () => {
+    let stops = 0;
+    let removeCalls = 0;
+    const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => { removeCalls += 1; return { ok: true }; } } as never;
     const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
-    // no running agent, but the stack service reports an active operation
-    const worktreeCommands = { sessionRunning: async () => true } as never;
+    // no running agent, but the stack service reports an active operation beside a Stack process
+    const worktreeCommands = { sessionRunning: async () => true, stopForRemoval: async (_w: unknown, remove: () => Promise<unknown>) => { stops += 1; return await remove(); } } as never;
     const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, worktreeCommands, ...(await stores()) });
     try {
       const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders });
       expect(response.statusCode).toBe(409);
       expect(response.json().error).toContain('a running stack command');
+      expect(stops).toBe(0);
+      expect(removeCalls).toBe(0);
     } finally { await server.close(); }
+  });
+
+  // the Stack process is stopped (gracefully, then killed, inside the service) and only then do
+  // the idle shells and the checkout go; a refused Remove leaves it running
+  it('stops the Stack process before the shells and the checkout, and not on a refusal', async () => {
+    const order: string[] = [];
+    const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => { order.push('remove'); return { ok: true }; } } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => { order.push('kill'); } } as never;
+    // the Stop resolves on a later tick, so a dropped `await` would let git run first
+    const worktreeCommands = { sessionRunning: async () => false, stopForRemoval: async (_w: unknown, remove: () => Promise<unknown>) => { await new Promise(resolve => setTimeout(resolve, 5)); order.push('stop'); const removed = await remove(); order.push('released'); return removed; } } as never;
+    const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, worktreeCommands, ...(await stores()) });
+    try {
+      const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders });
+      expect(response.statusCode).toBe(200);
+      expect(order).toEqual(['stop', 'kill', 'remove', 'released']);
+    } finally { await server.close(); }
+    const dirtyManagement = { removal: async () => ({ ok: true, facts: { ...cleanFacts, dirtyCount: 1 } }), removeCheckout: async () => ({ ok: true }) } as never;
+    order.length = 0;
+    const dirty = await app({ discovery: discoveryStub(), worktreeManagement: dirtyManagement, launch, worktreeCommands, ...(await stores()) });
+    try {
+      expect((await dirty.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders })).statusCode).toBe(409);
+      expect(order).toEqual([]);
+    } finally { await dirty.close(); }
+  });
+
+  // the Stop can take seconds; an Agent that starts meanwhile still refuses the removal
+  it('checks the blockers again once the Stack process has stopped', async () => {
+    let removeCalls = 0;
+    const agents: unknown[] = [];
+    const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => { removeCalls += 1; return { ok: true }; } } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
+    const agent = stated({ id: 'agent-x', paneId: '%1', sessionId: 's:$1', socketFingerprint: 's', home: linked.identity, worktreeId: linked.id, title: 'Ready' });
+    const worktreeCommands = { sessionRunning: async () => false, stopForRemoval: async (_w: unknown, remove: () => Promise<unknown>) => { agents.push(agent); return await remove(); } } as never;
+    const server = await app({ discovery: discoveryStub(agents as never), worktreeManagement, launch, worktreeCommands, ...(await stores()) });
+    try {
+      const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toContain('a running agent');
+      expect(removeCalls).toBe(0);
+    } finally { await server.close(); }
+  });
+
+  it('keeps the checkout when the Stack process could not be stopped or is mid-action', async () => {
+    let removeCalls = 0;
+    const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => { removeCalls += 1; return { ok: true }; } } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
+    for (const [outcome, status, error] of [[false, 500, 'could not stop the stack process'], ['busy', 409, 'stack operation already running']] as const) {
+      const worktreeCommands = { sessionRunning: async () => false, stopForRemoval: async () => outcome } as never;
+      const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, worktreeCommands, ...(await stores()) });
+      try {
+        const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders });
+        expect(response.statusCode).toBe(status);
+        expect(response.json()).toEqual({ error });
+      } finally { await server.close(); }
+    }
+    expect(removeCalls).toBe(0);
   });
 
   it('kills the idle shells before git, deletes every wire-id record after, and returns removed', async () => {

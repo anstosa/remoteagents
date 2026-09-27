@@ -157,7 +157,7 @@ The Project's trusted start/stop/build/restart/migrate/status commands, run in t
 _Avoid_: Scripts, tasks
 
 **Stack process**:
-A named, long-running foreground command a Project or Worktree declares (`dev: pnpm dev`), in place of daemon-style start/stop/status commands. It runs as a tagged window of its Worktree's Workspace session, found again by those tags, so it outlives a console restart; the console starts, stops (Ctrl+C, then a kill), and reads its state straight from that window. The one-shot Stack commands still run beside it.
+A named, long-running foreground command a Project or Worktree declares (`dev: pnpm dev`), in place of daemon-style start/stop/status commands. It runs as a tagged window of its Worktree's Workspace session, found again by those tags, so it outlives a console restart; the console starts, stops (Ctrl+C, then a kill), and reads its state straight from that window. The one-shot Stack commands still run beside it. It never blocks a Remove: the Remove stops it first.
 _Avoid_: Dev server, daemon, service, background job
 
 ### Reviewing changes

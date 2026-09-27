@@ -16,7 +16,7 @@ const dashboard = {
   ]
 };
 
-const facts = { main: false, detached: false, locked: false, branch: 'feat', dirtyCount: 2, pushed: true, merged: false, ahead: 1, behind: 0, blockers: [] };
+const facts = { main: false, detached: false, locked: false, branch: 'feat', dirtyCount: 2, pushed: true, merged: false, ahead: 1, behind: 0, blockers: [], stopsProcesses: [] };
 
 async function stub(page: import('@playwright/test').Page, handlers: { onDelete?: (body: unknown) => void; onPrune?: (contentType: string | undefined) => void; removal?: unknown } = {}) {
   await page.route('**/api/**', async route => {
@@ -139,4 +139,18 @@ test('prunes a project\'s stale checkouts from the launcher header', async ({ pa
   // "Body cannot be empty when content-type is set to 'application/json'"
   expect(pruned?.contentType).toBeUndefined();
   await expect(dialog).toBeHidden();
+});
+
+test('names the running Stack process the removal stops, without blocking it', async ({ page }) => {
+  let deleted: unknown;
+  await stub(page, { removal: { ...facts, dirtyCount: 0, stopsProcesses: ['dev'] }, onDelete: body => { deleted = body; } });
+  await page.goto('/');
+  await page.locator('.new-agent-tab').click();
+  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Remove Repo · feat' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Remove worktree' });
+
+  await expect(dialog.locator('.remove-worktree-facts')).toContainText('Stops dev, its running Stack process');
+  await expect(dialog.locator('.remove-worktree-blocked')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Remove worktree', exact: true }).click();
+  await expect.poll(() => deleted).toEqual({ discardChanges: false, deleteBranch: false });
 });

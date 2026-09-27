@@ -2530,6 +2530,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (await stackCommands.sessionRunning(worktree)) blockers.push('a running stack command');
     return blockers;
   };
+  // why a Remove is refused right now, if it is: a runtime blocker, or an open Console shell,
+  // so a removal cannot pull the directory out from under the operator's shell — the reason the
+  // launcher row shows (spec, Console shells). Always a fresh scan, as it guards the removal.
+  const worktreeRemovalRefusal = async (worktree: Worktree): Promise<string | undefined> => {
+    const blockers = await worktreeRemovalBlockers(worktree, true);
+    if (blockers.length > 0) return `cannot remove the worktree while ${blockers.join(' and ')} ${blockers.length === 1 ? 'is' : 'are'} running`;
+    if ((await launch.placeConsoleShells(worktree)).length > 0) return 'End the open terminals before removing this worktree';
+    return undefined;
+  };
   // delete every record a Worktree leaves behind, keyed by its wire id: the pin and last-used
   // kind, the queued prompts, prompt history and the saved review tour — so
   // a removed (then possibly recreated-at-the-same-path) Worktree leaves no stale trace.
@@ -2584,8 +2593,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(204).send();
   });
-  // the fresh facts the Remove dialog decides with, plus the runtime blockers (a GET is a
-  // read, so it never mutates and stays off the 10/min mutation budget)
+  // the fresh facts the Remove dialog decides with, plus the runtime blockers and the running
+  // Stack process a Remove would stop (a GET is a read, so it never mutates and stays off the
+  // 10/min mutation budget)
   app.get('/api/worktrees/:id/removal', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request);
     const id = (request.params as { id: string }).id;
@@ -2593,12 +2603,14 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (worktree === undefined) return await nonWorktreeReply(id, reply);
     const result = await worktreeManagement.removal(worktree);
     if (!result.ok) return reply.code(result.status).send({ error: result.error });
-    return { ...result.facts, blockers: await worktreeRemovalBlockers(worktree) };
+    const [blockers, stopsProcesses] = await Promise.all([worktreeRemovalBlockers(worktree), stackCommands.runningProcesses(worktree)]);
+    return { ...result.facts, blockers, stopsProcesses };
   });
   // remove one linked Worktree: refused on Main, on a locked checkout, while an Agent or a
-  // stack session runs there, and on a dirty tree unless discardChanges was ticked. Order:
-  // kill the idle shells → git worktree remove → delete records → optional branch delete →
-  // invalidate → refresh (ADR 0003). A branch-delete failure is reported, never undone.
+  // stack session runs there, and on a dirty tree unless discardChanges was ticked. A running
+  // Stack process is no blocker; it is stopped first. Order: stop the Stack process → kill the
+  // idle shells → git worktree remove → delete records → optional branch delete → invalidate
+  // → refresh (ADR 0003). A branch-delete failure is reported, never undone.
   app.delete('/api/worktrees/:id', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request, true);
     const requestBody = body(request);
@@ -2610,17 +2622,22 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (worktree === undefined) return await nonWorktreeReply(id, reply);
     if (worktree.main) return reply.code(409).send({ error: 'the main worktree cannot be removed' });
     if (worktree.locked) return reply.code(409).send({ error: 'Locked worktrees cannot be removed' });
-    const blockers = await worktreeRemovalBlockers(worktree, true);
-    if (blockers.length > 0) return reply.code(409).send({ error: `cannot remove the worktree while ${blockers.join(' and ')} ${blockers.length === 1 ? 'is' : 'are'} running` });
-    // refuse while any Console shell is open, so a removal cannot pull the directory out from
-    // under the operator's shell — the reason the launcher row shows (spec, Console shells)
-    if ((await launch.placeConsoleShells(worktree)).length > 0) return reply.code(409).send({ error: 'End the open terminals before removing this worktree' });
+    const refusal = await worktreeRemovalRefusal(worktree);
+    if (refusal !== undefined) return reply.code(409).send({ error: refusal });
     const facts = await worktreeManagement.removal(worktree);
     if (!facts.ok) return reply.code(facts.status).send({ error: facts.error });
     // a dirty tree needs the explicit discard; an unpushed one only warns, never blocks
     if (facts.facts.dirtyCount > 0 && discardChanges !== true) return reply.code(409).send({ error: 'the worktree has uncommitted changes; tick "Discard uncommitted changes" to remove it' });
-    await launch.killWorktreeShells(worktree);
-    const removed = await worktreeManagement.removeCheckout(worktree, { force: discardChanges === true });
+    // the Stack process stays stopped until the checkout is gone: nothing can Start it meanwhile.
+    // Its Stop can take seconds, so the refusals are checked again once it has stopped.
+    const removed = await stackCommands.stopForRemoval(worktree, async () => {
+      const late = await worktreeRemovalRefusal(worktree);
+      if (late !== undefined) return { ok: false, status: 409, error: late } as const;
+      await launch.killWorktreeShells(worktree);
+      return await worktreeManagement.removeCheckout(worktree, { force: discardChanges === true });
+    });
+    if (removed === 'busy') return reply.code(409).send({ error: 'stack operation already running' });
+    if (removed === false) return reply.code(500).send({ error: 'could not stop the stack process' });
     if (!removed.ok) return reply.code(removed.status).send({ error: removed.error });
     await deleteWorktreeRecords(worktree.id);
     let branchDeleted: boolean | undefined;
