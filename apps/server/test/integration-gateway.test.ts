@@ -16,9 +16,11 @@ const config = { enabled: true, mcp: { readEnabled: true, writeEnabled: true, da
 async function fixture(audit?: { record: (event: AuditEvent) => Promise<void> }) {
   const root = await mkdtemp(join(tmpdir(), 'rac-gateway-'));
   let queued = 0;
+  const stackActions: unknown[] = [];
   const orchestration = {
     listInstances: async () => ({ ok: true as const, version: 'v1' as const, value: [{ id: 'https://agents.example.com', name: 'Local', url: 'https://agents.example.com', local: true }] }),
-    queuePrompt: async () => { queued += 1; return { ok: true as const, version: 'v1' as const, value: { accepted: true as const } }; }
+    queuePrompt: async () => { queued += 1; return { ok: true as const, version: 'v1' as const, value: { accepted: true as const } }; },
+    runStackAction: async (input: unknown) => { stackActions.push(input); return { ok: true as const, version: 'v1' as const, value: { started: true as const } }; }
   };
   const forwarded: Array<{ instanceId: string; name: string; voiceAuthorized: boolean }> = [];
   const policy = new IntegrationPolicyService(join(root, 'policy.json'));
@@ -33,10 +35,22 @@ async function fixture(audit?: { record: (event: AuditEvent) => Promise<void> })
     control,
     forward: async (instanceId, _principal, name, _args, voiceAuthorized) => { forwarded.push({ instanceId, name, voiceAuthorized }); return { content: [{ type: 'text', text: '{"ok":true}' }], structuredContent: { ok: true, remote: true } }; }
   });
-  return { root, gateway, control, queued: () => queued, forwarded };
+  return { root, gateway, control, queued: () => queued, forwarded, stackActions };
 }
 
 describe('IntegrationGateway', () => {
+  // `process` narrows the action to one Stack process; without it the call is as it always was
+  it('passes an optional Stack process name through to a stack action', async () => {
+    const { root, gateway, stackActions } = await fixture();
+    try {
+      const operator = { ...principal, scopes: [...principal.scopes, 'stack:operate' as const] };
+      await expect(gateway.call(operator, 'run_stack_action', { worktree_id: 'fern', action: 'restart', process: 'api', request_id: 'request-stack-1' })).resolves.toMatchObject({ structuredContent: { ok: true } });
+      await expect(gateway.call(operator, 'run_stack_action', { worktree_id: 'fern', action: 'start', request_id: 'request-stack-2' })).resolves.toMatchObject({ structuredContent: { ok: true } });
+      await expect(gateway.call(operator, 'run_stack_action', { worktree_id: 'fern', action: 'start', process: '', request_id: 'request-stack-3' })).resolves.toMatchObject({ structuredContent: { ok: false } });
+      expect(stackActions).toEqual([{ worktreeId: 'fern', action: 'restart', process: 'api' }, { worktreeId: 'fern', action: 'start' }]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('runs mutations only during voice mode and replays idempotent results', async () => {
     const { root, gateway, control, queued } = await fixture();
     try {

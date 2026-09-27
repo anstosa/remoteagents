@@ -51,7 +51,7 @@ type ListedPane = { sessionId: string; windowId: string; paneId: string; place: 
 const processStateOf = (pane: ListedPane, name: string): StackProcessState => pane.dead ? { name, state: 'exited', ...(pane.exitCode === undefined ? {} : { exitCode: pane.exitCode }) } : { name, state: 'running' };
 // the actions a Stack process derives; any other action is a one-shot command (the web mirrors
 // this list in stack-operations.ts)
-const processActions: readonly StackAction[] = ['start', 'stop', 'restart'];
+export const processActions: readonly StackAction[] = ['start', 'stop', 'restart'];
 
 // prepend an explicitly configured host executable path
 const hostPathExport = () => {
@@ -104,9 +104,10 @@ export class WorktreeCommandService {
   private readonly tunnelCache = new Map<string, { value: boolean; expiresAt: number }>();
   private readonly tunnelRefreshes = new Map<string, Promise<void>>();
   // the Stack process action in flight per Worktree: its guard against an overlapping one,
-  // and the operation the dashboard reports meanwhile. The processes themselves are never
-  // recorded here — tmux holds them, and `stackPanes` finds them by their tags.
-  private readonly processOperations = new Map<string, StackAction>();
+  // and the operation the dashboard reports meanwhile, on the whole stack or on the one
+  // `process` it targets. The processes themselves are never recorded here — tmux holds
+  // them, and `stackPanes` finds them by their tags.
+  private readonly processOperations = new Map<string, { action: StackAction; process?: string }>();
   // one `list-panes` answers every Worktree's state during a dashboard build
   private processListing: Promise<ListedPane[] | undefined> | undefined;
 
@@ -209,17 +210,23 @@ export class WorktreeCommandService {
   async stopForRemoval<T>(worktree: Worktree, remove: () => Promise<T>): Promise<T | 'busy' | false> {
     const declared = stackProcesses(worktree);
     if (declared.length === 0) return await remove();
-    return await this.guarded(worktree, 'stop', async () => await this.stopProcesses(worktree, declared) ? await remove() : false);
+    return await this.guarded(worktree, 'stop', undefined, async () => { this.endStarting(worktree); return await this.stopProcesses(worktree, declared) ? await remove() : false; });
   }
 
   async run(worktreeId: string, action: StackAction): Promise<boolean> {
     return await this.start(worktreeId, action) === 'started';
   }
 
-  // start one stack action: a Stack process's own action, or an exclusive one-shot operation
-  async start(worktreeId: string, action: StackAction): Promise<'started'|'busy'|false> {
+  // start one stack action: a Stack process's own action, on the whole stack or on the one
+  // `processName` named, or an exclusive one-shot operation. False for a process the Worktree
+  // does not declare, or a one-shot action aimed at one.
+  async start(worktreeId: string, action: StackAction, processName?: string): Promise<'started'|'busy'|false> {
     const worktree = worktreeById(this.discovery.worktreesNow(), worktreeId);
     const declared = worktree === undefined ? [] : stackProcesses(worktree);
+    if (processName !== undefined) {
+      const target = declared.filter(entry => entry.name === processName);
+      return worktree === undefined || target.length === 0 || !processActions.includes(action) ? false : await this.processAction(worktree, target, action, processName);
+    }
     if (worktree !== undefined && declared.length > 0 && processActions.includes(action)) return await this.processAction(worktree, declared, action);
     const command = worktree?.commands?.[action];
     // require a configured action
@@ -287,7 +294,10 @@ export class WorktreeCommandService {
   // probe; that probe is for daemon-style stacks only.
   async state(worktree: Worktree): Promise<StackState> {
     const withProcess = stackProcesses(worktree).length > 0;
-    const [processes, probed, tunnel, operation] = await Promise.all([this.processStates(worktree), withProcess ? undefined : this.running(worktree), this.tunnel(worktree), this.operation(worktree)]);
+    const [listed, probed, tunnel, operation] = await Promise.all([this.processStates(worktree), withProcess ? undefined : this.running(worktree), this.tunnel(worktree), this.operation(worktree)]);
+    // a process action in flight shows on its process
+    const targeted = this.processOperations.get(worktree.id);
+    const processes = targeted?.process === undefined ? listed : listed?.map(entry => entry.name === targeted.process ? { ...entry, operation: targeted.action } : entry);
     const runningCount = processes?.filter(entry => entry.state === 'running').length;
     const running = withProcess ? processes === undefined ? undefined : runningCount === processes.length ? true : runningCount === 0 ? false : undefined : probed;
     const transition = this.transitions.get(worktree.id);
@@ -382,9 +392,11 @@ export class WorktreeCommandService {
     return refresh;
   }
 
+  // the whole-stack operation under way; one process's action in flight shows on its process
+  // instead, beside any one-shot command
   private async operation(worktree: Worktree): Promise<StackAction | undefined> {
     const processOperation = this.processOperations.get(worktree.id);
-    if (processOperation !== undefined) return processOperation;
+    if (processOperation?.process === undefined && processOperation !== undefined) return processOperation.action;
     const operation = this.operations.get(worktree.id);
     // report only active operations to the dashboard
     return operation !== undefined && await this.operationActive(operation) ? operation.action : undefined;
@@ -419,37 +431,41 @@ export class WorktreeCommandService {
     return 'unknown';
   }
 
-  // Run one Stack process action on every declared process, serialized per Worktree by its own
-  // guard rather than the one-shot exclusive session, so `build`/`migrate` still run beside a
-  // live process. Start goes in config order and Stop in reverse; a step that fails ends the
-  // sequence. Restart stops each process but keeps its window, then reruns the command in that
-  // same pane, so a Terminal open on it stays attached; it starts nothing it could not stop.
-  private async processAction(worktree: Worktree, declared: StackProcess[], action: StackAction): Promise<'started'|'busy'|false> {
-    return await this.guarded(worktree, action, async () => {
-      const done = action === 'start' ? await this.startProcesses(worktree, declared)
-        : action === 'stop' ? await this.stopProcesses(worktree, declared)
-        : await this.stopProcesses(worktree, declared, true) && await this.startProcesses(worktree, declared, true);
+  // Run one Stack process action on its targets — every declared process, or the one
+  // `processName` named — serialized per Worktree by its own guard rather than the one-shot
+  // exclusive session, so `build`/`migrate` still run beside a live process. Start goes in
+  // config order and Stop in reverse; a step that fails ends the sequence. Restart stops each
+  // process but keeps its window, then reruns the command in that same pane, so a Terminal open
+  // on it stays attached; it starts nothing it could not stop. A whole-stack Stop or Restart ends
+  // a Start's wait on the tunnel; one process stopping leaves the rest of the stack waiting.
+  private async processAction(worktree: Worktree, targets: StackProcess[], action: StackAction, processName?: string): Promise<'started'|'busy'|false> {
+    return await this.guarded(worktree, action, processName, async () => {
+      if (processName === undefined && action !== 'start') this.endStarting(worktree);
+      const done = action === 'start' ? await this.startProcesses(worktree, targets)
+        : action === 'stop' ? await this.stopProcesses(worktree, targets)
+        : await this.stopProcesses(worktree, targets, true) && await this.startProcesses(worktree, targets, true);
       return done ? 'started' : false;
     });
   }
 
   // start each process in order, stopping at the first that fails
-  private async startProcesses(worktree: Worktree, declared: StackProcess[], rerun = false): Promise<boolean> {
-    for (const entry of declared) if (!await this.startProcess(worktree, entry, rerun)) return false;
+  private async startProcesses(worktree: Worktree, targets: StackProcess[], rerun = false): Promise<boolean> {
+    for (const entry of targets) if (!await this.startProcess(worktree, entry, rerun)) return false;
     return true;
   }
 
   // stop each process in reverse order, stopping at the first that fails
-  private async stopProcesses(worktree: Worktree, declared: StackProcess[], keep = false): Promise<boolean> {
-    for (const entry of [...declared].reverse()) if (!await this.stopProcess(worktree, entry, keep)) return false;
+  private async stopProcesses(worktree: Worktree, targets: StackProcess[], keep = false): Promise<boolean> {
+    for (const entry of [...targets].reverse()) if (!await this.stopProcess(worktree, entry, keep)) return false;
     return true;
   }
 
   // run `work` as the Worktree's one Stack process action in flight, reported as `action`
-  // meanwhile; busy when another is already under way
-  private async guarded<T>(worktree: Worktree, action: StackAction, work: () => Promise<T>): Promise<T | 'busy'> {
+  // meanwhile, on the one `processName` it targets or else the whole stack; busy when another is
+  // already under way, whichever it targets
+  private async guarded<T>(worktree: Worktree, action: StackAction, processName: string | undefined, work: () => Promise<T>): Promise<T | 'busy'> {
     if (this.processOperations.has(worktree.id)) return 'busy';
-    this.processOperations.set(worktree.id, action);
+    this.processOperations.set(worktree.id, { action, ...(processName === undefined ? {} : { process: processName }) });
     try { return await work(); } finally { this.processOperations.delete(worktree.id); }
   }
 
@@ -517,7 +533,6 @@ export class WorktreeCommandService {
   private async stopProcess(worktree: Worktree, declared: StackProcess, keep = false): Promise<boolean> {
     const panes = await this.stackPanes(true);
     if (panes === undefined) return false;
-    this.endStarting(worktree);
     const matching = this.processPanes(panes, worktree, declared.name);
     const kept = keep ? this.processWindow(panes, worktree, declared.name)?.windowId : undefined;
     const live = matching.filter(pane => !pane.dead);

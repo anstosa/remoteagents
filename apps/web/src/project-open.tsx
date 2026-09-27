@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FlyoutPortal } from './flyout-portal.js';
 import { PanelIcon, panelIcons } from './panel-header.js';
-import { processActions, stackActionLabel, stackOperationLabel, type StackAction, type StackOperationLog, type StackProcessOutput, type StackProcessState } from './stack-operations.js';
+import { processActionLabel, processActions, stackActionLabel, stackOperationLabel, type StackAction, type StackOperationLog, type StackProcessOutput, type StackProcessState } from './stack-operations.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 
 type ProjectStack = { actions?: StackAction[]; running?: boolean; operation?: StackAction; transition?: 'starting'|'migrating'; tunnel?: boolean; processes?: StackProcessState[] };
@@ -10,8 +10,19 @@ type ProjectStackStatus = 'working'|'exited'|'partial'|'healthy'|'down'|'running
 // which output the log dialog shows: the last one-shot command's, or a named Stack process's own
 type StackLogViewer = { kind: 'command' } | { kind: 'process'; name: string };
 
-// the process output dialog's footer: its state, with the exit code once it has died
-const processStatusLabel = (output: StackProcessOutput) => output.state === 'running' ? 'Running' : output.state === 'stopped' ? 'Stopped' : output.exitCode === undefined ? 'Exited' : `Exited (${output.exitCode})`;
+// a process's state as the output dialog's footer and its menu section show it, with the exit
+// code once it has died
+const processStatusLabel = (process: StackProcessState) => process.state === 'running' ? 'Running' : process.state === 'stopped' ? 'Stopped' : process.exitCode === undefined ? 'Exited' : `Exited (${process.exitCode})`;
+
+// run a stack action, holding its progress state at least 750 ms so a quick one never flickers
+const withMinimumProgress = async (work: () => Promise<unknown> | unknown) => {
+  const startedAt = Date.now();
+  try { await work(); }
+  finally {
+    const remaining = Math.max(0, 750 - (Date.now() - startedAt));
+    if (remaining > 0) await new Promise(resolve => window.setTimeout(resolve, remaining));
+  }
+};
 
 // how many of a stack's Stack processes are running
 const runningCount = (processes: StackProcessState[]) => processes.filter(process => process.state === 'running').length;
@@ -43,9 +54,12 @@ function resolveStackStatus(stack: ProjectStack | undefined, inProgress: boolean
 // The project's toolbar controls: the stack button and its menu (which also opens the project in
 // a new tab or the browser panel) or, with no stack commands, a link to the project.
 // `onOpenTerminal` opens a running Stack process's pane as a Terminal panel, named for the process.
-export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, onStackAction, onStackLog, onProcessOutput, onOpenTerminal }: { url?: string; stack?: ProjectStack; browserOpen?: boolean; onBrowserToggle?: () => void; onStackAction?: (action: StackAction) => Promise<unknown> | unknown; onStackLog?: () => Promise<StackOperationLog | undefined>; onProcessOutput?: (name: string) => Promise<StackProcessOutput | undefined>; onOpenTerminal?: (paneId: string, name: string) => void }) {
+// `onProcessAction` starts, stops or restarts one of several Stack processes from its own section.
+export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, onStackAction, onStackLog, onProcessOutput, onProcessAction, onOpenTerminal }: { url?: string; stack?: ProjectStack; browserOpen?: boolean; onBrowserToggle?: () => void; onStackAction?: (action: StackAction) => Promise<unknown> | unknown; onStackLog?: () => Promise<StackOperationLog | undefined>; onProcessOutput?: (name: string) => Promise<StackProcessOutput | undefined>; onProcessAction?: (name: string, action: StackAction) => Promise<unknown> | unknown; onOpenTerminal?: (paneId: string, name: string) => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [running, setRunning] = useState<StackAction>();
+  // the one-process action this menu sent, until its request returns
+  const [runningProcess, setRunningProcess] = useState<{ name: string; action: StackAction }>();
   const [viewer, setViewer] = useState<StackLogViewer>();
   const [log, setLog] = useState<StackOperationLog>();
   const [processOutput, setProcessOutput] = useState<StackProcessOutput>();
@@ -61,8 +75,12 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
   const actions = stack?.actions ?? [];
   const hasStackActions = actions.length > 0 && onStackAction !== undefined;
   // a Stack process's own actions leave no command output; only one-shot actions do
-  const hasStackLogs = actions.some(action => stack?.processes === undefined || !processActions.includes(action)) && onStackLog !== undefined;
-  const outputProcesses = onProcessOutput === undefined ? [] : (stack?.processes ?? []).map(process => process.name);
+  const hasStackLogs = actions.some(action => stack?.processes === undefined || !(processActions as readonly StackAction[]).includes(action)) && onStackLog !== undefined;
+  // several processes each get a menu section; one is the whole stack, so its menu stays compact
+  const processSections = (stack?.processes?.length ?? 0) > 1;
+  const outputProcesses = onProcessOutput === undefined || processSections ? [] : (stack?.processes ?? []).map(process => process.name);
+  // a one-process action in flight, sent from here or (as the dashboard reports it) elsewhere
+  const processOperation = runningProcess ?? stack?.processes?.flatMap(process => process.operation === undefined ? [] : [{ name: process.name, action: process.operation }])[0];
   // require only a usable target and handler
   const hasBrowserControl = url !== undefined && onBrowserToggle !== undefined;
   useEffect(() => {
@@ -112,27 +130,34 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
   const openLogs = (next: StackLogViewer) => { setLogError(''); if (next.kind === 'process') setProcessOutput(undefined); followOutputRef.current = true; setMenuOpen(false); setViewer(next); };
   // a stack still Starting is already up, just not yet healthy, so it can be stopped or
   // restarted; only another Start, or anything during a migration, would overlap
-  const allowed = (action: StackAction) => running === undefined && stack?.operation === undefined && (stack?.transition === undefined || (stack.transition === 'starting' && (action === 'stop' || action === 'restart')));
+  const allowed = (action: StackAction) => running === undefined && stack?.operation === undefined && processOperation === undefined && (stack?.transition === undefined || (stack.transition === 'starting' && (action === 'stop' || action === 'restart')));
+  // One process's action waits only for any other action in flight, or a migration. Starting a
+  // stopped process while the stack is still Starting overlaps nothing; a running one has nothing
+  // to start, and a stopped one nothing to stop.
+  const processAllowed = (process: StackProcessState, action: StackAction) => running === undefined && stack?.operation === undefined && processOperation === undefined && stack?.transition !== 'migrating'
+    && !(action === 'start' && process.state === 'running') && !(action === 'stop' && process.state === 'stopped');
+  // launch one process's action, leaving the menu open on the result
+  const runProcess = async (process: StackProcessState, action: StackAction) => {
+    if (!processAllowed(process, action) || onProcessAction === undefined) return;
+    setRunningProcess({ name: process.name, action });
+    try { await withMinimumProgress(() => onProcessAction(process.name, action)); }
+    finally { setRunningProcess(undefined); }
+  };
   // launch one stack action
   const run = async (action: StackAction) => {
     // reject overlapping operations and transitions
     if (!allowed(action) || onStackAction === undefined) return;
-    const startedAt = Date.now();
     setRunning(action);
-    try {
-      await onStackAction(action);
-    }
+    try { await withMinimumProgress(() => onStackAction(action)); }
     finally {
-      // keep the clickable progress state from flickering
-      const remaining = Math.max(0, 750 - (Date.now() - startedAt));
-      if (remaining > 0) await new Promise(resolve => window.setTimeout(resolve, remaining));
       setRunning(undefined);
       setMenuOpen(false);
     }
   };
   // omit the control only when there is neither a project target nor stack actions
   if (url === undefined && !hasStackActions) return null;
-  const operation = running ?? stack?.operation;
+  // a single process has no section, so an action on it alone (from MCP) shows as the stack's
+  const operation = running ?? stack?.operation ?? (processSections ? undefined : processOperation?.action);
   const status = stack?.transition ?? (stack?.tunnel === true ? 'healthy' : stack?.tunnel === false ? 'down' : 'starting');
   const busy = operation !== undefined;
   const transitionLabel = stack?.transition === 'starting' ? 'Starting' : stack?.transition === 'migrating' ? 'Migrating' : undefined;
@@ -158,6 +183,15 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
   const terminalPane = processViewer !== undefined && onOpenTerminal !== undefined && processOutput?.paneId !== undefined ? { paneId: processOutput.paneId, name: processOutput.name } : undefined;
   const openTerminal = terminalPane === undefined ? null : <button type="button" className="stack-log-open-terminal" title={`Open ${terminalPane.name} as a Terminal panel`} onClick={() => { setViewer(undefined); onOpenTerminal?.(terminalPane.paneId, terminalPane.name); }}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM7 9l3 3-3 3M12 15h5" /></svg>Open as Terminal</button>;
   const logIcon = <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14v12H5zM8 10l2 2-2 2M12 14h4" /></svg>;
+  // one section per process: its state (or the action in flight on it), its own actions and its output
+  const processSectionList = processSections && (stack?.processes ?? []).map(process => {
+    const inFlight = processOperation?.name === process.name ? processOperation.action : undefined;
+    return <div key={process.name} className="stack-process" role="group" aria-label={`${process.name} process`} aria-busy={inFlight !== undefined || undefined}>
+      <div className="stack-process-heading"><i className={`stack-process-dot state-${process.state}`} aria-hidden="true" /><span className="stack-process-name">{process.name}</span><span className="stack-process-state">{inFlight === undefined ? processStatusLabel(process) : <><span className="spinner" aria-hidden="true" />{stackOperationLabel(inFlight)}…</>}</span></div>
+      {onProcessAction !== undefined && <div className="stack-process-actions">{processActions.map(action => <button key={action} type="button" disabled={!processAllowed(process, action)} aria-label={`${processActionLabel(action)} ${process.name}`} onClick={() => void runProcess(process, action)}>{processActionLabel(action)}</button>)}</div>}
+      {onProcessOutput !== undefined && <button className="stack-log-menu-button" type="button" onClick={() => openLogs({ kind: 'process', name: process.name })}>{logIcon}Show {process.name} output</button>}
+    </div>;
+  });
   const splitTitle = browserOpen ? 'Close split view' : 'Open split view';
   const logDialog = viewer !== undefined && createPortal(<section className="dialog stack-log-dialog" role="dialog" aria-modal="true" aria-label={logView.name}><div><header><strong>{logView.title}</strong>{logView.busy && <span className="spinner" aria-hidden="true" />}{openTerminal}<button type="button" aria-label="Close stack output" title="Close" onClick={() => setViewer(undefined)}><PanelIcon path={panelIcons.close} /></button></header>{logError && <p className="stack-log-error" role="alert">{logError}</p>}<pre ref={logOutputRef} tabIndex={0} autoFocus onScroll={event => { const output = event.currentTarget; followOutputRef.current = output.scrollHeight - output.scrollTop - output.clientHeight < 24; }}>{logView.text}</pre><footer aria-live="polite">{logView.status}</footer></div></section>, document.body);
   const externalControl = url === undefined ? null : <a className="project-menu-external" href={url} target="_blank" rel="noreferrer" aria-busy={inProgress || undefined} title={title} onClick={() => {
@@ -173,7 +207,7 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
     <span className={`project-open-group${url === undefined ? ' stack-only' : ''}${hasStackActions ? ' has-stack-actions' : ''}`} ref={anchorRef} role="group" aria-label={url === undefined ? 'Stack controls' : 'Project controls'}>
       {hasStackActions ? <button className="project-stack-toggle project-stack-trigger toolbar-button" type="button" aria-label={`Stack controls: ${stackDescription}`} data-context-flyout aria-expanded={menuOpen} title={`Stack controls · ${stackDescription}`} onClick={() => setMenuOpen(open => !open)}><span className="flyout-caret" aria-hidden="true" /><svg className="project-stack-server-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2" /><rect x="3" y="14" width="18" height="7" rx="2" /><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6" /></svg><span className="toolbar-label">Stack</span><span className="project-stack-status-text">{stackStatusText}</span><i className={`project-stack-status-dot status-${stackStatus}`} aria-hidden="true" /></button> : url !== undefined && <a className={`project-open status-${status}${inProgress ? ' busy' : ''}`} href={url} target="_blank" rel="noreferrer" aria-busy={inProgress || undefined} title={title}>{inProgress ? <span className="spinner" aria-hidden="true" /> : <i aria-hidden="true" />}{label}</a>}
     </span>
-    {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="stack-menu more-menu flyout-menu" ref={flyoutRef} style={style}>{actions.map(action => <button key={action} disabled={!allowed(action)} onClick={() => void run(action)}>{operation === action ? <><span className="spinner" />{stackOperationLabel(action)}…</> : stackActionLabel(action)}</button>)}{(outputProcesses.length > 0 || hasStackLogs) && <hr className="more-menu-divider" />}{outputProcesses.map(name => <button key={name} className="stack-log-menu-button" type="button" onClick={() => openLogs({ kind: 'process', name })}>{logIcon}Show {name} output</button>)}{hasStackLogs && <button className="stack-log-menu-button" type="button" onClick={() => openLogs({ kind: 'command' })}>{logIcon}Show last command output</button>}{url !== undefined && <span className="project-stack-view-actions" role="group" aria-label="Project view controls">{externalControl}{splitControl}</span>}</div></FlyoutPortal>}
+    {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className={`stack-menu more-menu flyout-menu${processSections ? ' has-process-sections' : ''}`} ref={flyoutRef} style={style}>{actions.map(action => <button key={action} disabled={!allowed(action)} onClick={() => void run(action)}>{operation === action ? <><span className="spinner" />{stackOperationLabel(action)}…</> : stackActionLabel(action)}</button>)}{processSectionList && <><hr className="more-menu-divider" />{processSectionList}</>}{(outputProcesses.length > 0 || hasStackLogs) && <hr className="more-menu-divider" />}{outputProcesses.map(name => <button key={name} className="stack-log-menu-button" type="button" onClick={() => openLogs({ kind: 'process', name })}>{logIcon}Show {name} output</button>)}{hasStackLogs && <button className="stack-log-menu-button" type="button" onClick={() => openLogs({ kind: 'command' })}>{logIcon}Show last command output</button>}{url !== undefined && <span className="project-stack-view-actions" role="group" aria-label="Project view controls">{externalControl}{splitControl}</span>}</div></FlyoutPortal>}
     {logDialog}
   </>;
 }

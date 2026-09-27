@@ -1224,6 +1224,135 @@ describe('worktree with several Stack processes', () => {
     expect([...steps(tmux, windows), tmux.events.at(-1)]).toEqual(['keys web', 'kill web', 'kill api', 'keys sync', 'kill sync', 'remove']);
   });
 
+  it('starts one process and leaves the others alone', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('fern', fern.id);
+    const sync = tmux.seedProcess('fern', '/worktrees/fern', 'sync');
+    const service = stackService(tmux);
+
+    await expect(service.start(fern.id, 'start', 'api')).resolves.toBe('started');
+    expect(names(tmux)).toEqual(['sync', 'api']);
+    expect(tmux.events).not.toContain(`respawn ${sync.id}`);
+    expect(processWindows(tmux).at(-1)?.command.at(-1)).toContain('ods exec api');
+    // a live process is left alone, as on the whole stack
+    await expect(service.start(fern.id, 'start', 'api')).resolves.toBe('started');
+    expect(names(tmux)).toEqual(['sync', 'api']);
+  });
+
+  it('stops one process and leaves the others running', async () => {
+    const tmux = fakeTmux();
+    const windows = seedStack(tmux);
+    const service = stackService(tmux);
+
+    await expect(service.start(fern.id, 'stop', 'api')).resolves.toBe('started');
+    expect(steps(tmux, windows)).toEqual(['keys api', 'kill api']);
+    expect(names(tmux)).toEqual(['sync', 'web']);
+    await expect(service.state(fern)).resolves.toEqual({ processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'stopped' }, { name: 'web', state: 'running' }] });
+  });
+
+  it('restarts one process in its own pane, and none of the others', async () => {
+    const tmux = fakeTmux();
+    const windows = seedStack(tmux);
+    await expect(stackService(tmux).start(fern.id, 'restart', 'api')).resolves.toBe('started');
+    expect(steps(tmux, windows)).toEqual(['keys api', 'respawn api']);
+    expect(processWindows(tmux)).toEqual(windows);
+    expect(windows[1]!.command.at(-1)).toContain('ods exec api');
+  });
+
+  it('refuses a name not configured, a one-shot action, and a Worktree without processes, asking tmux nothing', async () => {
+    const gale = testWorktree({ id: 'proj:/worktrees/gale', projectId: 'proj', path: '/worktrees/gale', main: false, commands: { start: 'docker compose up -d', stop: 'docker compose down', restart: 'docker compose restart', build: 'pnpm build' } });
+    const tmux = fakeTmux();
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [fern, gale] } as never, tmux.command, undefined, undefined, undefined, stopTiming);
+
+    await expect(service.start(fern.id, 'start', 'nope')).resolves.toBe(false);
+    await expect(service.start(fern.id, 'build', 'api')).resolves.toBe(false);
+    await expect(service.start(gale.id, 'start', 'api')).resolves.toBe(false);
+    await expect(service.start('proj:/worktrees/gone', 'start', 'api')).resolves.toBe(false);
+    expect(tmux.calls).toEqual([]);
+  });
+
+  // one guard covers the whole stack and each of its processes, whichever came first
+  it('refuses a process action during a whole-stack one, and a whole-stack one during a process action', async () => {
+    const tmux = fakeTmux();
+    const windows = seedStack(tmux);
+    const holly = testWorktree({ id: 'proj:/worktrees/holly', projectId: 'proj', path: '/worktrees/holly', main: false, commands: { processes: { sync: 'ods exec sync', api: 'ods exec api' } } });
+    tmux.seedWorkspace('holly', holly.id);
+    const slow = new WorktreeCommandService(config, { worktreesNow: () => [fern, holly] } as never, tmux.command, undefined, undefined, undefined, { timeoutMs: 5_000, pollMs: 5 });
+    const web = windows[2]!;
+    web.ignoresInterrupt = true;
+
+    const stopping = slow.start(fern.id, 'stop');
+    await vi.waitFor(() => { expect(tmux.events).toContain(`keys ${web.paneId} C-c`); });
+    await expect(slow.start(fern.id, 'restart', 'api')).resolves.toBe('busy');
+    await expect(slow.start(fern.id, 'start', 'web')).resolves.toBe('busy');
+    Object.assign(web, { dead: true, status: 0 });
+    await expect(stopping).resolves.toBe('started');
+
+    const api = tmux.seedProcess('fern', '/worktrees/fern', 'api');
+    api.ignoresInterrupt = true;
+    const stoppingApi = slow.start(fern.id, 'stop', 'api');
+    await vi.waitFor(() => { expect(tmux.events).toContain(`keys ${api.paneId} C-c`); });
+    await expect(slow.start(fern.id, 'start')).resolves.toBe('busy');
+    await expect(slow.start(fern.id, 'start', 'sync')).resolves.toBe('busy');
+    // the guard is per Worktree
+    await expect(slow.start(holly.id, 'start', 'api')).resolves.toBe('started');
+    Object.assign(api, { dead: true, status: 0 });
+    await expect(stoppingApi).resolves.toBe('started');
+    // and gone once the action ends
+    await expect(slow.start(fern.id, 'start', 'sync')).resolves.toBe('started');
+  });
+
+  // the menu shows "Restarting…" on the process, not on the whole stack
+  it('reports a process action in flight on its own process, not as the stack operation', async () => {
+    const tmux = fakeTmux();
+    const windows = seedStack(tmux);
+    const api = windows[1]!;
+    api.ignoresInterrupt = true;
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [fern] } as never, tmux.command, undefined, undefined, undefined, { timeoutMs: 5_000, pollMs: 5 });
+
+    const restarting = service.start(fern.id, 'restart', 'api');
+    await vi.waitFor(() => { expect(tmux.events).toContain(`keys ${api.paneId} C-c`); });
+    await expect(service.state(fern)).resolves.toEqual({ running: true, processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'running', operation: 'restart' }, { name: 'web', state: 'running' }] });
+    Object.assign(api, { dead: true, status: 0 });
+    await expect(restarting).resolves.toBe('started');
+    await expect(service.state(fern)).resolves.toEqual({ running: true, transition: 'starting', processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'running' }, { name: 'web', state: 'running' }] });
+  });
+
+  // a one-shot build is no process action, so one process's action in flight never hides it
+  it('reports a one-shot build as the stack operation while one process restarts', async () => {
+    const tmux = fakeTmux();
+    const windows = seedStack(tmux);
+    const api = windows[1]!;
+    api.ignoresInterrupt = true;
+    const buildSession = `=${stackSession('proj', '/worktrees/fern').replace('-build-', '-start-')}`;
+    const command: ReturnType<typeof fakeTmux>['command'] = async (binary, args) => {
+      if (args[0] === 'new-session' && args.at(-1)?.includes('pnpm build') === true) return { code: 0, stdout: '' };
+      if (args[0] === 'has-session' && args.at(-1) === buildSession) return { code: 0, stdout: '' };
+      return await tmux.command(binary, args);
+    };
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [fern] } as never, command, undefined, undefined, undefined, { timeoutMs: 5_000, pollMs: 5 });
+
+    const restarting = service.start(fern.id, 'restart', 'api');
+    await vi.waitFor(() => { expect(tmux.events).toContain(`keys ${api.paneId} C-c`); });
+    await expect(service.start(fern.id, 'build')).resolves.toBe('started');
+    await expect(service.state(fern)).resolves.toMatchObject({ operation: 'build', processes: [{ name: 'sync' }, { name: 'api', operation: 'restart' }, { name: 'web' }] });
+    Object.assign(api, { dead: true, status: 0 });
+    await expect(restarting).resolves.toBe('started');
+  });
+
+  // Starting waits on the whole stack's Project; one process stopping does not end that wait
+  it("keeps the stack's Starting wait across one process's Stop, and ends it on the whole stack's", async () => {
+    const tmux = fakeTmux();
+    const service = stackService(tmux);
+    await expect(service.start(fern.id, 'start')).resolves.toBe('started');
+    await expect(service.start(fern.id, 'stop', 'api')).resolves.toBe('started');
+    await expect(service.state(fern)).resolves.toMatchObject({ transition: 'starting' });
+    await expect(service.start(fern.id, 'restart', 'api')).resolves.toBe('started');
+    await expect(service.state(fern)).resolves.toMatchObject({ running: true, transition: 'starting' });
+    await expect(service.start(fern.id, 'stop')).resolves.toBe('started');
+    await expect(service.state(fern)).resolves.toEqual({ running: false, processes: [{ name: 'sync', state: 'stopped' }, { name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped' }] });
+  });
+
   it('runs a one-shot build beside the live processes', async () => {
     const tmux = fakeTmux();
     seedStack(tmux);

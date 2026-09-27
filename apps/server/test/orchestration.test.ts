@@ -194,6 +194,34 @@ describe('OrchestrationService', () => {
     expect(calls).toEqual(['queue:First', `update:${promptId}:Edited`, `move:${promptId}:earlier`, `remove:${promptId}`, 'stack:cora:build']);
   });
 
+  // `process` narrows a Stack process action to one process; without it the action is the whole
+  // stack's, as before
+  it('runs a stack action on one Stack process only when the Worktree declares it', async () => {
+    const erin: Worktree = { ...dave, id: 'erin', label: 'Erin', path: '/worktrees/erin', identity: '/worktrees/erin', commands: { processes: { sync: 'ods exec sync', api: 'ods exec api' }, build: 'pnpm build' } };
+    const fay: Worktree = { ...dave, id: 'fay', label: 'Fay', path: '/worktrees/fay', identity: '/worktrees/fay', commands: { start: 'docker compose up -d', stop: 'docker compose down' } };
+    const calls: string[] = [];
+    const service = new OrchestrationService(dependencies({
+      discovery: { target: async () => undefined, worktreesNow: () => [cora, dave, erin, fay] },
+      worktreeCommands: {
+        actions: worktree => worktree.id === erin.id ? ['start', 'stop', 'build', 'restart'] : worktree.id === fay.id ? ['start', 'stop'] : worktree.id === cora.id ? ['build'] : [],
+        state: async () => ({}),
+        start: async (worktreeId, action, name) => { calls.push(`stack:${worktreeId}:${action}${name === undefined ? '' : `:${name}`}`); return name === 'sync' ? 'busy' : 'started'; },
+        log: async () => undefined
+      }
+    }));
+
+    await expect(service.runStackAction({ worktreeId: erin.id, action: 'restart', process: 'api' })).resolves.toMatchObject({ ok: true });
+    await expect(service.runStackAction({ worktreeId: erin.id, action: 'restart' })).resolves.toMatchObject({ ok: true });
+    await expect(service.runStackAction({ worktreeId: erin.id, action: 'stop', process: 'sync' })).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
+    await expect(service.runStackAction({ worktreeId: erin.id, action: 'start', process: 'web' })).resolves.toMatchObject({ ok: false, error: { code: 'unavailable' } });
+    await expect(service.runStackAction({ worktreeId: erin.id, action: 'build', process: 'api' })).resolves.toMatchObject({ ok: false, error: { code: 'unavailable' } });
+    await expect(service.runStackAction({ worktreeId: cora.id, action: 'build', process: 'dev' })).resolves.toMatchObject({ ok: false, error: { code: 'unavailable' } });
+    // a daemon-style stack's own Start takes no process
+    await expect(service.runStackAction({ worktreeId: fay.id, action: 'start', process: 'dev' })).resolves.toMatchObject({ ok: false, error: { code: 'unavailable' } });
+    await expect(service.runStackAction({ worktreeId: erin.id, action: 'start', process: '' })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_request' } });
+    expect(calls).toEqual(['stack:erin:restart:api', 'stack:erin:restart', 'stack:erin:stop:sync']);
+  });
+
   it('deactivates only idle agents in configured worktrees', async () => {
     let agent: Agent = stated({ ...activeAgent, title: '⠋ Working' });
     let closed = 0;

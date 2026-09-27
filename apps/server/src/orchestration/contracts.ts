@@ -136,7 +136,8 @@ export type UpdateQueuedPromptInputV1 = { agentId: string; promptId: string; pro
 export type MoveQueuedPromptInputV1 = { agentId: string; promptId: string; direction: 'earlier' | 'later' };
 export type RemoveQueuedPromptInputV1 = { agentId: string; promptId: string };
 export type AnswerQuestionInputV1 = { agentId: string; questionId: string; index: number };
-export type RunStackActionInputV1 = { worktreeId: string; action: StackAction };
+// `process` narrows a Stack process's own action to that one process
+export type RunStackActionInputV1 = { worktreeId: string; action: StackAction; process?: string };
 export type SwitchPullRequestInputV1 = { agentId: string; number: number };
 export type StartReviewInputV1 = { agentId: string } & ReviewTourInput;
 

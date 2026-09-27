@@ -1,7 +1,7 @@
 import { createElement, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ProjectOpen } from '../src/project-open.js';
-import { isStackProcessOutput, type StackAction } from '../src/stack-operations.js';
+import { isStackProcessOutput, type StackAction, type StackProcessState } from '../src/stack-operations.js';
 
 // render controls during an active operation
 export const renderProjectOpen = (root: HTMLElement) => {
@@ -174,5 +174,42 @@ export const renderSeveralProcessStatuses = (root: HTMLElement) => {
       onProcessOutput: async (name: string) => ({ name, state: name === 'api' ? 'stopped' : 'running', output: name === 'api' ? '' : `${name} ready` })
     }),
     createElement(ProjectOpen, { stack: { actions: processActions, tunnel: false, processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'exited', exitCode: 1 }, { name: 'web', state: 'exited', exitCode: 2 }] }, onStackAction: () => {} })
+  ));
+};
+
+// the process actions the stack menu asked for, for a spec to read back
+type ProcessActions = { processActions?: { name: string; action: StackAction }[] };
+
+// render a stack of several Stack processes whose menu acts on each one: every action is held
+// briefly, as the console holds the request until it is done, then lands in the process's state
+export const renderProcessSectionControls = (root: HTMLElement) => {
+  const Controls = () => {
+    const [processes, setProcesses] = useState<StackProcessState[]>([{ name: 'sync', state: 'running' }, { name: 'api', state: 'running' }, { name: 'web', state: 'exited', exitCode: 1 }]);
+    return createElement(ProjectOpen, {
+      stack: { actions: ['start', 'stop', 'build', 'restart'], processes },
+      onStackAction: () => {},
+      onStackLog: async () => undefined,
+      onProcessOutput: async (name: string) => ({ name, state: 'running', output: `${name} ready` }),
+      onProcessAction: async (name: string, action: StackAction) => {
+        const record = window as unknown as ProcessActions;
+        record.processActions = [...record.processActions ?? [], { name, action }];
+        await new Promise(resolve => window.setTimeout(resolve, 300));
+        setProcesses(current => current.map(process => process.name === name ? { name, state: action === 'stop' ? 'stopped' : 'running' } : process));
+      }
+    });
+  };
+  createRoot(root).render(createElement(Controls));
+};
+
+// render stacks whose process has an action in flight from elsewhere (another tab, or MCP): one of
+// several, and a lone process, which has no section of its own
+export const renderProcessOperationControls = (root: HTMLElement) => {
+  createRoot(root).render(createElement('div', {},
+    createElement(ProjectOpen, {
+      stack: { actions: ['start', 'stop', 'restart'], running: true, processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'running', operation: 'restart' }] },
+      onStackAction: () => {},
+      onProcessAction: () => {}
+    }),
+    createElement(ProjectOpen, { stack: { actions: ['start', 'stop', 'restart'], running: true, processes: [{ name: 'dev', state: 'running', operation: 'stop' }] }, onStackAction: () => {}, onProcessAction: () => {} })
   ));
 };

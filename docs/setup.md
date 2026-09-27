@@ -304,8 +304,12 @@ within a tick — no config edit or restart.
   all the same way, keeping their windows, and reruns each command in the order
   written in its own pane, so a Terminal open on it stays attached. A step that
   fails ends the Start, Stop or Restart there and reports it failed; processes already
-  started keep running. Each process belongs to tmux, so it keeps running across
-  a console restart and is found again by the tags on its window, and its pane
+  started keep running. With several processes the stack menu also gives each
+  its own section, with its state and its own Start, Stop and Restart, which act
+  on that process alone and leave the rest running (the MCP `run_stack_action`
+  tool takes the same choice as an optional `process`). One action runs per
+  Worktree at a time, whether it is on the whole stack or one process. Each
+  process belongs to tmux, so it keeps running across a console restart and is found again by the tags on its window, and its pane
   scrolls back as far as that session's `history-limit`. The stack menu's
   "Show `<name>` output", one per process, opens that history in the log
   dialog and keeps it refreshing; while the process runs, that

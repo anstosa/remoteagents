@@ -306,3 +306,89 @@ test('offers no last command output without one-shot commands, and shows an exit
   // a dead pane is no live Terminal
   await expect(dialog.getByRole('button', { name: 'Open as Terminal' })).toHaveCount(0);
 });
+
+// each process gets its own section: its state, its own Start/Stop/Restart and its output; the
+// whole-stack actions stay at the top
+test('gives each of several Stack processes a menu section with its own actions', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderProcessSectionControls } = await import('/e2e/project-open-fixture.tsx');
+    renderProcessSectionControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  await page.getByRole('button', { name: 'Stack controls: web exited (1)', exact: true }).click();
+  const menu = page.locator('.stack-menu');
+  await expect(menu.getByRole('button', { name: 'Start stack', exact: true })).toBeEnabled();
+  await expect(menu.getByRole('button', { name: 'Restart stack', exact: true })).toBeEnabled();
+  const sections = menu.locator('.stack-process');
+  await expect(sections.locator('.stack-process-name')).toHaveText(['sync', 'api', 'web']);
+  await expect(sections.locator('.stack-process-state')).toHaveText(['Running', 'Running', 'Exited (1)']);
+  const api = menu.getByRole('group', { name: 'api process' });
+  // a running process has nothing to start; an exited one can still be cleared with Stop
+  await expect(api.getByRole('button', { name: 'Start api', exact: true })).toBeDisabled();
+  await expect(api.getByRole('button', { name: 'Stop api', exact: true })).toBeEnabled();
+  const web = menu.getByRole('group', { name: 'web process' });
+  await expect(web.getByRole('button', { name: 'Start web', exact: true })).toBeEnabled();
+  await expect(web.getByRole('button', { name: 'Stop web', exact: true })).toBeEnabled();
+
+  // the action in flight shows on its own process, holds every other action, and keeps the menu open
+  await api.getByRole('button', { name: 'Restart api', exact: true }).click();
+  await expect(api.locator('.stack-process-state')).toHaveText('Restarting…');
+  await expect(api).toHaveAttribute('aria-busy', 'true');
+  await expect(api.getByRole('button', { name: 'Restart api', exact: true })).toBeDisabled();
+  await expect(web.getByRole('button', { name: 'Start web', exact: true })).toBeDisabled();
+  await expect(menu.getByRole('button', { name: 'Stop stack', exact: true })).toBeDisabled();
+  await expect(api.locator('.stack-process-state')).toHaveText('Running');
+  await expect(api.getByRole('button', { name: 'Restart api', exact: true })).toBeEnabled();
+  await expect(menu).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { processActions?: unknown }).processActions)).toEqual([{ name: 'api', action: 'restart' }]);
+
+  // one process's Stop leaves the rest running
+  await web.getByRole('button', { name: 'Start web', exact: true }).click();
+  await expect(web.locator('.stack-process-state')).toHaveText('Running');
+  await api.getByRole('button', { name: 'Stop api', exact: true }).click();
+  await expect(api.locator('.stack-process-state')).toHaveText('Stopped');
+  await expect(api.getByRole('button', { name: 'Stop api', exact: true })).toBeDisabled();
+  await expect(sections.locator('.stack-process-state')).toHaveText(['Running', 'Stopped', 'Running']);
+  await expect(page.getByRole('button', { name: 'Stack controls: 2 of 3 running', exact: true })).toBeVisible();
+
+  await web.getByRole('button', { name: 'Show web output', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'web output' }).locator('pre')).toHaveText('web ready');
+});
+
+test("shows a process action in flight elsewhere on that process's section", async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderProcessOperationControls } = await import('/e2e/project-open-fixture.tsx');
+    renderProcessOperationControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  await page.getByRole('button', { name: 'Stack controls: running', exact: true }).click();
+  const api = page.getByRole('group', { name: 'api process' });
+  await expect(api.locator('.stack-process-state')).toHaveText('Restarting…');
+  await expect(api.getByRole('button', { name: 'Restart api', exact: true })).toBeDisabled();
+  await expect(page.getByRole('group', { name: 'sync process' }).getByRole('button', { name: 'Stop sync', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Restart stack', exact: true })).toBeDisabled();
+  await page.keyboard.press('Escape');
+
+  // a lone process's action shows as the stack's own
+  await page.getByRole('button', { name: 'Stack controls: working', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Stopping…', exact: true })).toBeDisabled();
+  await expect(page.locator('.stack-menu .stack-process')).toHaveCount(0);
+});
+
+// a single process is the whole stack, so the stack's own actions already act on it
+test('keeps the menu of a single Stack process compact, without a process section', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderProcessOutputControls } = await import('/e2e/project-open-fixture.tsx');
+    renderProcessOutputControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  await page.getByRole('button', { name: 'Stack controls: running', exact: true }).click();
+  await expect(page.locator('.stack-menu .stack-process')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Show dev output', exact: true })).toBeVisible();
+});

@@ -1190,6 +1190,18 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .project-stack-status-dot.status-working { background: var(--peach); box-shadow: 0 0 .45rem color-mix(in srgb, var(--peach) 75%, transparent); }
 .more-menu.stack-menu { width: 13rem; }
 .more-menu.stack-menu .stack-log-menu-button { display: flex; align-items: center; gap: .45rem; color: var(--green); }
+.more-menu.stack-menu.has-process-sections { width: 15rem; }
+.stack-process + .stack-process { border-top: 1px solid color-mix(in srgb, var(--surface-2) 72%, transparent); }
+.stack-process-heading { display: flex; align-items: center; gap: .45rem; padding: .5rem .9rem .25rem; }
+.stack-process-name { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.stack-process-state { display: inline-flex; align-items: center; gap: .3rem; margin-left: auto; color: var(--overlay-1); font-size: .68rem; font-weight: 600; white-space: nowrap; }
+.stack-process-dot { flex: none; width: .45rem; height: .45rem; border-radius: 50%; background: var(--overlay-0); }
+.stack-process-dot.state-running { background: var(--green); }
+.stack-process-dot.state-exited { background: var(--red); }
+.stack-process-actions { display: flex; gap: .25rem; padding: .15rem .6rem .2rem; }
+.more-menu.stack-menu .stack-process-actions button { min-width: 0; flex: 1 1 0; justify-content: center; gap: .3rem; border: 1px solid var(--surface-2); border-radius: var(--control-radius); padding: .35rem .3rem; color: var(--subtext-0); font-size: .68rem; }
+.more-menu.stack-menu .stack-process-actions button:not(:disabled):hover { border-color: var(--lavender); color: var(--text); }
+.stack-menu .stack-process-state .spinner { flex: 0 0 .65rem; width: .65rem; height: .65rem; border-width: 1.5px; color: var(--peach); }
 .project-stack-view-actions { display: flex; width: 100%; align-items: stretch; margin-top: .3rem; border-top: 1px solid var(--surface-2); }
 .more-menu.stack-menu .project-stack-view-actions :is(.project-menu-external, .project-menu-split) { display: inline-flex; min-width: 0; min-height: var(--standard-control-size); flex: 1 1 0; align-items: center; justify-content: center; gap: .4rem; border: 0; border-radius: 0; padding: .55rem .65rem; background: transparent; color: var(--subtext-0); box-shadow: none; text-decoration: none; white-space: nowrap; }
 .more-menu.stack-menu .project-stack-view-actions .project-menu-split { border-left: 1px solid var(--surface-2); }

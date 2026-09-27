@@ -1084,6 +1084,41 @@ describe('Console shells server lifecycle', () => {
     } finally { await app.close(); }
   }, 15_000);
 
+  // one process of the stack: a name the Worktree does not configure, or a one-shot action, has
+  // no route; a busy Worktree is the command route's 409, and a Start that fails is not a 404
+  it('starts, stops and restarts one Stack process, 404 for a name or action it has not, 409 while busy', async () => {
+    const calls: string[] = [];
+    const results = ['started', 'started', 'started', 'busy', false] as const;
+    const startAction = async (id: string, action: string, name?: string) => { calls.push(`${id}/${action}/${name}`); return results[calls.length - 1]; };
+    const withProcesses = { ...worktree, commands: { processes: { sync: 'ods exec sync', api: 'ods exec api' }, build: 'pnpm build' } };
+    const { app, headers } = await start({ discovery: { worktreesNow: () => [withProcesses] }, worktreeCommands: { start: startAction } });
+    try {
+      const post = (rest: string) => app.inject({ method: 'POST', url: `/api/worktrees/cora/processes/${rest}`, headers });
+      for (const action of ['start', 'stop', 'restart']) expect((await post(`api/${action}`)).statusCode).toBe(202);
+      expect((await post('sync/restart')).statusCode).toBe(409);
+      const failed = await post('sync/start');
+      expect(failed.statusCode).toBe(500);
+      expect(failed.json()).toEqual({ error: 'stack command failed' });
+      expect(calls).toEqual(['cora/start/api', 'cora/stop/api', 'cora/restart/api', 'cora/restart/sync', 'cora/start/sync']);
+      expect((await post('web/start')).statusCode).toBe(404);
+      expect((await post('api/build')).statusCode).toBe(404);
+      expect((await post('api/output')).statusCode).toBe(404);
+      expect(calls).toHaveLength(5);
+      // an operator action: it needs the CSRF token
+      expect((await app.inject({ method: 'POST', url: '/api/worktrees/cora/processes/api/start', headers: { host: headers.host, cookie: headers.cookie } })).statusCode).toBe(403);
+      expect(calls).toHaveLength(5);
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('offers no Stack process route on a Worktree without processes', async () => {
+    const startAction = vi.fn(async () => 'started');
+    const { app, headers } = await start({ discovery: { worktreesNow: () => [{ ...worktree, commands: { start: 'docker compose up -d', stop: 'docker compose down' } }] }, worktreeCommands: { start: startAction } });
+    try {
+      expect((await app.inject({ method: 'POST', url: '/api/worktrees/cora/processes/dev/start', headers })).statusCode).toBe(404);
+      expect(startAction).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  }, 15_000);
+
   it('refuses to remove a Worktree while it has an open Console shell', async () => {
     const { app, headers } = await start({ launch: { placeConsoleShells: async () => [shell] }, worktreeCommands: { sessionRunning: async () => false } });
     try {

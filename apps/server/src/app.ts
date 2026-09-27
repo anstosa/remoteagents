@@ -24,7 +24,7 @@ import { scratchLaunchKey, WorktreeLaunchStore } from './worktrees/store.js';
 import { folderNoteKey, placeLaunchScope, placeNoteKey, worktreePlace, type Place } from './places/places.js';
 import { safeEnv } from './tmux/command.js';
 import { PushService } from './push-service.js';
-import { WorktreeCommandService } from './worktree-commands/service.js';
+import { processActions, WorktreeCommandService } from './worktree-commands/service.js';
 import { PullRequestSwitchService } from './pull-requests/switch-service.js';
 import { NewTaskService } from './new-task/service.js';
 import { WorktreeManagementService } from './worktrees/management.js';
@@ -2673,6 +2673,18 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // report stacks without retained output separately
     if (log === undefined) return reply.code(404).send({ error: 'stack log unavailable' });
     return log;
+  });
+  // Start, Stop or Restart one Stack process of the Worktree, leaving the others alone; a name it
+  // does not configure, or a one-shot action, has no route
+  app.post('/api/worktrees/:id/processes/:name/:action', async (request, reply) => {
+    controlled(request, true);
+    const { id, name, action } = request.params as { id: string; name: string; action: string };
+    const worktree = configuredWorktree(id);
+    if (worktree === undefined) return await nonWorktreeReply(id, reply, { missing: { error: 'stack command unavailable' } });
+    if (!Object.hasOwn(worktree.commands?.processes ?? {}, name) || !(processActions as readonly string[]).includes(action)) return reply.code(404).send({ error: 'stack command unavailable' });
+    const result = await stackCommands.start(id, action as StackAction, name);
+    if (result === 'busy') return reply.code(409).send({ error: 'stack operation already running' });
+    return result === false ? reply.code(500).send({ error: 'stack command failed' }) : reply.code(202).send();
   });
   // a Stack process's recent output, read from its pane, beside its state
   app.get('/api/worktrees/:id/processes/:name/output', async (request, reply) => {

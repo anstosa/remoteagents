@@ -13,7 +13,7 @@ import type { TmuxAdapter } from '../tmux/adapter.js';
 import type { NewTaskService } from '../new-task/service.js';
 import type { WorkspaceFileService, WorkspaceFilePreview } from '../workspace-files/service.js';
 import { configuredWorktreeForWorkspace, worktreeById } from '../workspaces/resolver.js';
-import type { WorktreeCommandService } from '../worktree-commands/service.js';
+import { processActions, type WorktreeCommandService } from '../worktree-commands/service.js';
 import type {
   AgentStatusV1,
   AnswerQuestionInputV1,
@@ -604,17 +604,19 @@ export class OrchestrationService {
     });
   }
 
-  // run one explicitly configured stack action
+  // run one explicitly configured stack action, on the whole stack or on one Stack process
   async runStackAction(input: RunStackActionInputV1): Promise<OrchestrationResult<{ started: true }>> {
     // enforce the fixed action vocabulary
-    if (!validIdentifier(input.worktreeId) || !stackActions.includes(input.action)) return failure('invalid_request', 'Invalid stack action.');
+    if (!validIdentifier(input.worktreeId) || !stackActions.includes(input.action) || (input.process !== undefined && !validIdentifier(input.process))) return failure('invalid_request', 'Invalid stack action.');
     return await this.operation(async () => {
       const worktree = this.worktree(input.worktreeId);
       // require an action configured for this worktree
       if (worktree === undefined) return failure('not_found', 'Worktree not found.');
       // reject actions absent from configuration
       if (!this.dependencies.worktreeCommands.actions(worktree).includes(input.action)) return failure('unavailable', 'Stack action is not configured.');
-      const result = await this.dependencies.worktreeCommands.start(input.worktreeId, input.action);
+      // one process takes only its own actions, and only when the Worktree declares it
+      if (input.process !== undefined && (!processActions.includes(input.action) || !Object.hasOwn(worktree.commands?.processes ?? {}, input.process))) return failure('unavailable', 'Stack process is not configured.');
+      const result = await this.dependencies.worktreeCommands.start(input.worktreeId, input.action, input.process);
       // expose exclusive operation conflicts distinctly
       if (result === 'busy') return failure('conflict', 'Another stack action is already running.', true);
       return result === 'started' ? success({ started: true as const }) : failure('operation_failed', 'Stack action could not be started.', true);

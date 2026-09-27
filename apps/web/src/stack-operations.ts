@@ -1,12 +1,13 @@
 export type StackAction = 'start'|'stop'|'build'|'restart'|'migrate';
-// a Worktree's Stack process as its pane shows it; `exitCode` is absent after a signal
-export type StackProcessState = { name: string; state: 'running'|'exited'|'stopped'; exitCode?: number };
+// a Worktree's Stack process as its pane shows it; `exitCode` is absent after a signal, and
+// `operation` is an action on this process alone in flight
+export type StackProcessState = { name: string; state: 'running'|'exited'|'stopped'; exitCode?: number; operation?: StackAction };
 // what "Show <name> output" reads: the process's state and its pane's recent output, and while
 // it runs the pane's id, which "Open as Terminal" opens
 export type StackProcessOutput = StackProcessState & { paneId?: string; output: string };
 // the actions a Stack process derives; any other action is a one-shot command (mirrors the
 // server's list in worktree-commands/service.ts)
-export const processActions: readonly StackAction[] = ['start', 'stop', 'restart'];
+export const processActions = ['start', 'stop', 'restart'] as const satisfies readonly StackAction[];
 export type StackOperationLog = { action: StackAction; active: boolean; startedAt: string; completedAt?: string; output: string };
 
 const actionLabels: Record<StackAction, string> = {
@@ -25,7 +26,11 @@ const operationLabels: Record<StackAction, string> = {
   migrate: 'Migrating'
 };
 
+// a Stack process's own actions, named for the one process they act on
+const processActionLabels: Record<'start'|'stop'|'restart', string> = { start: 'Start', stop: 'Stop', restart: 'Restart' };
+
 export const stackActionLabel = (action: StackAction) => actionLabels[action];
+export const processActionLabel = (action: 'start'|'stop'|'restart') => processActionLabels[action];
 export const stackOperationLabel = (action: StackAction) => operationLabels[action];
 
 // validate stack log responses

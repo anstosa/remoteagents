@@ -203,6 +203,14 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     for (const name of ['api', 'web']) await vi.waitFor(async () => { expect(await tmuxAt('capture-pane', '-p', '-J', '-t', `=${session}:${name}`)).toContain(`${name} up`); }, { timeout: 10_000, interval: 100 });
     await expect(instance.state(worktree)).resolves.toMatchObject({ running: true, processes: [{ name: 'api', state: 'running' }, { name: 'web', state: 'running' }] });
 
+    // one process alone: stopping it leaves the other running, and starting it opens it again
+    await expect(instance.start(worktree.id, 'stop', 'api')).resolves.toBe('started');
+    await expect(instance.state(worktree)).resolves.toMatchObject({ processes: [{ name: 'api', state: 'stopped' }, { name: 'web', state: 'running' }] });
+    expect((await instance.state(worktree)).running).toBeUndefined();
+    await expect(instance.start(worktree.id, 'start', 'api')).resolves.toBe('started');
+    await vi.waitFor(async () => { expect(await tmuxAt('capture-pane', '-p', '-J', '-t', `=${session}:api`)).toContain('api up'); }, { timeout: 10_000, interval: 100 });
+    await expect(instance.state(worktree)).resolves.toMatchObject({ running: true, processes: [{ name: 'api', state: 'running' }, { name: 'web', state: 'running' }] });
+
     await expect(instance.start(worktree.id, 'stop')).resolves.toBe('started');
     await expect(instance.state(worktree)).resolves.toEqual({ running: false, processes: [{ name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped' }] });
   }, 40_000);

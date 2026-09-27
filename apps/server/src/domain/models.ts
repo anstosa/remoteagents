@@ -22,8 +22,8 @@ export type StackAction = typeof stackActions[number];
 // state, so they never sit beside those.
 export type StackCommands = Partial<Record<StackAction | 'status' | 'setup', string>> & { processes?: Record<string, string> };
 // one Stack process as tmux shows it: its pane live, dead with the exit status tmux kept
-// (absent after a signal), or no window at all
-export type StackProcessState = { name: string; state: 'running' | 'exited' | 'stopped'; exitCode?: number };
+// (absent after a signal), or no window at all; `operation` is an action on it alone in flight
+export type StackProcessState = { name: string; state: 'running' | 'exited' | 'stopped'; exitCode?: number; operation?: StackAction };
 // canonical checkout settings with project defaults already resolved
 export type WorktreeOverride = { path: string; commands?: StackCommands; projectUrl?: string; projectPort?: number };
 export type PromptAction = { label: string; prompt: string };

@@ -158,7 +158,7 @@ export class IntegrationGateway {
       case 'launch_scratch_agent': return await orchestration.launchScratch();
       case 'deactivate_agent': return await orchestration.deactivate(input.agent_id as string);
       case 'start_new_task': return await orchestration.startNewTask(input.agent_id as string);
-      case 'run_stack_action': return await orchestration.runStackAction({ worktreeId: input.worktree_id as string, action: input.action as 'start' | 'stop' | 'build' | 'restart' | 'migrate' });
+      case 'run_stack_action': return await orchestration.runStackAction({ worktreeId: input.worktree_id as string, action: input.action as 'start' | 'stop' | 'build' | 'restart' | 'migrate', ...(input.process === undefined ? {} : { process: input.process as string }) });
       case 'start_review': return await orchestration.startReview({ agentId: input.agent_id as string, scope: input.scope as 'working' | 'pr', includeTests: input.include_tests as boolean, includeDocs: input.include_docs as boolean });
       case 'switch_pull_request': return await orchestration.switchPullRequest({ agentId: input.agent_id as string, number: input.number as number });
       default: return { ok: false, version: 'v1', error: { code: 'invalid_request', message: 'Unknown tool.', retryable: false } };
@@ -194,7 +194,7 @@ function replayResult(state: 'completed' | 'failed' | 'unknown_outcome', stored:
 function auditTarget(instanceId: unknown, input: Record<string, unknown> | undefined): string {
   const instance = typeof instanceId === 'string' ? instanceId : 'local';
   const target = input?.agent_id ?? input?.worktree_id ?? 'instance';
-  const detail = input?.number === undefined ? input?.action === undefined ? '' : `:action=${String(input.action)}` : `:pr=${String(input.number)}`;
+  const detail = input?.number === undefined ? input?.action === undefined ? '' : `:action=${String(input.action)}${input.process === undefined ? '' : `:process=${String(input.process)}`}` : `:pr=${String(input.number)}`;
   return `${instance}:${String(target)}${detail}`.slice(0, 256);
 }
 
