@@ -249,9 +249,9 @@ textarea { min-height: 7rem; resize: vertical; font-family: var(--font-mono); }
 .tabs button.status-action-required { color: var(--red); border: 2px solid var(--red); box-shadow: inset 0 0 1.5rem color-mix(in srgb, var(--red) 18%, transparent), 0 0 .7rem color-mix(in srgb, var(--red) 45%, transparent); }
 .tabs > button.active { box-shadow: inset 0 0 0 1px var(--blue), inset 0 0 1.35rem color-mix(in srgb, var(--blue) 34%, transparent), inset 0 1px color-mix(in srgb, var(--text) 14%, transparent); }
 .tab-label { position: relative; z-index: 1; display: inline-flex; color: transparent; background: linear-gradient(90deg, var(--peach) 0%, var(--peach) 40%, var(--rosewater) 49%, var(--rosewater) 50%, var(--rosewater) 51%, var(--peach) 60%, var(--peach) 100%); background-size: 200% 100%; background-position: -200% 50%; background-clip: text; filter: drop-shadow(0 0 .32rem color-mix(in srgb, var(--peach) 58%, transparent)); -webkit-background-clip: text; animation: tab-working-text-glow 3s linear infinite reverse; }
-.tabs button.status-prompt-done { color: var(--green); }
-.tabs button.unread { color: var(--green); background: linear-gradient(145deg, color-mix(in srgb, var(--green) 18%, var(--surface-0)), color-mix(in srgb, var(--green) 8%, var(--mantle))); animation: tab-unread-success 1.6s ease-in-out infinite; }
-.tabs button.unread::after { position: absolute; top: .42rem; right: .42rem; width: var(--status-dot-size); height: var(--status-dot-size); border-radius: 50%; background: var(--green); box-shadow: 0 0 .7rem color-mix(in srgb, var(--green) 88%, transparent); content: ''; animation: tab-unread-dot 1.6s ease-in-out infinite; }
+/* transitions outrank unread success until the operation settles */
+.tabs button.unread:not(.status-transitioning) { color: var(--green); background: linear-gradient(145deg, color-mix(in srgb, var(--green) 18%, var(--surface-0)), color-mix(in srgb, var(--green) 8%, var(--mantle))); animation: tab-unread-success 1.6s ease-in-out infinite; }
+.tabs button.unread:not(.status-transitioning)::after { position: absolute; top: .42rem; right: .42rem; width: var(--status-dot-size); height: var(--status-dot-size); border-radius: 50%; background: var(--green); box-shadow: 0 0 .7rem color-mix(in srgb, var(--green) 88%, transparent); content: ''; animation: tab-unread-dot 1.6s ease-in-out infinite; }
 .tabs button.status-closed { color: var(--surface-2); }
 .tabs button.status-transitioning { isolation: isolate; color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 42%, var(--surface-1)); background: linear-gradient(145deg, color-mix(in srgb, var(--yellow) 12%, var(--surface-0)), var(--mantle)); }
 .tab-transition-label { display: grid; min-width: 0; gap: .08rem; line-height: 1; text-align: left; }
@@ -1841,6 +1841,12 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .tabs.workspace-dropdown-row:has(> :is(.notification-control, .notification-status)) { flex-wrap: wrap; }
 .tabs.workspace-dropdown-row > :is(.notification-control, .notification-status) { order: 1; flex: 1 0 100%; }
 .tabs > .workspace-dropdown { flex: 1 1 auto; justify-content: flex-start; white-space: nowrap; }
+/* use the workspace status on the outside border without an inset outline */
+.tabs > .workspace-dropdown.active { --workspace-status: var(--overlay-1); border-color: var(--workspace-status); box-shadow: none; }
+.tabs > .workspace-dropdown.active.unread { --workspace-status: var(--green); }
+.tabs > .workspace-dropdown.active.status-working { --workspace-status: var(--peach); }
+.tabs > .workspace-dropdown.active.status-action-required { --workspace-status: var(--red); }
+.tabs > .workspace-dropdown.active.status-transitioning { --workspace-status: var(--yellow); }
 /* the marks, title, badge and chevron sit further apart than a desktop tab's tight glyph gap */
 .tabs > .workspace-dropdown[role='tab'] { gap: .6rem; }
 .workspace-dropdown-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -1858,19 +1864,29 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .workspace-sheet hr { width: 100%; margin: .2rem 0; border: 0; border-top: 1px solid var(--surface-1); }
 .workspace-sheet-entry { display: flex; width: 100%; min-height: 2.6rem; align-items: center; justify-content: flex-start; gap: .6rem; margin: 0; padding: .4rem .55rem; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--subtext-1); box-shadow: none; text-align: left; }
 .workspace-sheet-entry:hover { background: var(--surface-0); color: var(--text); filter: none; }
-.workspace-sheet-entry[aria-current="true"] { background: var(--surface-0); color: var(--text); box-shadow: inset 2px 0 var(--mauve); }
-.workspace-sheet-row { display: flex; min-width: 0; align-items: center; border-radius: var(--control-radius); }
-.workspace-sheet-row:hover, .workspace-sheet-row:has(> .workspace-sheet-entry[aria-current="true"]) { background: var(--surface-0); }
-.workspace-sheet-row:has(> .workspace-sheet-entry[aria-current="true"]) { box-shadow: inset 2px 0 var(--mauve); }
+.workspace-sheet-entry[aria-current="true"] { background: var(--surface-0); color: var(--text); }
+.workspace-sheet-row { --workspace-status: var(--overlay-1); display: flex; min-width: 0; align-items: center; overflow: hidden; border: 1px solid transparent; border-radius: var(--control-radius); }
+.workspace-sheet-row.unread { --workspace-status: var(--green); }
+.workspace-sheet-row.status-working { --workspace-status: var(--peach); }
+.workspace-sheet-row.status-action-required { --workspace-status: var(--red); }
+.workspace-sheet-row.status-transitioning { --workspace-status: var(--yellow); }
+.workspace-sheet-row:hover, .workspace-sheet-row:has(> .workspace-sheet-entry[aria-current="true"]) { background: color-mix(in srgb, var(--workspace-status) 9%, var(--surface-0)); }
+.workspace-sheet-row:has(> .workspace-sheet-entry[aria-current="true"]) { border-color: var(--workspace-status); box-shadow: inset 0 0 1rem color-mix(in srgb, var(--workspace-status) 14%, transparent); }
 .workspace-sheet-row > .workspace-sheet-entry { flex: 1 1 auto; min-width: 0; background: transparent; box-shadow: none; }
 .workspace-sheet-row > .workspace-sheet-entry:hover, .workspace-sheet-row > .workspace-sheet-entry[aria-current="true"] { background: transparent; box-shadow: none; }
+.workspace-sheet-row .workspace-sheet-copy strong:not(.tab-label) { color: var(--workspace-status); }
+.workspace-sheet-row .workspace-sheet-entry::after { flex: none; width: var(--status-dot-size); height: var(--status-dot-size); margin-left: auto; border-radius: 50%; background: var(--workspace-status); box-shadow: 0 0 .5rem color-mix(in srgb, var(--workspace-status) 75%, transparent); content: ''; }
+.workspace-sheet-row:is(.status-working, .status-action-required, .status-transitioning, .unread) .workspace-sheet-entry::after { animation: tab-working-dot 1.25s ease-in-out infinite; }
+.workspace-sheet-row.unread:not(.status-transitioning) { animation: tab-unread-success 1.6s ease-in-out infinite; }
 .workspace-sheet-rename { display: inline-flex; flex: 0 0 2rem; width: 2rem; height: 2rem; align-items: center; justify-content: center; margin-right: .35rem; padding: 0; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--overlay-2); box-shadow: none; }
 .workspace-sheet-rename:hover:not(:disabled) { background: color-mix(in srgb, var(--blue) 18%, transparent); color: var(--blue); }
 .workspace-sheet-rename:disabled { opacity: .3; cursor: not-allowed; }
-.workspace-sheet-entry.status-action-required strong { color: var(--red); }
-.workspace-sheet-entry.unread strong { color: var(--green); }
+@media (prefers-reduced-motion: reduce) { .workspace-sheet-row.unread, .workspace-sheet-row:is(.status-working, .status-action-required, .status-transitioning, .unread) .workspace-sheet-entry::after, .workspace-sheet-row .tab-label { animation: none; } }
+:root[data-motion="reduced"] .workspace-sheet-row.unread, :root[data-motion="reduced"] .workspace-sheet-row:is(.status-working, .status-action-required, .status-transitioning, .unread) .workspace-sheet-entry::after, :root[data-motion="reduced"] .workspace-sheet-row .tab-label { animation: none; }
 .workspace-sheet-copy { display: grid; min-width: 0; gap: .1rem; }
 .workspace-sheet-copy strong { overflow: hidden; font: 700 .8rem var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+/* keep the new workspace label at the same idle tone as an ordinary row */
+.workspace-sheet-new .workspace-sheet-copy strong { color: var(--overlay-1); }
 .workspace-sheet-copy small { overflow: hidden; color: var(--overlay-1); font: .68rem var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .workspace-sheet .launch-tab-badge { display: inline-flex; align-items: center; gap: .25rem; color: var(--launch-kind); }
 .workspace-sheet .launch-tab-badge .launch-kind-mark { width: 1.25rem; height: 1.25rem; font-size: 1.25rem; }

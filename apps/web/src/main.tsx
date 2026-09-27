@@ -6673,13 +6673,16 @@ function otherWorkspacesWaiting(items: readonly DashboardItem[], current: Dashbo
   const questions = agents.filter(agent => agentState(agent) === 'action-required').length;
   return { questions, unread: agents.filter(agentNeedsOperator).length - questions };
 }
-const countLabel = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
-// a Workspace's line in the phone sheet: its Agent and shell counts, then its state when it has one
+// name a split type, counting only duplicates
+const splitCountLabel = (count: number, noun: string) => count > 1 ? `${count} ${noun}s` : noun;
+// summarize only open split types, then append any active status
 function workspaceSheetDetail(entry: DashboardItem): string {
   const transition = dashboardOperationLabel(entry.operation);
   const state = transition !== undefined ? `${transition}…` : entry.state === 'action-required' ? 'Needs answer' : entry.unread ? 'Unread' : entry.state === 'working' ? 'Working' : undefined;
   const shells = entry.worktree?.consoleShells ?? entry.place?.consoleShells ?? 0;
-  return [countLabel(entry.agents.length, 'Agent'), countLabel(shells, 'shell'), ...(state === undefined ? [] : [state])].join(' · ');
+  const agents = entry.agents.length + (entry.pendingLaunch === undefined ? 0 : 1);
+  const splits = [...(agents > 0 ? [splitCountLabel(agents, 'Agent')] : []), ...(shells > 0 ? [splitCountLabel(shells, 'shell')] : [])];
+  return [...(splits.length === 0 ? ['Empty'] : splits), ...(state === undefined ? [] : [state])].join(' · ');
 }
 
 // The phone tab row's one tab, the current Workspace as a dropdown: its marks, label and rolled-up
@@ -6704,7 +6707,8 @@ function WorkspaceDropdown({ items, current, onSelect, onNewWorkspace, onRenameW
     {/* keep rename beside each worktree without nesting buttons */}
     {items.map((candidate, index) => {
       const worktree = candidate.worktree;
-      return <div key={candidate.key} className="workspace-sheet-row"><button type="button" className={`workspace-sheet-entry ${tabStatus(candidate).className}`} aria-current={index === current ? 'true' : undefined} autoFocus={index === current} onClick={() => choose(() => onSelect(index))}><TabKindStack entry={candidate} /><span className="workspace-sheet-copy"><strong>{candidate.label}</strong><small>{workspaceSheetDetail(candidate)}</small></span></button>{worktree !== undefined && <button type="button" className="workspace-sheet-rename" disabled={renameDisabled} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => choose(() => onRenameWorktree(worktree.id))}><LauncherRowIcon name="rename" /></button>}</div>;
+      const status = tabStatus(candidate);
+      return <div key={candidate.key} className={`workspace-sheet-row ${status.className}`}><button type="button" className="workspace-sheet-entry" aria-current={index === current ? 'true' : undefined} autoFocus={index === current} onClick={() => choose(() => onSelect(index))}><TabKindStack entry={candidate} /><span className="workspace-sheet-copy"><strong className={candidate.state === 'working' && status.transition === undefined ? 'tab-label' : undefined}>{candidate.label}</strong><small>{workspaceSheetDetail(candidate)}</small></span></button>{worktree !== undefined && <button type="button" className="workspace-sheet-rename" disabled={renameDisabled} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => choose(() => onRenameWorktree(worktree.id))}><LauncherRowIcon name="rename" /></button>}</div>;
     })}
     <hr />
     <button type="button" className="workspace-sheet-entry workspace-sheet-new" onClick={() => choose(onNewWorkspace)}><span className="tab-kind-stack" aria-hidden="true"><span className="tab-place-mark"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg></span></span><span className="workspace-sheet-copy"><strong>New Workspace…</strong><small>Launch, Terminal or Empty workspace</small></span></button>

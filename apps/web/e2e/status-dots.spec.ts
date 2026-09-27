@@ -49,3 +49,33 @@ test('renders status color dots at one shared diameter', async ({ page }) => {
   await expect(page.locator('.project-stack-status-dot')).toHaveCSS('border-top-width', '0px');
   await expect(page.locator('.server-switcher-attention')).toHaveCSS('border-top-width', '0px');
 });
+
+// a pending operation should not retain a stale unread highlight
+test('uses transition colors over unread colors on workspace controls', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent(`
+    <link rel="stylesheet" href="/src/styles.css">
+    <nav class="tabs"><button class="workspace-dropdown active status-transitioning unread">Starting</button></nav>
+    <div class="workspace-sheet"><div class="workspace-sheet-row status-transitioning unread"><button class="workspace-sheet-entry" aria-current="true"><span class="workspace-sheet-copy"><strong>Starting</strong></span></button></div></div>
+  `);
+  const tab = await page.locator('.workspace-dropdown').evaluate(element => ({
+    border: getComputedStyle(element).borderColor,
+    color: getComputedStyle(element).color,
+    unreadDot: getComputedStyle(element, '::after').content
+  }));
+  const row = await page.locator('.workspace-sheet-row').evaluate(element => {
+    const entry = element.querySelector('.workspace-sheet-entry')!;
+    return {
+      border: getComputedStyle(element).borderColor,
+      dot: getComputedStyle(entry, '::after').backgroundColor,
+      label: getComputedStyle(entry.querySelector('strong')!).color,
+      animation: getComputedStyle(element).animationName
+    };
+  });
+  expect(tab.border).toBe(tab.color);
+  expect(tab.unreadDot).toBe('none');
+  expect(row.border).toBe(tab.border);
+  expect(row.dot).toBe(tab.border);
+  expect(row.label).toBe(tab.border);
+  expect(row.animation).toBe('none');
+});

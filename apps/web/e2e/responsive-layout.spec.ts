@@ -238,7 +238,7 @@ test('the phone workspace switcher renames a worktree without selecting it', asy
     // keep the phone session active
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // expose one worktree and one non-worktree workspace
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [{ id: 'cora', projectId: 'repo', label: worktreeLabel, path: '/worktrees/cora', main: false, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'cora' }] }], places: [{ id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', pinned: true }] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [{ id: 'cora', projectId: 'repo', label: worktreeLabel, path: '/worktrees/cora', main: false, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'cora' }] }], places: [{ id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', pinned: true, consoleShells: 1 }] } });
     // skip optional push setup
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // record only the worktree label mutation
@@ -253,6 +253,8 @@ test('the phone workspace switcher renames a worktree without selecting it', asy
   const dropdown = page.getByRole('tab', { selected: true });
   await dropdown.click();
   const sheet = page.getByRole('dialog', { name: 'Workspaces' });
+  await expect(sheet.getByRole('button', { name: /^Cora\s*Empty$/u })).toBeVisible();
+  await expect(sheet.getByRole('button', { name: /^Notes\s*shell$/u })).toBeVisible();
   await sheet.getByRole('button', { name: /^Notes\b/u }).click();
   await expect(dropdown).toContainText('Notes');
   await dropdown.click();
@@ -269,6 +271,45 @@ test('the phone workspace switcher renames a worktree without selecting it', asy
   await expect(dialog).toHaveCount(0);
   await dropdown.click();
   await expect(sheet.getByRole('button', { name: /^Renamed Cora\b/u })).toBeVisible();
+});
+
+test('the phone workspace flyout animates working status and borders its active row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.route('**/api/**', route => {
+    const url = new URL(route.request().url());
+    // keep the phone session active
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // show two agents and two shells in one working workspace
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [
+      { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/build', worktreeId: 'build', title: 'Ready', attention: 'working' },
+      { id: 'agent-2', sessionId: 'socket:$2', home: '/worktrees/build', worktreeId: 'build', title: 'Ready', attention: 'finished' }
+    ], projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [{ id: 'build', projectId: 'repo', label: 'Build', path: '/worktrees/build', main: false, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'build', consoleShells: 2 }] }] } });
+    // skip optional push setup
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  await page.getByRole('tab', { selected: true }).click();
+  const row = page.getByRole('dialog', { name: 'Workspaces' }).locator('.workspace-sheet-row.status-working');
+  await expect(row.getByRole('button', { name: /^Build\s*2 Agents · 2 shells · Working$/u })).toBeVisible();
+  const paint = await row.evaluate(element => {
+    const entry = element.querySelector('.workspace-sheet-entry')!;
+    const label = entry.querySelector('strong')!;
+    return { border: getComputedStyle(element).borderColor, dot: getComputedStyle(entry, '::after').backgroundColor, dotMotion: getComputedStyle(entry, '::after').animationName, labelMotion: getComputedStyle(label).animationName };
+  });
+  expect(paint.border).toBe(paint.dot);
+  const dropdownPaint = await page.getByRole('tab', { selected: true }).evaluate(element => ({ border: getComputedStyle(element).borderColor, shadow: getComputedStyle(element).boxShadow }));
+  expect(dropdownPaint.border).toBe(paint.dot);
+  expect(dropdownPaint.shadow).not.toContain('inset');
+  expect(paint.dotMotion).not.toBe('none');
+  expect(paint.labelMotion).not.toBe('none');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const reduced = await row.evaluate(element => {
+    const entry = element.querySelector('.workspace-sheet-entry')!;
+    return { dotMotion: getComputedStyle(entry, '::after').animationName, labelMotion: getComputedStyle(entry.querySelector('strong')!).animationName };
+  });
+  expect(reduced).toEqual({ dotMotion: 'none', labelMotion: 'none' });
 });
 
 test('a phone shows only the current Workspace, as a dropdown over a sheet of every Workspace', async ({ page }) => {
@@ -311,18 +352,40 @@ test('a phone shows only the current Workspace, as a dropdown over a sheet of ev
   expect(Math.abs(row.settings.right - (row.width - 6))).toBeLessThanOrEqual(1);
   expect(Math.abs((row.dropdown.left + row.dropdown.right) / 2 - row.width / 2)).toBeLessThanOrEqual(1);
 
-  // the sheet lists every Workspace with its Agent and shell counts and its state, then New Workspace…
+  // the sheet omits zero and singular counts while retaining each workspace state
   await dropdown.click();
   const sheet = page.getByRole('dialog', { name: 'Workspaces' });
   const entries = sheet.getByRole('button');
   await expect(entries).toHaveText([
-    /📱 Remote Agents\s*1 Agent · 0 shells$/u,
-    /🥔 Cora\s*1 Agent · 0 shells · Needs answer$/u,
-    /🥔 Owen\s*1 Agent · 0 shells · Unread$/u,
-    /Notes\s*0 Agents · 2 shells$/u,
+    /📱 Remote Agents\s*Agent$/u,
+    /🥔 Cora\s*Agent · Needs answer$/u,
+    /🥔 Owen\s*Agent · Unread$/u,
+    /Notes\s*2 shells$/u,
     /New Workspace…\s*Launch, Terminal or Empty workspace$/u
   ]);
   await expect(entries.first()).toHaveAttribute('aria-current', 'true');
+  // compare rendered status colors and motion across the flyout rows
+  const statusPaint = await sheet.locator('.workspace-sheet-row').evaluateAll(rows => rows.map(row => {
+    const entry = row.querySelector('.workspace-sheet-entry')!;
+    const dot = getComputedStyle(entry, '::after');
+    return { border: getComputedStyle(row).borderColor, dot: dot.backgroundColor, label: getComputedStyle(entry.querySelector('strong')!).color, motion: dot.animationName };
+  }));
+  expect(statusPaint[0].border).toBe(statusPaint[0].dot);
+  // a ready but read workspace keeps the same idle tone as an empty one
+  expect(statusPaint[0].dot).toBe(statusPaint[3].dot);
+  expect(statusPaint[0].label).toBe(statusPaint[3].label);
+  // the new workspace action uses the ordinary idle label color
+  await expect(sheet.locator('.workspace-sheet-new strong')).toHaveCSS('color', statusPaint[3].label);
+  expect(statusPaint[0].motion).toBe('none');
+  await expect(dropdown).toHaveCSS('border-color', statusPaint[0].dot);
+  expect(await dropdown.evaluate(element => getComputedStyle(element).boxShadow)).not.toContain('inset');
+  expect(statusPaint[1].label).toBe(statusPaint[1].dot);
+  expect(statusPaint[2].label).toBe(statusPaint[2].dot);
+  expect(statusPaint[2].dot).not.toBe(statusPaint[0].dot);
+  expect(statusPaint[1].dot).not.toBe(statusPaint[2].dot);
+  expect(statusPaint[1].motion).not.toBe('none');
+  expect(statusPaint[2].motion).not.toBe('none');
+  expect(statusPaint[3].motion).toBe('none');
   // a sheet across the screen's bottom edge, once it has risen into place
   await expect.poll(async () => { const box = (await sheet.boundingBox())!; return [box.x, box.width, box.y + box.height].map(Math.round); }).toEqual([0, 390, 844]);
 
@@ -330,12 +393,15 @@ test('a phone shows only the current Workspace, as a dropdown over a sheet of ev
   await entries.filter({ hasText: 'Cora' }).click();
   await expect(sheet).toHaveCount(0);
   await expect(dropdown).toContainText('🥔 Cora');
+  await expect(dropdown).toHaveCSS('border-color', statusPaint[1].dot);
   await expect(badge).toHaveText('1');
   await expect(badge).not.toHaveClass(/\bquestion\b/u);
   // picking Owen reads its output, so only Cora's question waits elsewhere
   await dropdown.click();
   await entries.filter({ hasText: 'Owen' }).click();
   await expect(dropdown).toContainText('🥔 Owen');
+  // opening unread output marks it read and returns the border to idle
+  await expect(dropdown).toHaveCSS('border-color', statusPaint[0].dot);
   await expect(badge).toHaveText('1');
   await expect(badge).toHaveClass(/\bquestion\b/u);
   // once Cora's question is answered elsewhere, the next dashboard clears the badge
