@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MAX_REVIEW_GENERATED_BYTES, ReviewTourError, type ReviewComparison } from '../src/review-tour/contracts.js';
@@ -29,7 +29,7 @@ output=''
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == "--output-last-message" ]]; then output="$2"; shift 2; else shift; fi
 done
-cat >/dev/null
+cat >${JSON.stringify(join(root, 'prompt'))}
 trap 'exit 143' TERM INT
 ${delaySeconds > 0 ? `sleep ${delaySeconds}` : ':'}
 ${stderrBytes > 0 ? `printf '%*s' ${stderrBytes} '' | tr ' ' x >&2` : ':'}
@@ -55,6 +55,9 @@ describe('Codex review tour generator', () => {
     const generator = new CodexExecReviewTourGenerator(fixture.binary);
     await expect(generator.capability()).resolves.toEqual({ available: true });
     await expect(generator.generate(comparison(fixture.root), new AbortController().signal)).resolves.toEqual(generated);
+    const prompt = await readFile(join(fixture.root, 'prompt'), 'utf8');
+    expect(prompt).toContain('Give the tour a concise, specific title naming the implementation change or outcome.');
+    expect(prompt).toContain('Do not use a broad category label such as "Mobile layout" as the title.');
   });
 
   it('rejects finding-shaped output separately from malformed output', async () => {

@@ -25,6 +25,13 @@ const maxFeedbackTotal = 20_000;
 const maxDispatch = 30_000;
 const transitionMs = 240;
 
+// replace a cached generic title until the tour is regenerated
+function displayedTourTitle(tour: ReviewTour): string {
+  // preserve specific generated titles
+  if (tour.title.trim().toLowerCase() !== 'mobile layout') return tour.title;
+  return 'Implementation walkthrough';
+}
+
 // validate trusted review changes
 function isChange(value: unknown): value is ReviewChange {
   if (value === null || typeof value !== 'object') return false;
@@ -128,7 +135,7 @@ function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, statu
     const note = feedback[step.id]?.trim();
     return note ? [`## ${step.title} (${statuses[step.id] ?? 'unvisited'})\n${note}`] : [];
   });
-  return [`Please address the feedback from my guided review of ${tour.scope === 'working' ? 'Working' : 'All PR'} changes against ${tour.base}.`, `Tour: ${tour.title}`, `Comparison: ${tour.fingerprint.slice(0, 12)}`, ...notes, ...(orphanFeedback.trim() === '' ? [] : [`## Feedback retained from regenerated steps\n${orphanFeedback.trim()}`])].join('\n\n');
+  return [`Please address the feedback from my guided review of ${tour.scope === 'working' ? 'Working' : 'All PR'} changes against ${tour.base}.`, `Tour: ${displayedTourTitle(tour)}`, `Comparison: ${tour.fingerprint.slice(0, 12)}`, ...notes, ...(orphanFeedback.trim() === '' ? [] : [`## Feedback retained from regenerated steps\n${orphanFeedback.trim()}`])].join('\n\n');
 }
 
 // render and manage one guided review
@@ -431,7 +438,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
   // keep generation and freshness polling mounted while minimized
   if (minimized) return null;
   const content = <div className={`review-tour-backdrop${closing ? ' closing' : ''}`}><div ref={dialog} className="review-tour" role="dialog" aria-modal="true" aria-labelledby="review-tour-title" tabIndex={-1} onKeyDown={dialogKey}>
-    <header className="review-tour-header"><div><small>{scopeLabel} guided review</small><h2 id="review-tour-title">{tour?.title ?? 'Generating change tour'}</h2>{tour && <p>{tour.overview}</p>}</div><button type="button" aria-label="Minimize guided review" title="Minimize" onClick={minimize}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button></header>
+    <header className="review-tour-header"><div><small>{scopeLabel} guided review</small><h2 id="review-tour-title">{tour ? displayedTourTitle(tour) : 'Generating change tour'}</h2>{tour && <p>{tour.overview}</p>}</div><button type="button" aria-label="Minimize guided review" title="Minimize" onClick={minimize}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button></header>
     <div className="review-tour-content">
     {tour && stale && <div className="review-tour-stale" role="alert"><strong>Changes updated</strong><span>This cached review is out of date.</span>{dismissError && <span>{dismissError}</span>}<button type="button" disabled={dismissing} onClick={() => void dismiss()}>{dismissing ? 'Dismissing…' : 'Dismiss'}</button><button type="button" disabled={dismissing} onClick={() => { setStale(false); setRetry(value => value + 1); setState('loading'); }}>Regenerate</button></div>}
     {state === 'loading' && <div className="review-tour-message" role="status"><span className="spinner" /><strong>Building the narrated tour…</strong><p>The AI is organizing the selected implementation changes into logical steps.</p><button type="button" onClick={() => { generation.current += 1; if (job !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' }, false); setState('cancelled'); }}>Cancel</button></div>}

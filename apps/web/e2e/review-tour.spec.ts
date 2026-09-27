@@ -73,7 +73,7 @@ test('guides a human through active-scope implementation changes and sends conso
     if (jobMatch !== null && request.method() === 'GET') {
       if (!releaseGeneration) return route.fulfill({ status: 202, json: { status: 'pending' } });
       latestReadyJob = Math.max(latestReadyJob, Number(jobMatch[1]));
-      return route.fulfill({ json: { status: 'ready', tour: { title: 'Request routing tour', overview: 'Follow the request from the route into the service.', scope: 'pr', base: 'origin/main', includeTests: jobRequests.at(-1)?.includeTests ?? false, includeDocs: jobRequests.at(-1)?.includeDocs ?? false, fingerprint: comparisonFingerprint, changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: longPatch }, { id: 'chg_service01', file: 'src/service.ts', category: 'implementation', kind: 'hunk', patch: 'diff --git a/src/service.ts b/src/service.ts\nindex 3333333..4444444 100644\n--- a/src/service.ts\n+++ b/src/service.ts\n@@ -4 +4 @@\n-old service\n+new service\n' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route validates input before delegating.', changeIds: ['chg_route0001'] }, { id: 'service', title: 'Apply the operation', explanation: 'The service performs the requested state transition.', changeIds: ['chg_service01'] }] } } });
+      return route.fulfill({ json: { status: 'ready', tour: { title: 'Mobile layout', overview: 'Follow the request from the route into the service.', scope: 'pr', base: 'origin/main', includeTests: jobRequests.at(-1)?.includeTests ?? false, includeDocs: jobRequests.at(-1)?.includeDocs ?? false, fingerprint: comparisonFingerprint, changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: longPatch }, { id: 'chg_service01', file: 'src/service.ts', category: 'implementation', kind: 'hunk', patch: 'diff --git a/src/service.ts b/src/service.ts\nindex 3333333..4444444 100644\n--- a/src/service.ts\n+++ b/src/service.ts\n@@ -4 +4 @@\n-old service\n+new service\n' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route validates input before delegating.', changeIds: ['chg_route0001'] }, { id: 'service', title: 'Apply the operation', explanation: 'The service performs the requested state transition.', changeIds: ['chg_service01'] }] } } });
     }
     if (/^\/api\/review-tour\/jobs\/job-\d+$/u.test(url.pathname) && request.method() === 'DELETE') return route.fulfill({ status: 204 });
     if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') {
@@ -90,7 +90,8 @@ test('guides a human through active-scope implementation changes and sends conso
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  await branchButton.click();
   const statusPanel = page.getByRole('region', { name: 'Changed files' });
   await expect(statusPanel.getByRole('button', { name: 'Review', exact: true })).toBeVisible();
   await expect(statusPanel.getByRole('button', { name: 'All PR' })).toHaveAttribute('aria-pressed', 'true');
@@ -98,13 +99,18 @@ test('guides a human through active-scope implementation changes and sends conso
 
   const loadingDialog = page.getByRole('dialog', { name: 'Generating change tour' });
   await expect(loadingDialog).toBeHidden();
-  const reviewButton = page.locator('.review-tour-toggle');
-  await expect(reviewButton).toBeVisible();
-  await expect(reviewButton).toHaveAttribute('aria-busy', 'true');
-  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await expect(page.getByRole('button', { name: /Open (generating |out-of-date )?guided review/u })).toHaveCount(0);
+  await expect(branchButton).toHaveAttribute('aria-busy', 'true');
+  await expect(branchButton).not.toHaveCSS('animation-name', 'none');
+  // still the branch glow for the system's reduced-motion preference
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(branchButton).toHaveCSS('animation-name', 'none');
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await branchButton.click();
   await expect(statusPanel.getByRole('button', { name: 'Open Review' })).toBeVisible();
   await statusPanel.getByRole('button', { name: 'Open Review' }).click();
   await expect(loadingDialog).toBeVisible();
+  expect(jobRequests).toHaveLength(1);
   await expect(loadingDialog).toHaveCSS('animation-name', 'review-tour-slide-up');
   await loadingDialog.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
   const loadingBounds = await loadingDialog.boundingBox();
@@ -112,20 +118,17 @@ test('guides a human through active-scope implementation changes and sends conso
   await loadingDialog.getByRole('button', { name: 'Minimize guided review' }).evaluate(button => button.click());
   await expect(loadingDialog).toHaveCSS('animation-name', 'review-tour-slide-down');
   await expect(loadingDialog).toBeHidden();
-  await expect(reviewButton).toBeVisible();
-  await expect(reviewButton).toHaveAttribute('aria-busy', 'true');
-  await expect(reviewButton.locator('.spinner')).toBeVisible();
-  const precedesMore = await reviewButton.evaluate((button, more) => Boolean(button.compareDocumentPosition(more as Node) & Node.DOCUMENT_POSITION_FOLLOWING), await page.getByRole('button', { name: 'More options' }).elementHandle());
-  expect(precedesMore).toBe(true);
+  await expect(branchButton).toBeFocused();
+  await expect(branchButton).toHaveAttribute('aria-busy', 'true');
 
   releaseGeneration = true;
-  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
+  await expect(branchButton).not.toHaveAttribute('aria-busy');
   await expect.poll(async () => await page.evaluate(() => (
     window as unknown as { __testNotifications: Array<{ title: string; options?: NotificationOptions }> }
   ).__testNotifications.map(notification => ({ title: notification.title, body: notification.options?.body, tag: notification.options?.tag, data: notification.options?.data })))).toEqual([{ title: 'Review ready in Remote Agents', body: 'Cora is ready for review', tag: 'review-ready-cora', data: { url: '/#agent=agent-1', kind: 'system', worktreeId: 'cora' } }]);
-  await expect(reviewButton.locator('svg')).toHaveCSS('stroke', /rgb\((?!0, 0, 0)/u);
-  await reviewButton.click();
-  const dialog = page.getByRole('dialog', { name: 'Request routing tour' });
+  await branchButton.click();
+  await statusPanel.getByRole('button', { name: 'Open Review' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Implementation walkthrough' });
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveCSS('animation-name', 'review-tour-slide-up');
   await expect(dialog.getByText('All PR guided review')).toBeVisible();
@@ -189,7 +192,7 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect.poll(() => latestReadyJob).toBe(5);
   await expect(dialog.getByText('Step 1 of 2')).toBeVisible();
   expect(jobRequests[4]).toEqual({ scope: 'pr', includeTests: false, includeDocs: false });
-  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
+  await expect(branchButton).not.toHaveAttribute('aria-busy');
 
   await dialog.getByLabel('Feedback for this change').fill('Keep the route error copy aligned with the existing API.');
   comparisonFingerprint = 'comparison-updated-567890';
@@ -198,8 +201,9 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect.poll(() => fingerprintRequests).toBeGreaterThan(previousFingerprintRequests);
   await expect(dialog.getByText('Changes updated')).toBeVisible();
   await dialog.getByRole('button', { name: 'Minimize guided review' }).click();
-  await expect(reviewButton).toHaveAttribute('aria-label', 'Open out-of-date guided review');
-  await reviewButton.click();
+  await expect(branchButton).toBeFocused();
+  await branchButton.click();
+  await statusPanel.getByRole('button', { name: 'Open Review' }).click();
   await expect(dialog.getByText('Changes updated')).toBeVisible();
   await dialog.getByRole('button', { name: 'Regenerate' }).click();
   await expect.poll(() => jobRequests.length).toBe(6);
@@ -207,16 +211,22 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect(dialog.getByLabel('Feedback for this change')).toHaveValue('Keep the route error copy aligned with the existing API.');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 390, height: 844 });
-  // retain left narration and remaining-width files on mobile
-  const mobileColumns = await reviewStep.evaluate(element => {
+  // stack a full-width diff above the explanation on mobile
+  const mobilePanes = await reviewStep.evaluate(element => {
+    const step = element.getBoundingClientRect();
     const narration = element.querySelector('.review-tour-narration')!.getBoundingClientRect();
     const files = element.querySelector('.review-tour-diffs')!.getBoundingClientRect();
-    return { viewport: window.innerWidth, narration: { left: narration.left, right: narration.right, width: narration.width }, files: { left: files.left, right: files.right, width: files.width } };
+    return { viewport: window.innerWidth, step: { top: step.top, bottom: step.bottom }, narration: { left: narration.left, right: narration.right, top: narration.top, bottom: narration.bottom, height: narration.height }, files: { left: files.left, right: files.right, top: files.top, bottom: files.bottom, height: files.height } };
   });
-  expect(Math.abs(mobileColumns.narration.left)).toBeLessThanOrEqual(1);
-  expect(Math.abs(mobileColumns.files.left - mobileColumns.narration.right)).toBeLessThanOrEqual(1);
-  expect(Math.abs(mobileColumns.files.right - mobileColumns.viewport)).toBeLessThanOrEqual(1);
-  expect(mobileColumns.files.width).toBeGreaterThan(mobileColumns.narration.width);
+  expect(Math.abs(mobilePanes.files.left)).toBeLessThanOrEqual(1);
+  expect(Math.abs(mobilePanes.narration.left)).toBeLessThanOrEqual(1);
+  expect(Math.abs(mobilePanes.files.right - mobilePanes.viewport)).toBeLessThanOrEqual(1);
+  expect(Math.abs(mobilePanes.narration.right - mobilePanes.viewport)).toBeLessThanOrEqual(1);
+  expect(Math.abs(mobilePanes.files.top - mobilePanes.step.top)).toBeLessThanOrEqual(1);
+  expect(Math.abs(mobilePanes.narration.top - mobilePanes.files.bottom)).toBeLessThanOrEqual(1);
+  expect(Math.abs(mobilePanes.narration.bottom - mobilePanes.step.bottom)).toBeLessThanOrEqual(1);
+  expect(mobilePanes.files.height).toBeGreaterThan(0);
+  expect(mobilePanes.narration.height).toBeGreaterThan(0);
   await expect(dialog.getByLabel('Feedback for this change')).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Next' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -240,13 +250,16 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect(dialog.getByText('Change request sent to the implementation agent.')).toBeVisible();
   expect(prompts).toHaveLength(2);
   expect(prompts[0]).toContain('guided review of All PR changes against origin/main');
+  expect(prompts[0]).toContain('Tour: Implementation walkthrough');
+  expect(prompts[0]).not.toContain('Mobile layout');
   expect(prompts[0]).toContain('Keep the route error copy aligned with the existing API.');
 
   await dialog.getByRole('button', { name: 'Finish' }).click();
   await expect(dialog).toBeHidden();
-  await expect(reviewButton).toBeFocused();
+  await expect(branchButton).toBeFocused();
   const cachedRequests = jobRequests.length;
-  await reviewButton.click();
+  await branchButton.click();
+  await statusPanel.getByRole('button', { name: 'Open Review' }).click();
   await expect(dialog.getByRole('heading', { name: 'Review complete' })).toBeVisible();
   expect(jobRequests).toHaveLength(cachedRequests);
   await dialog.getByRole('button', { name: 'Minimize guided review' }).click();
@@ -273,12 +286,13 @@ test('renders a placeholder for a binary or unparseable change', async ({ page }
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
-  const reviewButton = page.locator('.review-tour-toggle');
-  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
-  await reviewButton.click();
+  await expect(branchButton).not.toHaveAttribute('aria-busy');
+  await branchButton.click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
   const dialog = page.getByRole('dialog', { name: 'Asset refresh tour' });
   await expect(dialog).toBeVisible();
   const diffPane = dialog.getByLabel('Relevant changes');
@@ -306,11 +320,12 @@ test('explains when the server Codex login expires', async ({ page }) => {
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
-  const reviewButton = page.locator('.review-tour-toggle');
-  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
-  await reviewButton.click();
+  await expect(branchButton).not.toHaveAttribute('aria-busy');
+  await branchButton.click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
   const dialog = page.getByRole('dialog', { name: 'Generating change tour' });
   await expect(dialog.getByText('Unable to build tour', { exact: true })).toBeVisible();
   await expect(dialog.getByText('The server’s Codex login expired. Sign in to Codex on the server, then try again.')).toBeVisible();
@@ -358,13 +373,14 @@ test('keeps polling through temporary console failures', async ({ page }) => {
     });
     observer.observe(document.body, { childList: true, subtree: true });
   });
-  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
-  const reviewButton = page.locator('.review-tour-toggle');
-  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
+  await expect(branchButton).not.toHaveAttribute('aria-busy');
   expect(polls).toBe(6);
-  await reviewButton.click();
+  await branchButton.click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
   await expect(page.getByRole('dialog', { name: 'Recovered routing tour' })).toBeVisible();
   expect(reconnectFlashes).toBe(0);
 });
@@ -396,15 +412,16 @@ test('retries temporary failures while starting a tour', async ({ page }) => {
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
-  const reviewButton = page.locator('.review-tour-toggle');
-  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
+  await expect(branchButton).not.toHaveAttribute('aria-busy');
   expect(starts).toBe(3);
   expect(new Set(requestIds).size).toBe(1);
   expect(requestIds[0]).not.toBe('');
-  await reviewButton.click();
+  await branchButton.click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
   await expect(page.getByRole('dialog', { name: 'Recovered start tour' })).toBeVisible();
 });
 
@@ -430,16 +447,18 @@ test('does not retry a tour start after cancellation', async ({ page }) => {
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
   await expect.poll(() => starts).toBe(1);
-  await page.getByRole('button', { name: 'Open generating guided review' }).click();
+  await branchButton.click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
   const dialog = page.getByRole('dialog', { name: 'Generating change tour' });
   const failedStart = page.waitForResponse(response => new URL(response.url()).pathname === '/api/agents/agent-1/review-tour/jobs' && response.status() === 503);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
   releaseStartFailure();
   await failedStart;
-  await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog.getByText('Tour cancelled', { exact: true })).toBeVisible();
   await page.waitForTimeout(750);
   expect(starts).toBe(1);
@@ -459,11 +478,12 @@ test('explains when another browser controls the console', async ({ page }) => {
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
-  const reviewButton = page.locator('.review-tour-toggle');
-  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
-  await reviewButton.click();
+  await expect(branchButton).not.toHaveAttribute('aria-busy');
+  await branchButton.click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
   const dialog = page.getByRole('dialog', { name: 'Generating change tour' });
   await expect(dialog.getByText('Unable to build tour', { exact: true })).toBeVisible();
   await expect(dialog.getByText('Another browser controls this console. Take control, then try again.')).toBeVisible();
@@ -472,7 +492,7 @@ test('explains when another browser controls the console', async ({ page }) => {
 test('restores the worktree review after reload and dismisses it when stale', async ({ page }) => {
   let reviewStored = true;
   let generationRequests = 0;
-  const tour = { title: 'Persisted routing tour', overview: 'Resume the saved implementation walkthrough.', scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'stored-fingerprint-123456', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: '@@ -1 +1 @@\n-old\n+new' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route delegates to the service.', changeIds: ['chg_route0001'] }] };
+  const tour = { title: 'Mobile layout', overview: 'Resume the saved implementation walkthrough.', scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'stored-fingerprint-123456', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: '@@ -1 +1 @@\n-old\n+new' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route delegates to the service.', changeIds: ['chg_route0001'] }] };
   await installAgentWebSocket(page);
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -491,21 +511,26 @@ test('restores the worktree review after reload and dismisses it when stale', as
   });
 
   await page.goto('/');
-  const reviewButton = page.locator('.review-tour-toggle');
-  await expect(reviewButton).toBeVisible();
-  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  await expect(page.getByRole('button', { name: /Open (generating |out-of-date )?guided review/u })).toHaveCount(0);
+  await branchButton.click();
   const statusPanel = page.getByRole('region', { name: 'Changed files' });
   await expect(statusPanel.getByRole('button', { name: 'Open Review' })).toBeVisible();
   await statusPanel.getByRole('button', { name: 'Open Review' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Persisted routing tour' });
+  const dialog = page.getByRole('dialog', { name: 'Implementation walkthrough' });
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Mobile layout' })).toHaveCount(0);
   await expect(dialog.getByText('Changes updated')).toBeVisible();
   expect(generationRequests).toBe(0);
   await dialog.getByRole('button', { name: 'Dismiss' }).click();
   await expect(dialog).toBeHidden();
-  await expect(reviewButton).toBeHidden();
+  await branchButton.click();
+  await expect(statusPanel.getByRole('button', { name: 'Review', exact: true })).toBeVisible();
+  await expect(statusPanel.getByRole('button', { name: 'Open Review' })).toHaveCount(0);
 
   await page.reload();
-  await expect(page.locator('.review-tour-toggle')).toBeHidden();
+  await expect(page.getByRole('button', { name: /Open (generating |out-of-date )?guided review/u })).toHaveCount(0);
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await expect(page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true })).toBeVisible();
   expect(generationRequests).toBe(0);
 });

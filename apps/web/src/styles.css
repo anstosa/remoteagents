@@ -1013,9 +1013,9 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 :is(.workspace-toolbar-actions, .empty-workspace-actions) button, .project-open { box-sizing: border-box; height: var(--standard-control-size); border-radius: var(--control-radius); padding: .4rem .6rem; font-size: .75rem; font-weight: 700; box-shadow: none; transition: background-color .15s ease, border-color .15s ease, color .15s ease, filter .15s ease; }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .icon-button { display: inline-grid; flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); height: var(--standard-control-size); padding: 0; place-items: center; }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .icon-button svg { display: block; width: 1rem; height: 1rem; }
-:is(.workspace-toolbar-actions, .empty-workspace-actions) :is(.review-tour-toggle, .more, .toolbar-button), :is(.workspace-toolbar-actions, .empty-workspace-actions) .project-open { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); filter: none; }
+:is(.workspace-toolbar-actions, .empty-workspace-actions) :is(.more, .toolbar-button), :is(.workspace-toolbar-actions, .empty-workspace-actions) .project-open { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); filter: none; }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .outline-button { border-color: var(--surface-2); background: transparent; color: var(--prompt-control-foreground); filter: none; }
-:is(.workspace-toolbar-actions, .empty-workspace-actions) :is(.review-tour-toggle, .more, .toolbar-button, .outline-button):not(:disabled):hover, :is(.workspace-toolbar-actions, .empty-workspace-actions) .project-open:hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); filter: none; }
+:is(.workspace-toolbar-actions, .empty-workspace-actions) :is(.more, .toolbar-button, .outline-button):not(:disabled):hover, :is(.workspace-toolbar-actions, .empty-workspace-actions) .project-open:hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); filter: none; }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) :is(.more, .toolbar-button)[aria-expanded='true'], :is(.workspace-toolbar-actions, .empty-workspace-actions) .outline-button.active { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
 .toolbar-spacer { flex: 1; }
 /* a labelled toolbar button: its glyph, its name and, inline, its count. `--toolbar-accent` is the
@@ -1039,6 +1039,10 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .workspace-toolbar-actions .git-branch-icon { display: block; flex: none; width: 1rem; height: 1rem; }
 .workspace-toolbar-actions .git-status-summary { height: var(--standard-control-size); border: 1px solid var(--prompt-control-border); border-radius: var(--control-radius); padding: 0 .6rem; background: var(--prompt-control-background); }
 .workspace-toolbar-actions .git-status-summary:hover, .workspace-toolbar-actions .git-status-summary[aria-expanded='true'] { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); }
+/* keep review progress on the branch control instead of a second toolbar button */
+.workspace-toolbar-actions .git-status-summary.review-ready { border-color: color-mix(in srgb, var(--blue) 68%, var(--surface-2)); }
+.workspace-toolbar-actions .git-status-summary.review-stale { border-color: color-mix(in srgb, var(--yellow) 72%, var(--surface-2)); }
+.workspace-toolbar-actions .git-status-summary.review-generating { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 13%, var(--mantle)); animation: review-generating-glow 1.2s ease-in-out infinite; }
 .project-stack-status-text { color: var(--overlay-1); font-size: .68rem; font-weight: 600; }
 /* beside a running Agent, Launch is a plain control rather than the gradient primary */
 .workspace-toolbar-actions .launch-split.quiet { background: var(--prompt-control-background); box-shadow: inset 0 0 0 1px var(--prompt-control-border); }
@@ -1262,9 +1266,9 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 @keyframes review-tour-backdrop-in { from { background-color: transparent; backdrop-filter: blur(0); } }
 @keyframes review-tour-backdrop-out { to { background-color: transparent; backdrop-filter: blur(0); } }
 /* retain static attention colors when motion is reduced */
-@media (prefers-reduced-motion: reduce) { .agent-switcher-attention, .tabs button.status-working::before, .tabs button.status-working::after, .tabs button.status-working .tab-label, .tabs button.unread, .tabs button.unread::after, .cleanup-toggle, .notes-toggle.unread-queued-prompts, .server-switcher-settings-wrap .server-switcher-settings.updates-available, .review-tour-toggle.generating, .browser-refresh.loading, .review-tour-backdrop, .review-tour, .voice-soundwave i { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .agent-switcher-attention, .tabs button.status-working::before, .tabs button.status-working::after, .tabs button.status-working .tab-label, .tabs button.unread, .tabs button.unread::after, .cleanup-toggle, .notes-toggle.unread-queued-prompts, .server-switcher-settings-wrap .server-switcher-settings.updates-available, .workspace-toolbar-actions .git-status-summary.review-generating, .browser-refresh.loading, .review-tour-backdrop, .review-tour, .voice-soundwave i { animation: none; } }
 /* the Reduced motion setting stills the same animations regardless of the OS */
-:root[data-motion="reduced"] .agent-switcher-attention, :root[data-motion="reduced"] .tabs button.status-working::before, :root[data-motion="reduced"] .tabs button.status-working::after, :root[data-motion="reduced"] .tabs button.status-working .tab-label, :root[data-motion="reduced"] .tabs button.unread, :root[data-motion="reduced"] .tabs button.unread::after, :root[data-motion="reduced"] .cleanup-toggle, :root[data-motion="reduced"] .notes-toggle.unread-queued-prompts, :root[data-motion="reduced"] .server-switcher-settings-wrap .server-switcher-settings.updates-available, :root[data-motion="reduced"] .review-tour-toggle.generating, :root[data-motion="reduced"] .browser-refresh.loading, :root[data-motion="reduced"] .review-tour-backdrop, :root[data-motion="reduced"] .review-tour, :root[data-motion="reduced"] .voice-soundwave i { animation: none; }
+:root[data-motion="reduced"] .agent-switcher-attention, :root[data-motion="reduced"] .tabs button.status-working::before, :root[data-motion="reduced"] .tabs button.status-working::after, :root[data-motion="reduced"] .tabs button.status-working .tab-label, :root[data-motion="reduced"] .tabs button.unread, :root[data-motion="reduced"] .tabs button.unread::after, :root[data-motion="reduced"] .cleanup-toggle, :root[data-motion="reduced"] .notes-toggle.unread-queued-prompts, :root[data-motion="reduced"] .server-switcher-settings-wrap .server-switcher-settings.updates-available, :root[data-motion="reduced"] .git-status-summary.review-generating, :root[data-motion="reduced"] .browser-refresh.loading, :root[data-motion="reduced"] .review-tour-backdrop, :root[data-motion="reduced"] .review-tour, :root[data-motion="reduced"] .voice-soundwave i { animation: none; }
 @media (max-width: 600px) {
   :root { --edge: .75rem; }
   .tabs button { font-size: .75rem; padding: .3rem .45rem; }
@@ -1763,17 +1767,15 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .review-tour-summary li > span.skipped { color: var(--yellow); }
 .review-tour-summary > p { color: var(--subtext-0); }
 .review-tour-sent { color: var(--green) !important; }
-.workspace-toolbar-actions .review-tour-toggle { border-color: color-mix(in srgb, var(--blue) 68%, var(--surface-2)); color: var(--sky); }
-.workspace-toolbar-actions .review-tour-toggle svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-.workspace-toolbar-actions .review-tour-toggle.generating { border-color: color-mix(in srgb, var(--blue) 68%, var(--surface-2)); animation: review-generating-glow 1.2s ease-in-out infinite; }
-.workspace-toolbar-actions .review-tour-toggle.stale { border-color: color-mix(in srgb, var(--yellow) 72%, var(--surface-2)); color: var(--yellow); }
 
-@media (max-width: 760px) {
+@media (max-width: 768px) {
   .review-tour-header { padding: .75rem; }
   .review-tour-header p { display: none; }
   .review-tour-filters, .review-tour-progress, .review-tour-stale { padding-right: .75rem; padding-left: .75rem; }
-  .review-tour-narration { padding: .85rem .75rem; }
-  .review-tour-diffs { padding: .6rem; }
+  /* keep the diff above the independently scrollable explanation on phones */
+  .review-tour-step { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  .review-tour-narration { grid-row: 2; padding: .85rem .75rem; border-top: 1px solid var(--surface-1); border-right: 0; }
+  .review-tour-diffs { grid-row: 1; padding: .6rem; }
   .review-tour-actions { flex-wrap: wrap; padding: .55rem .75rem; }
   .review-tour-actions > span { order: -1; flex: 1 0 100%; margin-left: 0; text-align: right; }
 }

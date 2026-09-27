@@ -50,6 +50,7 @@ function generationPrompt(comparison: ReviewComparison): string {
   const changes = comparison.changes.map(change => ({ id: change.id, file: change.file, originalFile: change.originalFile, category: change.category, kind: change.kind, patch: change.patch }));
   return [
     'Create a narrated implementation-change tour for a human reviewer.',
+    'Give the tour a concise, specific title naming the implementation change or outcome. Do not use a broad category label such as "Mobile layout" as the title.',
     'Explain mechanism, intent, dependencies, and the order in which the implementation fits together.',
     'Group related change IDs across files into logical steps. Assign every change ID exactly once.',
     'Do not perform code review. Do not produce findings, warnings, issues, recommendations, severity, verdicts, approval, rejection, patches, fixes, or commands.',
