@@ -872,9 +872,7 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .log-split::-webkit-scrollbar { display: none; }
   .log-split > :is(.log-output, .note-pane, .browser-pane, .code-pane, .terminal-pane) { flex: 0 0 100%; width: 100%; min-width: 0; height: 100%; scroll-snap-align: start; scroll-snap-stop: always; }
   .log-split > .split-resizer { display: none; }
-  /* an expanded panel takes the whole screen: the tab row and toolbar fold away until it restores
-     (the element names outrank the helper keys' toolbar rule; the helper keys' own full-screen rule
-     keeps them for a Terminal) */
+  /* an expanded panel keeps its own footer while the tab row and toolbar fold away */
   .agent-view:has(.log-split > .expanded) > :is(nav.tabs, section.workspace-toolbar) { display: none; }
 }
 /* preserve output width above software keyboards */
@@ -886,7 +884,7 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .xterm { height: 100%; }
 /* A Terminal panel: a floating header over a streamed pane, focusable, with a sky inset ring
    marking the panel that receives keys (First-class terminal panes, composition A). */
-.terminal-pane { position: relative; display: grid; grid-template-rows: minmax(0, 1fr); padding-top: var(--panel-header-clearance); min-width: 0; min-height: 0; overflow: hidden; background: var(--base); }
+.terminal-pane { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) auto; padding-top: var(--panel-header-clearance); min-width: 0; min-height: 0; overflow: hidden; background: var(--base); }
 /* match the existing note and browser fullscreen dimensions */
 .terminal-pane.expanded { width: 100%; height: 100%; border: 0; }
 /* scale the shared agent pill down for the shell toolbar */
@@ -973,7 +971,9 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .pane-mode-notice strong { color: var(--yellow); }
 .pane-mode-notice button { flex: none; min-width: 5.5rem; padding: .35rem .7rem; border: 1px solid color-mix(in srgb, var(--yellow) 55%, var(--surface-1)); border-radius: .4rem; color: var(--yellow); background: var(--surface-0); font: inherit; font-weight: 600; cursor: pointer; }
 .pane-mode-notice button:disabled { cursor: progress; opacity: .7; }
-.agent-composer-column { --prompt-control-border: var(--surface-1); --prompt-control-background: color-mix(in srgb, var(--mantle) 88%, transparent); --prompt-control-foreground: var(--subtext-0); --prompt-control-hover-border: var(--lavender); --prompt-control-hover-background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); --prompt-control-hover-foreground: var(--text); display: grid; gap: .375rem; }
+/* keep prompt, toolbar, and phone key colors on one shared palette */
+:is(.agent-composer-column, .workspace-toolbar-actions, .empty-workspace-actions, .mobile-terminal-keys) { --prompt-control-border: var(--surface-1); --prompt-control-background: color-mix(in srgb, var(--mantle) 88%, transparent); --prompt-control-foreground: var(--subtext-0); --prompt-control-hover-border: var(--lavender); --prompt-control-hover-background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); --prompt-control-hover-foreground: var(--text); }
+.agent-composer-column { display: grid; gap: .375rem; }
 .agent-composer-column button { box-sizing: border-box; display: grid; width: var(--standard-control-size); height: var(--standard-control-size); padding: 0; place-items: center; border-radius: var(--control-radius); box-shadow: none; transition: background-color .15s ease, border-color .15s ease, color .15s ease, filter .15s ease; }
 .agent-composer-column :is(.attachment-button, .queued-prompts-toggle) { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); filter: none; }
 .agent-composer-column :is(.attachment-button, .queued-prompts-toggle):not(:disabled):hover, .agent-composer-column .queued-prompts-toggle[aria-expanded='true'] { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
@@ -1003,7 +1003,7 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .command-menu code { color: var(--mauve); font: 700 .76rem var(--font-mono); }
 .command-menu span { min-width: 0; overflow: hidden; font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
 .command-menu-empty { padding: .5rem; color: var(--overlay-0); font: 600 .72rem var(--font-mono); }
-:is(.workspace-toolbar-actions, .empty-workspace-actions) { --prompt-control-border: var(--surface-1); --prompt-control-background: color-mix(in srgb, var(--mantle) 88%, transparent); --prompt-control-foreground: var(--subtext-0); --prompt-control-hover-border: var(--lavender); --prompt-control-hover-background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); --prompt-control-hover-foreground: var(--text); display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: .375rem; }
+:is(.workspace-toolbar-actions, .empty-workspace-actions) { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: .375rem; }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) button, .project-open { box-sizing: border-box; height: var(--standard-control-size); border-radius: var(--control-radius); padding: .4rem .6rem; font-size: .75rem; font-weight: 700; box-shadow: none; transition: background-color .15s ease, border-color .15s ease, color .15s ease, filter .15s ease; }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .icon-button { display: inline-grid; flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); height: var(--standard-control-size); padding: 0; place-items: center; }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .icon-button svg { display: block; width: 1rem; height: 1rem; }
@@ -1092,11 +1092,6 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
   .git-status-summary.dirty > .git-status-dot { color: var(--yellow); }
   .git-status-summary.conflicted > .git-status-dot { color: var(--red); }
   .git-status-summary.unavailable > .git-status-dot { color: var(--overlay-0); }
-}
-/* a full-screen Terminal (or the Agent's pane taking keys) keeps its helper keys, and only them */
-@media (max-width: 600px) {
-  .agent-view:has(.log-split > .expanded):has(.log-output.input-active, .log-split.mobile-terminal-view) > section.workspace-toolbar { display: block; }
-  .agent-view:has(.log-split > .expanded) > section.workspace-toolbar > .workspace-toolbar-actions { display: none; }
 }
 @media (max-width: 600px) { .workspace-toolbar-actions :is(.toolbar-label, .project-stack-status-text) { display: none; } .workspace-toolbar-actions .toolbar-button { padding: 0; width: var(--standard-control-size); } .toolbar-path { display: none; } }
 .prompt-actions { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: .375rem; }
@@ -1266,7 +1261,36 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 @media (prefers-reduced-motion: reduce) { .agent-switcher-attention, .tabs button.status-working::before, .tabs button.status-working::after, .tabs button.status-working .tab-label, .tabs button.unread, .tabs button.unread::after, .cleanup-toggle, .notes-toggle.unread-queued-prompts, .server-switcher-settings-wrap .server-switcher-settings.updates-available, .review-tour-toggle.generating, .browser-refresh.loading, .review-tour-backdrop, .review-tour, .voice-soundwave i { animation: none; } }
 /* the Reduced motion setting stills the same animations regardless of the OS */
 :root[data-motion="reduced"] .agent-switcher-attention, :root[data-motion="reduced"] .tabs button.status-working::before, :root[data-motion="reduced"] .tabs button.status-working::after, :root[data-motion="reduced"] .tabs button.status-working .tab-label, :root[data-motion="reduced"] .tabs button.unread, :root[data-motion="reduced"] .tabs button.unread::after, :root[data-motion="reduced"] .cleanup-toggle, :root[data-motion="reduced"] .notes-toggle.unread-queued-prompts, :root[data-motion="reduced"] .server-switcher-settings-wrap .server-switcher-settings.updates-available, :root[data-motion="reduced"] .review-tour-toggle.generating, :root[data-motion="reduced"] .browser-refresh.loading, :root[data-motion="reduced"] .review-tour-backdrop, :root[data-motion="reduced"] .review-tour, :root[data-motion="reduced"] .voice-soundwave i { animation: none; }
-@media (max-width: 600px) { :root { --edge: .75rem; }.tabs button { font-size: .75rem; padding: .3rem .45rem; }.worktree-view { gap: .75rem; }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar { display: block; padding: .25rem; border: 1px solid color-mix(in srgb, var(--surface-2) 78%, transparent); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); box-shadow: 0 .35rem 1.2rem #0009, inset 0 1px color-mix(in srgb, var(--text) 7%, transparent); }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar > .workspace-toolbar-actions:not(:has(> .panel-dots)), .agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar > .workspace-toolbar-actions > :not(.panel-dots), .log-output.input-active > .agent-composer { display: none; }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar > .workspace-toolbar-actions { justify-content: center; margin-bottom: .2rem; }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar .mobile-terminal-keys { display: flex; justify-content: center; gap: .7rem; }.mobile-key-modifiers { display: grid; grid-template-columns: repeat(2, 3.15rem); gap: .2rem; }.mobile-arrow-keys { display: grid; grid-template-columns: repeat(3, 2rem); gap: .2rem; }.mobile-terminal-keys button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: var(--surface-2); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 90%, transparent); color: var(--text); box-shadow: none; }.mobile-key-modifiers button { width: 3.15rem; font: 800 .65rem var(--font-mono); }.mobile-terminal-keys button svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }.mobile-terminal-keys button.active { border-color: var(--sky); background: color-mix(in srgb, var(--sky) 32%, var(--surface-0)); color: var(--sky); } }
+@media (max-width: 600px) {
+  :root { --edge: .75rem; }
+  .tabs button { font-size: .75rem; padding: .3rem .45rem; }
+  .worktree-view { gap: .75rem; }
+  /* swap the prompt for the output keys without changing the static toolbar */
+  .log-output.input-active > .agent-composer { display: none; }
+  .log-split:not(.mobile-agent-view) > .log-output > .mobile-terminal-keys { display: none; }
+  /* match the prompt footer inside output and Terminal splits */
+  .log-output.input-active > .mobile-terminal-keys, .terminal-pane > .mobile-terminal-keys {
+    display: grid;
+    grid-template-columns: 3.15rem auto auto;
+    align-items: start;
+    justify-content: center;
+    gap: .45rem .7rem;
+    padding: .375rem;
+    border-top: 1px solid var(--surface-0);
+    background: color-mix(in srgb, var(--mantle) 60%, transparent);
+  }
+  .mobile-key-modifiers { display: grid; grid-template-columns: repeat(2, 3.15rem); gap: .2rem; }
+  .mobile-arrow-keys { display: grid; grid-template-columns: repeat(3, 2rem); gap: .2rem; }
+  .mobile-terminal-keys button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: var(--prompt-control-border); border-radius: var(--control-radius); background: var(--prompt-control-background); color: var(--prompt-control-foreground); box-shadow: none; }
+  .mobile-terminal-keys button:not(.active):hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
+  .mobile-key-modifiers button { width: 3.15rem; font: 800 .65rem var(--font-mono); }
+  .mobile-terminal-keys button svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+  .mobile-terminal-keys button.active { border-color: var(--sky); background: color-mix(in srgb, var(--sky) 32%, var(--surface-0)); color: var(--sky); }
+  /* join the active pane footer to the static bottom bar */
+  .agent-view:has(.log-split.mobile-agent-view > .log-output.input-active, .log-split.mobile-terminal-view) .log { border-bottom: 0; }
+  .agent-view:has(.log-split.mobile-agent-view > .log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar { border-top: 0; }
+}
+
 .tabs .new-agent-tab { flex: 0 0 var(--standard-control-size); justify-content: center; height: var(--standard-control-size); min-height: var(--standard-control-size); margin: 0; border: 1px solid color-mix(in srgb, var(--lavender) 60%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--lavender); white-space: nowrap; padding: 0; font: 700 1.15rem var(--font-mono); letter-spacing: .035em; box-shadow: none; }
 .tabs .new-agent-tab:hover { background: linear-gradient(145deg, var(--mauve), var(--blue)); color: var(--crust); }
 .tabs .launcher,.tabs .tab-spacer{flex:0 0 var(--standard-control-size);height:var(--standard-control-size);min-height:var(--standard-control-size)}.tabs .launcher{position:relative;display:block}.tabs .launcher .new-agent-tab{width:100%;height:100%}.launcher-menu{z-index:var(--layer-popover)}.launcher-menu button{justify-content:flex-start!important;border:0!important;padding:.55rem!important;text-align:left}
@@ -1669,7 +1693,6 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .workspace-toolbar-actions .more { font-size: 1.4rem; line-height: 1; }
 
 @media (max-width: 600px) {
-  .agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar .mobile-terminal-keys { display: grid; grid-template-columns: 3.15rem auto auto; align-items: start; justify-content: center; gap: .45rem .7rem; }
   .mobile-control-keys { display: grid; grid-template-columns: 3.15rem; gap: .2rem; }
   .mobile-control-keys button { width: 3.15rem; font: 800 .65rem var(--font-mono); }
 }

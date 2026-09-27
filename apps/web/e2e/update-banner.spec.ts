@@ -246,6 +246,12 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   await expect(selectionToolbar).toHaveCount(0);
   await expect(output.locator('.log-output')).toHaveClass(/input-active/u);
   await expect(output.getByLabel('Terminal keys')).toBeVisible();
+  // keep the embedded keys on a solid control palette instead of the base gradient
+  const advisorKey = output.getByRole('button', { name: 'Ctrl+C' });
+  await expect.poll(() => advisorKey.evaluate(element => getComputedStyle(element).backgroundImage)).toBe('none');
+  const restingKeyColor = await advisorKey.evaluate(element => getComputedStyle(element).backgroundColor);
+  await advisorKey.hover();
+  await expect.poll(() => advisorKey.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(restingKeyColor);
   const inputBounds = await output.evaluate(element => {
     const bounds = element.getBoundingClientRect();
     const screen = element.querySelector<HTMLElement>('.xterm-screen')!.getBoundingClientRect();

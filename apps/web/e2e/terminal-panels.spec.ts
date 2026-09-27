@@ -1171,8 +1171,8 @@ test('an agentless Worktree tab can open a Terminal', async ({ page }) => {
   await expect(page.locator('.terminal-pane[data-panel-key="%5"]')).toBeVisible();
 });
 
-// with no agent panel, a phone's Terminal still takes the whole footer for its helper keys
-test('on a phone an agentless Workspace\'s Terminal gives the toolbar over to its helper keys', async ({ page }) => {
+// with no agent panel, a phone's Terminal keeps its helper keys in the split
+test('on a phone an agentless Workspace keeps its toolbar below the Terminal helper keys', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await installPaneMock(page);
   const panes: Pane[] = [{ paneId: '%5', session: '$1', window: '@1', role: 'shell', name: 'build', command: 'zsh', path: '/worktrees/cora', title: '', agent: false, busy: false }];
@@ -1199,10 +1199,11 @@ test('on a phone an agentless Workspace\'s Terminal gives the toolbar over to it
   await seedPaneSize(page, '%5', 80, 24);
   await expect(page.locator('.terminal-pane[data-panel-key="%5"]')).toBeInViewport({ ratio: 0.99 });
 
-  // as on an agent's Workspace, the keys replace the rest of the toolbar
-  await expect(page.getByRole('button', { name: 'Esc' })).toBeVisible();
-  await expect(workspaceToolbar.getByRole('button', { name: 'Open a terminal' })).toBeHidden();
-  await expect(workspaceToolbar.getByRole('button', { name: 'More options' })).toBeHidden();
+  // the in-split keys and static toolbar remain separate and both accessible
+  await expect(page.locator('.terminal-pane[data-panel-key="%5"] .mobile-terminal-keys')).toBeVisible();
+  await expect(workspaceToolbar.getByRole('button', { name: 'Open a terminal' })).toBeVisible();
+  await expect(workspaceToolbar.getByRole('button', { name: 'More options' })).toBeVisible();
+  await expect.poll(() => page.locator('.log').evaluate(element => getComputedStyle(element).borderBottomWidth)).toBe('0px');
 });
 
 // agentless terminal actions retain worktree-local notes and launch drafts
@@ -1492,7 +1493,7 @@ test('renaming a Console shell renames its phone dot', async ({ page }) => {
   await expect((await openSplitMenu(page)).getByRole('menuitem', { name: 'Terminal deploy' })).toBeVisible();
 });
 
-test('on a phone a visible Terminal swaps the footer to the helper keys and the agent dot restores the composer', async ({ page }) => {
+test('on a phone a visible Terminal shows in-split keys and the agent dot restores the composer', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 880 });
   await installPaneMock(page);
   await routeApi(page);
@@ -1503,16 +1504,17 @@ test('on a phone a visible Terminal swaps the footer to the helper keys and the 
   await page.getByRole('menuitem', { name: /build/u }).click();
   await seedPaneSize(page, '%5', 80, 24);
 
-  // the newly opened Terminal is the visible phone panel; the footer is now its helper keys
+  // the newly opened Terminal is the visible phone panel with its own helper keys
   const column = page.locator('.terminal-pane[data-panel-key="%5"]');
   await expect(column).toBeInViewport({ ratio: 0.99 });
   const composer = page.getByRole('textbox', { name: 'Prompt' });
   const escKey = page.getByRole('button', { name: 'Esc' });
   await expect(escKey).toBeVisible();
   await expect(composer).not.toBeInViewport();
-  // the rest of the toolbar gives way to the keys; only the dots stay to move between panels
+  // the static toolbar keeps its controls and the dots still switch panels
   const workspaceToolbar = page.getByRole('region', { name: 'Workspace toolbar' });
-  await expect(workspaceToolbar.getByRole('button', { name: 'Open a terminal' })).toBeHidden();
+  await expect(column.getByLabel('Terminal keys')).toBeVisible();
+  await expect(workspaceToolbar.getByRole('button', { name: 'Open a terminal' })).toBeVisible();
   await expect(workspaceToolbar.getByRole('group', { name: 'Panels' })).toBeVisible();
 
   // switching back to the agent panel brings the Agent's composer back and hides the keys;

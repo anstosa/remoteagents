@@ -49,7 +49,7 @@ test('focusing the pane marks it input-active and forwards typed control keys', 
   await expect(page.locator('.xterm-helper-textarea:focus')).toHaveCount(1);
 });
 
-test('keys stay local when the composer or a dialog owns focus', async ({ page }) => {
+test('keys stay local when the composer or Code panel owns focus', async ({ page }) => {
   await installPaneMock(page);
   await routeApi(page);
   await page.goto('/');
@@ -66,13 +66,14 @@ test('keys stay local when the composer or a dialog owns focus', async ({ page }
   await page.waitForTimeout(100);
   expect(await paneInputText(page, 'agent-1')).toBe('');
 
-  // A focused file preview closes on Escape locally, forwarding nothing to the pane.
+  // the output file opens in the Code panel, not the retired preview dialog
   const previewLink = page.getByRole('link', { name: 'Preview apps/web/src/main.tsx' });
   await previewLink.click();
-  const previewDialog = page.getByRole('dialog', { name: 'File preview: apps/web/src/main.tsx' });
-  await expect(previewDialog).toBeVisible();
+  const codePanel = page.getByRole('region', { name: 'Code changes' });
+  await expect(codePanel.getByRole('button', { name: 'Close file' })).toBeVisible();
+  await codePanel.getByRole('button', { name: 'Close file' }).focus();
   await page.keyboard.press('Escape');
-  await expect(previewDialog).toBeHidden();
+  await expect(codePanel).toBeVisible();
   expect(await paneInputText(page, 'agent-1')).toBe('');
 });
 
@@ -87,10 +88,15 @@ test('the mobile terminal keys drive the pane, including the Ctrl latch', async 
   // Focus the pane so the panel is input-active and the mobile keys show.
   await page.getByLabel('Live log').locator('.xterm-screen').click();
   await expect(page.getByLabel('Terminal keys')).toBeVisible();
-  // the keys take the row beneath the tabs, and the agent panel's composer folds away for the output
-  await expect(page.getByRole('region', { name: 'Workspace toolbar' }).getByLabel('Terminal keys')).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'More options' })).toBeHidden();
+  // the keys take the prompt's row inside the output; the static toolbar stays intact
+  const output = page.locator('.log-output');
+  const toolbar = page.getByRole('region', { name: 'Workspace toolbar' });
+  await expect(output.getByLabel('Terminal keys')).toBeVisible();
+  await expect(toolbar.getByLabel('Terminal keys')).toHaveCount(0);
+  await expect(toolbar.getByRole('button', { name: 'More options' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Prompt composer' })).toBeHidden();
+  // the pane footer joins the toolbar without a divider
+  await expect.poll(() => page.locator('.log').evaluate(element => getComputedStyle(element).borderBottomWidth)).toBe('0px');
   // Direct controls, then modifiers, then arrows, left to right; Esc above Ctrl+C.
   const [controlBounds, modifierBounds, arrowBounds, escBounds, ctrlCBounds] = await Promise.all([
     page.locator('.mobile-control-keys').boundingBox(),

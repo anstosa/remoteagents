@@ -4433,7 +4433,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
 // `addToPrompt` is absent where the tab has no composer (an agentless directory-Project or Scratch Place)
 type TerminalSelectionActions = { canCreateNote: boolean; createNote: (text: string) => Promise<boolean>; addToPrompt?: (text: string) => void };
 // let the split supply visibility and selection actions to terminal columns
-type TerminalColumnProps = { selectionActions?: TerminalSelectionActions };
+type TerminalColumnProps = { selectionActions?: TerminalSelectionActions; mobileActive?: boolean };
 // keep each rendered terminal keyed by its stable tmux pane id
 type TerminalColumn = { key: string; label: string; node: ReactElement<TerminalColumnProps> };
 type SplitSizes = Record<string, number>;
@@ -4604,11 +4604,7 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
     contentSwipe.onTouchStart(event, phone && swipeContentTarget(event.target));
   };
   const carouselSignature = carouselPanels.map(panel => `${panel.key}\u0000${panel.title}`).join('\u0001');
-  // Report the carousel so the toolbar's dots follow it, and the footer swaps the Agent's composer
-  // for a visible Terminal's helper keys (spec, the phone footer). This mirrors the
-  // `mobile-terminal-view` class that drives the swap in CSS, so the two stay in step. Reported in
-  // a layout effect (before paint) so the helper keys never paint pointed at the Agent for a frame
-  // before the target catches up to the CSS-driven swap.
+  // report the carousel so the toolbar's dots follow the visible panel
   useLayoutEffect(() => {
     onCarousel?.({ panels: carouselPanels, visibleKey: carousel.visibleKey, show: carousel.show });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4644,7 +4640,8 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
   // the panel columns interleaved with resizers
   const laidOut = columns.flatMap((column, index) => {
     const isTerminal = splitPanelKind(column.key) === 'terminal';
-    const node = isTerminal ? cloneElement(column.node as ReactElement<TerminalColumnProps>, { key: column.key, selectionActions }) : <Fragment key={column.key}>{column.node}</Fragment>;
+    // mount phone keys only for the visible Terminal so inactive splits keep no live controls
+    const node = isTerminal ? cloneElement(column.node as ReactElement<TerminalColumnProps>, { key: column.key, selectionActions, mobileActive: phone && carousel.visibleKey === column.key }) : <Fragment key={column.key}>{column.node}</Fragment>;
     return index === 0 ? [node] : [resizer(columns[index - 1].key, column.key), node];
   });
   const mobileView = carousel.visibleKey !== undefined ? ` mobile-${splitPanelKind(carousel.visibleKey)}-view` : '';
@@ -4848,7 +4845,7 @@ function useWorktreeTerminals(worktreeId: string | undefined) {
 type WorktreeTerminals = ReturnType<typeof useWorktreeTerminals>;
 
 // render a live terminal with fullscreen, minimize and managed-shell delete actions
-function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, onDelete, selectionActions }: { worktreeId: string; paneId: string; name: string; onMinimize: () => void; onExit: () => void; onRename?: (name: string) => Promise<boolean>; onDelete?: () => Promise<boolean | undefined> } & TerminalColumnProps) {
+function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, onDelete, selectionActions, mobileActive = false }: { worktreeId: string; paneId: string; name: string; onMinimize: () => void; onExit: () => void; onRename?: (name: string) => Promise<boolean>; onDelete?: () => Promise<boolean | undefined> } & TerminalColumnProps) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const [focused, setFocused] = useState(false);
   const [selection, setSelection] = useState<TerminalSelection>();
@@ -4939,6 +4936,8 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
       : <span className="pane-title" title={name}>{name}</span>}
     </>} />
     <div className="terminal-canvas" ref={canvas} aria-label={`Terminal ${name}`} />
+    {/* keep phone keys with their terminal instead of replacing the static toolbar */}
+    {mobileActive && <MobileTerminalKeys id={paneId} />}
     {/* keep selection actions hidden with their terminal panel */}
     {selection && <div className="output-selection-toolbar" role="toolbar" aria-label={`Selection actions for terminal ${name}`} style={{ top: selection.top, left: selection.left }} onPointerDown={event => event.preventDefault()}>
       <button type="button" disabled={!selectionActions?.canCreateNote || selection.text.length > 30_000} onClick={async () => { /* reveal only successfully created notes */ if (await selectionActions?.createNote(selection.text)) expand?.restore(); }}>Create note</button>
@@ -5334,16 +5333,14 @@ function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNa
   const browser = useProjectBrowser(place.projectUrl, place.id, place.projectProxied);
   const code = useCodePanel(place.worktreeId, request, comparisonChangeSignal(place.gitStatus, place.gitPrStatus, place.attention));
   const terminals = useTerminalViews(place.id);
-  // The phone carousel the split reports: the toolbar's dots follow it, and while a Terminal is
-  // the panel in view the composer swaps for that pane's helper keys (spec, the phone footer).
+  // keep the toolbar dots aligned with the visible phone panel
   const [carousel, setCarousel] = useState<PanelCarousel>();
-  const phoneTerminal = carousel?.visibleKey !== undefined && splitPanelKind(carousel.visibleKey) === 'terminal' ? carousel.visibleKey : undefined;
   const conversations = useWorktreeConversations(place.worktreeId, agentId, { onNavigateWorktree, onOperationFeedback });
   // the panel filling the Workspace; the notes restore theirs, so they share it
   const expansion = usePanelExpansion();
   const placeNotes = useWorktreeNotes(place.id, expansion, agentId, notes.agentWorking, notes.latestAssistantMessage, notes.latestAssistantMessageOverflows, notes.onPromptHistoryChanged, notes.promptHistory, notes.schedulePrefill, notes.onLaunchAndRun, notes.launchRunLabel);
   const [gitExpanded, setGitExpanded] = useState(false);
-  return { place, browser, code, terminals, carousel, setCarousel, phoneTerminal, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded };
+  return { place, browser, code, terminals, carousel, setCarousel, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded };
 }
 type WorkspaceState = ReturnType<typeof useWorkspace>;
 // The git actions only an Agent offers (push, fixup, guided review); an agentless Workspace passes
@@ -5519,7 +5516,8 @@ function Log({ id, embedded = false, onQuestion, onMetadata, header, composer, n
   const outputBody = <><div className="log-canvas" ref={canvas} aria-label="Live log" />{stale && <div className="log-stale-overlay" aria-hidden="true" />}{loadingOverlay}</>;
   // the embedded advisor floats its status over the output; the agent panel's header shows it
   if (header === undefined) return <><div className={`log-output${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}>{outputBody}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span></div>{selectionActions}</>;
-  return <><AgentPanelFrame className={`${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`} header={header(visibleStatus)} composer={composer}>{outputBody}</AgentPanelFrame>{selectionActions}</>;
+  // keep the output keys beside the composer in the agent split
+  return <><AgentPanelFrame className={`${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`} header={header(visibleStatus)} composer={composer} mobileKeys={<MobileTerminalKeys id={id} />}>{outputBody}</AgentPanelFrame>{selectionActions}</>;
 }
 
 // The composer's prompt-history button and flyout for one Agent. The open state is the caller's,
@@ -6056,7 +6054,7 @@ function AgentPlaceCard({ agent, agents, onSelectAgent, active, tabBar, cleanupC
   const addToPrompt = (text: string) => setPromptDraft(agent.id, current => appendTextBlock(current, text));
   // the panel is keyed by Agent, so a switch swaps its output, draft, queue and pending actions
   const output = <AgentPanel key={agent.id} agent={agent} agents={agents} onSelectAgent={onSelectAgent} active={active} displayLabel={displayLabel} workspace={workspace} promptHistory={promptHistory} historyOpen={historyOpen} onHistoryOpenChange={changeHistoryOpen} latestAssistantMessage={latestAssistantMessage} onMetadata={reportMetadata} onAddToPrompt={addToPrompt} onOpenFile={openFileInCode} onOpenUrl={openOutputUrl} onDeleted={onDeleted} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} />;
-  return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}{upstreamRebase}<WorkspaceToolbar workspace={workspace} hasAgent launch={launch} git={gitActions} onGitToggle={() => setHistoryOpen(false)} review={review} cleanupControl={cleanupControl} menu={{ agentId: agent.id, worktreeId: agent.worktreeId, git: agent.worktreeId !== undefined || agent.placeId === undefined, newTaskConfigured: agent.newTaskConfigured, pinned, onTogglePin, onRenameWorktree, onRemoveWorktree, removeDisabledReason, onOperationFeedback }} phoneKeys={workspace.phoneTerminal ?? agent.id} /></article>;
+  return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}{upstreamRebase}<WorkspaceToolbar workspace={workspace} hasAgent launch={launch} git={gitActions} onGitToggle={() => setHistoryOpen(false)} review={review} cleanupControl={cleanupControl} menu={{ agentId: agent.id, worktreeId: agent.worktreeId, git: agent.worktreeId !== undefined || agent.placeId === undefined, newTaskConfigured: agent.newTaskConfigured, pinned, onTogglePin, onRenameWorktree, onRemoveWorktree, removeDisabledReason, onOperationFeedback }} /></article>;
 }
 
 // One Agent's panel inside its Place's Workspace: the live output under the floating header (the
@@ -6276,9 +6274,10 @@ function AgentPanelTitle({ kind, sandboxed, title, switcher, state, connection =
 
 // The agent panel's frame: the floating header, the output (or a startup notice) and the composer
 // at its foot. It fills the split's agent column, and the expansion promotes it by `.expanded`.
-function AgentPanelFrame({ header, composer, className = '', children }: { header: ReactNode; composer?: ReactNode; className?: string; children: ReactNode }) {
+function AgentPanelFrame({ header, composer, mobileKeys, className = '', children }: { header: ReactNode; composer?: ReactNode; mobileKeys?: ReactNode; className?: string; children: ReactNode }) {
   const expanded = usePanelExpand('agent')?.expanded === true;
-  return <div className={`log-output agent-panel${expanded ? ' expanded' : ''}${className}`}>{header}<div className="agent-output">{children}</div>{composer}</div>;
+  // keep alternate phone controls at the same split foot as the composer
+  return <div className={`log-output agent-panel${expanded ? ' expanded' : ''}${className}`}>{header}<div className="agent-output">{children}</div>{composer}{mobileKeys}</div>;
 }
 
 // The guided review's button, once a review exists for the Worktree.
@@ -6296,10 +6295,9 @@ type ToolbarLaunch = { label: string; resolution?: LaunchResolution; start: (cho
 // the panel buttons (Terminal, Notes, Browser, Code), then the Place's git status (or, without
 // git, its path), the stack and the ⋮ of Place actions. `conversations` sits beside Launch while no
 // agent panel carries it. On a phone, Browser and Code move into the ⋮, and the carousel's
-// position dots sit in the middle; while a Terminal or the Agent's pane takes keys the rest of the
-// toolbar swaps for its helper keys (`phoneKeys`, the shown Terminal or the Agent). A launch not
-// yet discovered has no Workspace, so it shows only Launch.
-function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, git, onGitToggle, review, cleanupControl, menu, phoneKeys }: { workspace?: WorkspaceState; hasAgent?: boolean; launch?: ToolbarLaunch; conversations?: ReactNode; git?: WorkspaceGitActions; onGitToggle?: () => void; review?: ReviewButtonState; cleanupControl?: ReactNode; menu?: PlaceMenuProps; phoneKeys?: string }) {
+// position dots sit in the middle; the Agent and Terminal keep their helper keys inside their
+// own panels. A launch not yet discovered has no Workspace, so it shows only Launch.
+function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, git, onGitToggle, review, cleanupControl, menu }: { workspace?: WorkspaceState; hasAgent?: boolean; launch?: ToolbarLaunch; conversations?: ReactNode; git?: WorkspaceGitActions; onGitToggle?: () => void; review?: ReviewButtonState; cleanupControl?: ReactNode; menu?: PlaceMenuProps }) {
   const phone = usePhoneLayout();
   const place = workspace?.place;
   const worktreeId = place?.worktreeId;
@@ -6326,7 +6324,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, 
     <ReviewTourButton review={review} />
     {workspace !== undefined && <ProjectOpen url={place?.projectUrl} stack={place?.stack} browserOpen={workspace.browser.open} onBrowserToggle={workspace.browser.toggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />}
     {menu !== undefined && <PlaceMenu {...menu} panels={menuPanels} />}
-  </div>{phoneKeys !== undefined && <MobileTerminalKeys key={phoneKeys} id={phoneKeys} />}</section>;
+  </div></section>;
 }
 
 // the Browser and Code glyphs, shared by the toolbar buttons and their phone ⋮ rows
@@ -6528,7 +6526,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, transient = false, onL
     setPromptDraft(draftId, current => appendTextBlock(current, text));
     setPromptOpened(true);
   };
-  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{error && <p className="launch-error" role="alert">{error}</p>}<WorkspaceToolbar workspace={workspace} launch={launch} conversations={workspace.conversations.control} git={gitActions} cleanupControl={cleanupControl} menu={{ worktreeId: worktree.id, git: true, pinned: worktree.pinned, onTogglePin, onRenameWorktree: onRename, onRemoveWorktree: onRemove, removeDisabledReason: processing ? 'An agent is starting or stopping here' : removeDisabledReason, onOperationFeedback }} phoneKeys={workspace.phoneTerminal} /></article>;
+  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{error && <p className="launch-error" role="alert">{error}</p>}<WorkspaceToolbar workspace={workspace} launch={launch} conversations={workspace.conversations.control} git={gitActions} cleanupControl={cleanupControl} menu={{ worktreeId: worktree.id, git: true, pinned: worktree.pinned, onTogglePin, onRenameWorktree: onRename, onRemoveWorktree: onRemove, removeDisabledReason: processing ? 'An agent is starting or stopping here' : removeDisabledReason, onOperationFeedback }} /></article>;
 }
 
 // The agent panel before its Agent exists: the kind, the Place and a state pill in the header,
@@ -6615,7 +6613,7 @@ function PlaceCard({ place, tabBar, cleanupControl, transient = false, launchDis
   const empty = <EmptyWorkspace workspace={workspace} label={place.label} detail={`${place.home} · ${place.kind === 'scratch' ? 'Scratch folder' : 'directory Project'}`} launch={toolbarLaunch} onPin={transient ? onTogglePin : undefined} />;
   // a note's Run launches here: the agent panel shows the start
   const agentPanel = running ? <PendingAgentPanel kind={launchKind} title={place.label} state={{ label: 'Starting', tone: 'starting' }} loading={<PanelNotice busy heading={`Starting ${launchKind === undefined ? 'agent' : agentKindLabel[launchKind]} at ${place.label}…`} detail="Launching an agent to run the note." />} /> : undefined;
-  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} />{tabBar}<WorkspaceToolbar workspace={workspace} launch={toolbarLaunch} cleanupControl={cleanupControl} menu={{ pinned: place.pinned, onTogglePin, onOperationFeedback }} phoneKeys={workspace.phoneTerminal} /></article>;
+  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} />{tabBar}<WorkspaceToolbar workspace={workspace} launch={toolbarLaunch} cleanupControl={cleanupControl} menu={{ pinned: place.pinned, onTogglePin, onOperationFeedback }} /></article>;
 }
 
 // render a scratch or directory session before discovery publishes its agent identity

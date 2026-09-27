@@ -145,7 +145,8 @@ test('the split indicator swipes in both directions without opening its menu', a
   await expectCurrentDot(page, 'Show note');
 
   // keep the visible marks evenly separated around the active dash
-  await trigger.evaluate(async element => { await Promise.all(element.getAnimations().map(animation => animation.finished)); });
+  // include the child dot transitions before measuring their visible edges
+  await trigger.evaluate(async element => { await Promise.all(element.getAnimations({ subtree: true }).map(animation => animation.finished)); });
   const gaps = await trigger.locator('.panel-dot').evaluateAll(elements => elements.slice(1).map((element, index) => {
     const previous = elements[index]!;
     const previousBox = previous.getBoundingClientRect();
@@ -167,7 +168,8 @@ test('the split indicator swipes in both directions without opening its menu', a
   await swipe(page, trigger, 90, false, true);
   await expectCurrentDot(page, 'Show agent output');
   await expect(page.getByRole('menu', { name: 'Splits' })).toHaveCount(0);
-  await trigger.tap();
+  // check menu opening separately from the touch swipe click-suppression lifecycle
+  await trigger.click();
   await expect(page.getByRole('menu', { name: 'Splits' })).toBeVisible();
 });
 
