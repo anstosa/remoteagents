@@ -10,7 +10,7 @@ import { attachTerminalSelection, type TerminalSelection } from './terminal-sele
 import { createAgentPaneConnector, createWorktreePaneConnector } from './pane-socket-client.js';
 import { FlyoutPortal } from './flyout-portal.js';
 import { PanelExpandContext, type PanelAction, type PanelExpansion, PanelHeader, PanelIcon, panelIcons, useExpansionScope, usePanelExpand, usePanelExpansion, usePhoneLayout } from './panel-header.js';
-import { type CarouselPanel, type PanelCarousel, PanelDots, usePanelCarousel } from './panel-carousel.js';
+import { type CarouselPanel, type PanelCarousel, PanelDots, usePanelCarousel, usePanelSwipe } from './panel-carousel.js';
 import { NoteMarkdown } from './note-markdown.js';
 import { ProjectOpen } from './project-open.js';
 import type { CodePanelReview } from './code-panel/code-panel.js';
@@ -4589,6 +4589,13 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
     const label = `Show ${title.charAt(0).toLowerCase()}${title.slice(1)}`;
     return { key: column.key, kind, title, label };
   });
+  const noteSwipe = usePanelSwipe({ panels: carouselPanels, visibleKey: carousel.visibleKey, show: carousel.show });
+  // start a manual swipe only inside the note's own scrolling content
+  const startNoteSwipe = (event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.target;
+    const noteContent = target instanceof Element && target.closest('.note-pane :is(.note-markdown, textarea)') !== null;
+    noteSwipe.onPointerDown(event, phone && noteContent);
+  };
   const carouselSignature = carouselPanels.map(panel => `${panel.key}\u0000${panel.title}`).join('\u0001');
   // Report the carousel so the toolbar's dots follow it, and the footer swaps the Agent's composer
   // for a visible Terminal's helper keys (spec, the phone footer). This mirrors the
@@ -4634,7 +4641,7 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
     return index === 0 ? [node] : [resizer(columns[index - 1].key, column.key), node];
   });
   const mobileView = carousel.visibleKey !== undefined ? ` mobile-${splitPanelKind(carousel.visibleKey)}-view` : '';
-  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasAgent ? '' : ' no-agent'}${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown}>{columns.length === 0 ? empty : laidOut}</div></PanelExpandContext.Provider>;
+  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasAgent ? '' : ' no-agent'}${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown} onPointerDown={startNoteSwipe} onPointerUp={noteSwipe.onPointerUp} onPointerCancel={noteSwipe.onPointerCancel} onClickCapture={noteSwipe.onClickCapture}>{columns.length === 0 ? empty : laidOut}</div></PanelExpandContext.Provider>;
 }
 
 // One pane of a Worktree the picker can show as a Terminal (the wire shape of

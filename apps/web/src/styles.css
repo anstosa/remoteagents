@@ -848,6 +848,8 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   /* A phone shows one panel per screen: the split is a horizontal swipe carousel that snaps to
      each panel in turn (the toolbar's dots show where it is). */
   .log-split:has(> :is(.log-output, .note-pane, .browser-pane, .code-pane, .terminal-pane)) { display: flex; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scroll-snap-type: x mandatory; scrollbar-width: none; }
+  /* let horizontal swipes over note content reach the panel carousel */
+  .note-pane :is(.note-markdown, textarea) { touch-action: pan-y; }
   .log-split::-webkit-scrollbar { display: none; }
   .log-split > :is(.log-output, .note-pane, .browser-pane, .code-pane, .terminal-pane) { flex: 0 0 100%; width: 100%; min-width: 0; height: 100%; scroll-snap-align: start; scroll-snap-stop: always; }
   .log-split > .split-resizer { display: none; }
@@ -1035,12 +1037,13 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .panel-dots { display: inline-flex; flex: none; align-items: center; }
 /* in the toolbar the dots take the spacer's place, centred in the room it leaves */
 .workspace-toolbar-actions > .panel-dots { flex: 1 1 auto; }
-.workspace-toolbar-actions .panel-dots-trigger { display: flex; flex: 1; width: 100%; align-items: center; justify-content: center; gap: 0; padding: 0; border: 0; background: transparent; box-shadow: none; cursor: pointer; }
+/* space dots and the active dash by their visible edges */
+.workspace-toolbar-actions .panel-dots-trigger { display: flex; flex: 1; width: 100%; align-items: center; justify-content: center; gap: .3rem; padding: 0; border: 0; background: transparent; box-shadow: none; cursor: pointer; touch-action: pan-y; }
 .workspace-toolbar-actions .panel-dots-trigger:hover, .workspace-toolbar-actions .panel-dots-trigger[aria-expanded='true'] { background: color-mix(in srgb, var(--lavender) 8%, transparent); }
-.panel-dots .panel-dot { --dot-color: var(--lavender); display: grid; width: 1.15rem; min-width: 0; height: var(--standard-control-size); padding: 0; place-items: center; }
-.panel-dots .panel-dot::before { width: var(--status-dot-size); height: var(--status-dot-size); border-radius: 999px; background: color-mix(in srgb, var(--dot-color) 38%, var(--surface-2)); content: ''; transition: width .15s ease, background-color .15s ease; }
+.panel-dots .panel-dot { --dot-color: var(--lavender); display: grid; flex: none; width: var(--status-dot-size); height: var(--standard-control-size); padding: 0; place-items: center; }
+.panel-dots .panel-dot::before { width: var(--status-dot-size); height: var(--status-dot-size); border-radius: 999px; background: color-mix(in srgb, var(--dot-color) 55%, var(--surface-2)); content: ''; transition: width .15s ease, background-color .15s ease; }
 .panel-dots .panel-dot[data-current='true']::before { width: 1.1rem; background: var(--dot-color); box-shadow: 0 0 .35rem color-mix(in srgb, var(--dot-color) 55%, transparent); }
-.panel-dots .panel-dot[data-current='true'] { width: 1.75rem; }
+.panel-dots .panel-dot[data-current='true'] { width: 1.1rem; }
 :is(.panel-dots, .panel-split-menu) .terminal-dot { --dot-color: var(--green); }
 :is(.panel-dots, .panel-split-menu) .note-dot { --dot-color: var(--yellow); }
 :is(.panel-dots, .panel-split-menu) .browser-dot { --dot-color: var(--blue); }
@@ -1061,7 +1064,6 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
   /* one square trigger replaces the phone's direct-launch segment and separate chevron */
   .workspace-toolbar-actions .launch-menu-only .launch-menu-trigger { width: var(--standard-control-size); padding: 0 .25rem; }
   .workspace-toolbar-actions .launch-menu-trigger-label { display: none; }
-  .workspace-toolbar-actions > .panel-dots .panel-dot:not([data-current='true']) { width: .95rem; }
   .workspace-toolbar-actions .git-status-wrap { flex: none; width: var(--standard-control-size); }
   /* keep the git status mark centered beneath its corner dot */
   .workspace-toolbar-actions .git-status-summary { position: relative; width: var(--standard-control-size); justify-content: center; overflow: visible; padding: 0; }

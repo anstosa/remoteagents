@@ -40,10 +40,10 @@ const expectSnapped = (page: Page) => expect.poll(() => carousel(page).evaluate(
 const expectCurrentDot = (page: Page, name: string) => expect(dots(page).locator(`.panel-dot[title="${name}"]`)).toHaveAttribute('data-current', 'true');
 // a one-finger swipe across the middle of `over`, `distance` pixels (positive moves the finger
 // right). A quick swipe flings; a `slow` one drags and stops before lifting, so it carries no
-// velocity and the carousel snaps to the nearest panel.
-const swipe = async (page: Page, over: Locator, distance: number, slow = false) => {
+// velocity and the carousel snaps to the nearest panel. Small controls start at their centre.
+const swipe = async (page: Page, over: Locator, distance: number, slow = false, fromCenter = false) => {
   const box = (await over.boundingBox())!;
-  const x = Math.round(box.x + box.width / 2 - distance / 2);
+  const x = Math.round(box.x + box.width / 2 - (fromCenter ? 0 : distance / 2));
   const y = Math.round(box.y + box.height / 2);
   const session = await page.context().newCDPSession(page);
   await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
@@ -132,6 +132,66 @@ test('swiping moves between panels one screen at a time, and the dots follow', a
   await expect.poll(() => changes.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(400);
   await page.mouse.click(4, 4);
   await expect(changes).toHaveCount(0);
+});
+
+test('the split indicator swipes in both directions without opening its menu', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 780 });
+  await toolbar(page).getByRole('button', { name: 'Notes (1)' }).click();
+  await page.getByRole('button', { name: 'Phone checklist…', exact: true }).click();
+  await chooseSplit(page, 'Agent output');
+  await openTerminal(page);
+  await chooseSplit(page, 'Note');
+  const trigger = dots(page).getByRole('button', { name: 'Choose split' });
+  await expectCurrentDot(page, 'Show note');
+
+  // keep the visible marks evenly separated around the active dash
+  await trigger.evaluate(async element => { await Promise.all(element.getAnimations().map(animation => animation.finished)); });
+  const gaps = await trigger.locator('.panel-dot').evaluateAll(elements => elements.slice(1).map((element, index) => {
+    const previous = elements[index]!;
+    const previousBox = previous.getBoundingClientRect();
+    const currentBox = element.getBoundingClientRect();
+    const previousWidth = parseFloat(getComputedStyle(previous, '::before').width);
+    const currentWidth = parseFloat(getComputedStyle(element, '::before').width);
+    return currentBox.left + (currentBox.width - currentWidth) / 2 - (previousBox.right - (previousBox.width - previousWidth) / 2);
+  }));
+  expect(gaps).toHaveLength(2);
+  expect(Math.abs(gaps[0]! - gaps[1]!)).toBeLessThanOrEqual(1);
+  expect(Math.max(...gaps)).toBeLessThanOrEqual(5.5);
+
+  await swipe(page, trigger, 90, false, true);
+  await expectCurrentDot(page, 'Show terminal build');
+  await swipe(page, trigger, -90, false, true);
+  await expectCurrentDot(page, 'Show note');
+  await swipe(page, trigger, 90, false, true);
+  await expectCurrentDot(page, 'Show terminal build');
+  await swipe(page, trigger, 90, false, true);
+  await expectCurrentDot(page, 'Show agent output');
+  await expect(page.getByRole('menu', { name: 'Splits' })).toHaveCount(0);
+  await trigger.tap();
+  await expect(page.getByRole('menu', { name: 'Splits' })).toBeVisible();
+});
+
+test('swiping a note in preview or edit mode changes splits', async ({ page }) => {
+  await toolbar(page).getByRole('button', { name: 'Notes (1)' }).click();
+  await page.getByRole('button', { name: 'Phone checklist…', exact: true }).click();
+  const note = page.getByRole('dialog', { name: 'Note' });
+  await expect(note).toBeInViewport({ ratio: 0.99 });
+
+  // the preview yields a horizontal gesture to its parent carousel
+  await swipe(page, note.locator('.note-markdown'), 300);
+  await expect(agentPanel(page)).toBeInViewport({ ratio: 0.99 });
+  await expect(note.getByRole('textbox', { name: 'Note content' })).toHaveCount(0);
+  await chooseSplit(page, 'Note');
+  await note.locator('.note-markdown').click({ position: { x: 20, y: 55 } });
+  const editor = note.getByRole('textbox', { name: 'Note content' });
+  await expect(editor).toBeVisible();
+  await editor.fill('Phone checklist\nSwipe draft');
+
+  // an editing note yields the same horizontal gesture without losing its draft
+  await swipe(page, editor, 300);
+  await expect(agentPanel(page)).toBeInViewport({ ratio: 0.99 });
+  await chooseSplit(page, 'Note');
+  await expect(note.locator('.note-markdown')).toContainText('Swipe draft');
 });
 
 test('with only the agent panel, and so no dots, the phone toolbar still keeps to one row', async ({ page }) => {

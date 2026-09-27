@@ -1,4 +1,4 @@
-import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { FlyoutPortal } from './flyout-portal.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 
@@ -8,6 +8,48 @@ export type CarouselPanel = { key: string; kind: string; title: string; label: s
 // What the carousel tells the rest of the Workspace: its panels in order, the one in view, and how
 // to bring one into view.
 export type PanelCarousel = { panels: readonly CarouselPanel[]; visibleKey: string | undefined; show: (key: string) => void };
+
+// move one split for a deliberate horizontal touch, leaving taps and vertical scrolling alone
+export function usePanelSwipe(carousel: PanelCarousel) {
+  const start = useRef<{ pointerId: number; x: number; y: number } | undefined>(undefined);
+  const swiped = useRef(false);
+  // remember only the primary touch within an enabled swipe area
+  const onPointerDown = (event: ReactPointerEvent<HTMLElement>, enabled = true) => {
+    swiped.current = false;
+    start.current = undefined;
+    // ignore mouse gestures and secondary touches
+    if (!enabled || event.pointerType !== 'touch' || !event.isPrimary) return;
+    start.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  };
+  // choose the neighboring split once the finger crosses the horizontal threshold
+  const onPointerUp = (event: ReactPointerEvent<HTMLElement>) => {
+    const gesture = start.current;
+    start.current = undefined;
+    // ignore a touch that did not start in this area
+    if (gesture === undefined || gesture.pointerId !== event.pointerId) return;
+    const dx = event.clientX - gesture.x;
+    const dy = event.clientY - gesture.y;
+    // preserve taps and vertical note scrolling
+    if (Math.abs(dx) < 40 || Math.abs(dx) <= Math.abs(dy) * 1.25) return;
+    swiped.current = true;
+    // move one split regardless of swipe distance
+    const index = carousel.panels.findIndex(panel => panel.key === carousel.visibleKey);
+    const neighbor = carousel.panels[index + (dx < 0 ? 1 : -1)];
+    // stay at the first or last split
+    if (neighbor !== undefined) carousel.show(neighbor.key);
+  };
+  // discard a browser-owned gesture such as a vertical scroll
+  const onPointerCancel = () => { start.current = undefined; };
+  // prevent the touch-generated click from opening a menu or editing a note
+  const onClickCapture = (event: ReactMouseEvent<HTMLElement>) => {
+    // preserve normal taps and keyboard activation
+    if (!swiped.current || event.detail === 0) return;
+    swiped.current = false;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  return { onPointerDown, onPointerUp, onPointerCancel, onClickCapture };
+}
 
 // Track which of a split's panels (`keys`, in column order) is in view. On a phone the split is a
 // horizontal scroll-snap carousel, one panel per screen (the CSS lays it out), so the panel in view
@@ -89,9 +131,10 @@ export function usePanelCarousel(containerRef: RefObject<HTMLElement | null>, ke
 export function PanelDots({ carousel }: { carousel: PanelCarousel }) {
   const [open, setOpen] = useState(false);
   const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLButtonElement>(open, { align: 'center' });
+  const swipe = usePanelSwipe(carousel);
   // close the chooser before navigating to its selected split
   const select = (key: string) => { setOpen(false); carousel.show(key); anchorRef.current?.focus(); };
-  return <><span className="panel-dots" role="group" aria-label="Panels"><button ref={anchorRef} type="button" className="panel-dots-trigger" aria-label="Choose split" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(value => !value)}><span className="flyout-caret" aria-hidden="true" />
+  return <><span className="panel-dots" role="group" aria-label="Panels"><button ref={anchorRef} type="button" className="panel-dots-trigger" aria-label="Choose split" aria-haspopup="menu" aria-expanded={open} onPointerDown={swipe.onPointerDown} onPointerUp={swipe.onPointerUp} onPointerCancel={swipe.onPointerCancel} onClickCapture={swipe.onClickCapture} onClick={() => setOpen(value => !value)}><span className="flyout-caret" aria-hidden="true" />
     {/* keep summary dots in panel order */}
     {carousel.panels.map(panel => <span key={panel.key} className={`panel-dot ${panel.kind}-dot`} aria-hidden="true" title={panel.label} data-current={panel.key === carousel.visibleKey ? 'true' : undefined} />)}
   </button></span>
