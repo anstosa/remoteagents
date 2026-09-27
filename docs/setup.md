@@ -290,24 +290,35 @@ within a tick — no config edit or restart.
 - `commands.processes` declares one or more **Stack processes**: foreground
   commands that run until they are killed, such as
   `{ "api": "pnpm --filter api dev", "web": "pnpm --filter web dev" }`, for a
-  stack with no daemon to hand off to. The stack menu's Start runs each in the
-  background, in the order written, as a window named for the process in the
+  stack with no daemon to hand off to. A process may instead be written
+  `{ "command": "pnpm --filter api dev", "dependsOn": ["sync"] }`, naming the
+  processes of the same map it needs started first; the string form is
+  shorthand for `{ "command": … }`. Config validation refuses a `dependsOn`
+  naming an undeclared process, the process itself, or a cycle. The stack
+  menu's Start runs each in the background, dependencies first and otherwise
+  in the order written, as a window named for the process in the
   Worktree's Workspace session (the tmux session holding its Agents and
   Terminals, created the way a launch creates one when there is none yet), with
   the same socket, login shell, host `PATH`, and Worktree root as the other
   `commands`; a process already running is left alone. The stack badge reads
   running, stopped, "`n` of `m` running", or exited (naming each process that
   exited, with its code) straight from those windows — no `status` command.
-  Stop stops the processes in reverse order: each is sent Ctrl+C, given up to
+  Stop stops the processes in the reverse of that start order, dependants
+  first: each is sent Ctrl+C, given up to
   about 10 seconds to exit, then its window is closed either way (a window that
   is the last in its session takes that session with it); Restart stops them
-  all the same way, keeping their windows, and reruns each command in the order
-  written in its own pane, so a Terminal open on it stays attached. A step that
+  all the same way, keeping their windows, and reruns each command in start
+  order in its own pane, so a Terminal open on it stays attached. A step that
   fails ends the Start, Stop or Restart there and reports it failed; processes already
   started keep running. With several processes the stack menu also gives each
-  its own section, with its state and its own Start, Stop and Restart, which act
-  on that process alone and leave the rest running (the MCP `run_stack_action`
-  tool takes the same choice as an optional `process`). One action runs per
+  its own section, listed in the order written, with its state and its own
+  Start, Stop and Restart, which act on that process alone and leave the rest
+  running, except that Start (and a Restart's rerun) first starts every process
+  it transitively depends on that is not already running; a running dependency
+  is left alone, and stopping a process leaves its dependants running (the MCP
+  `run_stack_action` tool takes the same choice as an optional `process`).
+  `dependsOn` orders starts only: nothing waits for a dependency to be ready, so
+  a command that needs one to be listening checks for it itself. One action runs per
   Worktree at a time, whether it is on the whole stack or one process. Each
   process belongs to tmux, so it keeps running across a console restart and is found again by the tags on its window, and its pane
   scrolls back as far as that session's `history-limit`. The stack menu's

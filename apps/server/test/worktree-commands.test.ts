@@ -1364,6 +1364,125 @@ describe('worktree with several Stack processes', () => {
   });
 });
 
+// `web` needs `api`, which needs `sync`; `docs` needs nothing. Config order is the display
+// order, so the start order is sync, api, web, docs: dependencies first, ties by config order.
+describe('Stack processes ordered by dependsOn', () => {
+  const ivy = testWorktree({ id: 'proj:/worktrees/ivy', projectId: 'proj', path: '/worktrees/ivy', main: false, commands: { processes: { web: { command: 'ods exec web', dependsOn: ['api'] }, api: { command: 'ods exec api', dependsOn: ['sync'] }, sync: 'ods exec sync', docs: { command: 'ods exec docs' } } } });
+  const stopTiming = { timeoutMs: 60, pollMs: 5 };
+  // every window seen before each tmux call, by window and pane id, so `steps` can still name
+  // one a Stop has since removed
+  const seen = new Map<string, FakeWindow>();
+  const remember = (tmux: ReturnType<typeof fakeTmux>) => { for (const entry of tmux.windows) seen.set(entry.id, entry).set(entry.paneId, entry); };
+  const stackService = (tmux: ReturnType<typeof fakeTmux>, command: ReturnType<typeof fakeTmux>['command'] = tmux.command) => new WorktreeCommandService(config, { worktreesNow: () => [ivy] } as never, async (binary, args) => { remember(tmux); return await command(binary, args); }, undefined, undefined, undefined, stopTiming);
+  const names = (tmux: ReturnType<typeof fakeTmux>) => tmux.windows.filter(entry => entry.options.has('@rac_process')).map(entry => entry.options.get('@rac_process'));
+  // the Ctrl+C, kill and respawn events, each named for the process whose pane or window it hit
+  const steps = (tmux: ReturnType<typeof fakeTmux>) => {
+    remember(tmux);
+    return tmux.events.flatMap(event => {
+      const [verb, target] = event.split(' ');
+      if (!['keys', 'kill', 'respawn'].includes(verb!)) return [];
+      const entry = seen.get(target!);
+      if (entry === undefined) throw new Error(`no window for ${event}`);
+      return [`${verb} ${entry.options.get('@rac_process')}`];
+    });
+  };
+  const seed = (tmux: ReturnType<typeof fakeTmux>, processes: string[]) => {
+    tmux.seedWorkspace('ivy', ivy.id);
+    for (const name of processes) tmux.seedProcess('ivy', '/worktrees/ivy', name);
+  };
+  const allStopped = [{ name: 'web', state: 'stopped' }, { name: 'api', state: 'stopped' }, { name: 'sync', state: 'stopped' }, { name: 'docs', state: 'stopped' }];
+  beforeEach(() => { delete process.env.RAC_HOST_TMUX_DIR; delete process.env.RAC_HOST_PATH; seen.clear(); });
+
+  it('starts the whole stack dependencies first, and lists it in config order', async () => {
+    const tmux = fakeTmux();
+    const service = stackService(tmux);
+    await expect(service.start(ivy.id, 'start')).resolves.toBe('started');
+    expect(names(tmux)).toEqual(['sync', 'api', 'web', 'docs']);
+    await expect(service.state(ivy)).resolves.toMatchObject({ running: true, processes: [{ name: 'web' }, { name: 'api' }, { name: 'sync' }, { name: 'docs' }] });
+  });
+
+  it('stops the whole stack in reverse start order, dependants first', async () => {
+    const tmux = fakeTmux();
+    seed(tmux, ['web', 'api', 'sync', 'docs']);
+    const service = stackService(tmux);
+    await expect(service.start(ivy.id, 'stop')).resolves.toBe('started');
+    expect(steps(tmux)).toEqual(['keys docs', 'kill docs', 'keys web', 'kill web', 'keys api', 'kill api', 'keys sync', 'kill sync']);
+    await expect(service.state(ivy)).resolves.toEqual({ running: false, processes: allStopped });
+  });
+
+  it('restarts the whole stack: stops in reverse start order, then reruns in start order', async () => {
+    const tmux = fakeTmux();
+    seed(tmux, ['web', 'api', 'sync', 'docs']);
+    await expect(stackService(tmux).start(ivy.id, 'restart')).resolves.toBe('started');
+    expect(steps(tmux)).toEqual(['keys docs', 'keys web', 'keys api', 'keys sync', 'respawn sync', 'respawn api', 'respawn web', 'respawn docs']);
+  });
+
+  it('starts one process after everything it transitively depends on, and nothing else', async () => {
+    const tmux = fakeTmux();
+    const service = stackService(tmux);
+    await expect(service.start(ivy.id, 'start', 'web')).resolves.toBe('started');
+    expect(names(tmux)).toEqual(['sync', 'api', 'web']);
+    await expect(service.state(ivy)).resolves.toEqual({ transition: 'starting', processes: [{ name: 'web', state: 'running' }, { name: 'api', state: 'running' }, { name: 'sync', state: 'running' }, { name: 'docs', state: 'stopped' }] });
+  });
+
+  // `api` runs, but `sync` beneath it does not: only `sync` and `web` start
+  it('leaves a running dependency alone and starts the ones that are not running', async () => {
+    const tmux = fakeTmux();
+    seed(tmux, ['api']);
+    await expect(stackService(tmux).start(ivy.id, 'start', 'web')).resolves.toBe('started');
+    expect(names(tmux)).toEqual(['api', 'sync', 'web']);
+    expect(steps(tmux)).toEqual(['respawn sync', 'respawn web']);
+  });
+
+  it('restarts only the one process, starting a dependency that is not running', async () => {
+    const tmux = fakeTmux();
+    seed(tmux, ['web', 'api']);
+    await expect(stackService(tmux).start(ivy.id, 'restart', 'api')).resolves.toBe('started');
+    expect(steps(tmux)).toEqual(['respawn sync', 'keys api', 'respawn api']);
+    expect(names(tmux)).toEqual(['web', 'api', 'sync']);
+  });
+
+  // `api` runs and `sync` does not: `sync` starts, `api` is neither interrupted nor rerun
+  it('restarts one process without rerunning a dependency that is running', async () => {
+    const tmux = fakeTmux();
+    seed(tmux, ['web', 'api']);
+    await expect(stackService(tmux).start(ivy.id, 'restart', 'web')).resolves.toBe('started');
+    expect(steps(tmux)).toEqual(['respawn sync', 'keys web', 'respawn web']);
+  });
+
+  it('leaves the process running when a dependency its Restart starts fails', async () => {
+    const tmux = fakeTmux();
+    seed(tmux, ['web', 'api']);
+    const service = stackService(tmux, async (binary, args) => args[0] === 'respawn-pane' && args.at(-1)?.includes('ods exec sync') === true ? { code: 1, stdout: '', stderr: 'respawn failed' } : await tmux.command(binary, args));
+    await expect(service.start(ivy.id, 'restart', 'api')).resolves.toBe(false);
+    // only the fresh `sync` window, left on its placeholder, is removed; `api` is never touched
+    expect(steps(tmux)).toEqual(['kill sync']);
+    await expect(service.state(ivy)).resolves.toMatchObject({ processes: [{ name: 'web', state: 'running' }, { name: 'api', state: 'running' }, { name: 'sync', state: 'stopped' }, { name: 'docs', state: 'stopped' }] });
+  });
+
+  it('stops one process and leaves its dependants running', async () => {
+    const tmux = fakeTmux();
+    seed(tmux, ['web', 'api', 'sync']);
+    await expect(stackService(tmux).start(ivy.id, 'stop', 'sync')).resolves.toBe('started');
+    expect(steps(tmux)).toEqual(['keys sync', 'kill sync']);
+    expect(names(tmux)).toEqual(['web', 'api']);
+  });
+
+  it('ends a one-process Start at the dependency that fails, starting nothing after it', async () => {
+    const tmux = fakeTmux();
+    const service = stackService(tmux, async (binary, args) => args[0] === 'respawn-pane' && args.at(-1)?.includes('ods exec api') === true ? { code: 1, stdout: '', stderr: 'respawn failed' } : await tmux.command(binary, args));
+    await expect(service.start(ivy.id, 'start', 'web')).resolves.toBe(false);
+    expect(names(tmux)).toEqual(['sync']);
+  });
+
+  it('stops everything for Remove in reverse start order', async () => {
+    const tmux = fakeTmux();
+    seed(tmux, ['web', 'api', 'sync', 'docs']);
+    await expect(stackService(tmux).stopForRemoval(ivy, async () => 'removed')).resolves.toBe('removed');
+    expect(steps(tmux).filter(step => step.startsWith('kill'))).toEqual(['kill docs', 'kill web', 'kill api', 'kill sync']);
+  });
+});
+
 describe('worktree setup command', () => {
   type FakeCommand = (binary: string, args: string[]) => Promise<{ code: number; stdout: string }>;
   const fastTiming = { timeoutMs: 2_000, pollMs: 10 };

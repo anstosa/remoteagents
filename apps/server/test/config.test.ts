@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ZodError } from 'zod';
 import { applyListenOverrides, validateConfig } from '../src/config/schema.js';
 import { defaultDavoContext } from '../src/integrations/realtime/settings.js';
 import { run } from '../src/tmux/command.js';
@@ -280,6 +281,41 @@ describe('project configuration', () => {
       const repo = await gitRepo();
       await expect(validateConfig(await withProject(repo, { commands: { processes: { dev: '' } } }))).rejects.toThrow();
       await expect(validateConfig(await withProject(repo, { commands: { processes: { dev: 'pnpm\0dev' } } }))).rejects.toThrow();
+    });
+
+    // the string form is shorthand for `{ command }`; the config keeps the form written
+    it('accepts a process as a command string or as `{ command, dependsOn }`', async () => {
+      const repo = await gitRepo();
+      const processes = { sync: 'ods exec sync', api: { command: 'ods exec api', dependsOn: ['sync'] }, web: { command: 'ods exec web' } };
+      const config = await validateConfig(await withProject(repo, { commands: { processes } }));
+      expect(config.projects[0]?.commands?.processes).toEqual(processes);
+    });
+
+    it('rejects an object form without a command, with an empty one, or with an unknown key', async () => {
+      const repo = await gitRepo();
+      await expect(validateConfig(await withProject(repo, { commands: { processes: { api: { dependsOn: [] } } } }))).rejects.toThrow();
+      await expect(validateConfig(await withProject(repo, { commands: { processes: { api: { command: '' } } } }))).rejects.toThrow();
+      await expect(validateConfig(await withProject(repo, { commands: { processes: { api: { command: 'run', cwd: 'web' } } } }))).rejects.toThrow();
+    });
+
+    // each rejection names the offending entry by its path in the config
+    it.each([
+      ['an undeclared process', { api: { command: 'run', dependsOn: ['sync'] } }, ['projects', 0, 'commands', 'processes', 'api', 'dependsOn', 0], /`api` depends on `sync`, which is not declared/],
+      ['itself', { sync: 'run', api: { command: 'run', dependsOn: ['sync', 'api'] } }, ['projects', 0, 'commands', 'processes', 'api', 'dependsOn', 1], /`api` cannot depend on itself/],
+      ['a cycle', { web: { command: 'run', dependsOn: ['api'] }, api: { command: 'run', dependsOn: ['sync'] }, sync: { command: 'run', dependsOn: ['web'] } }, ['projects', 0, 'commands', 'processes', 'web', 'dependsOn'], /`web` → `api` → `sync` → `web`/],
+      // an entry that only leads into the cycle is not on it, so the path names one that is
+      ['a cycle reached from another entry', { docs: { command: 'run', dependsOn: ['api'] }, web: { command: 'run', dependsOn: ['api'] }, api: { command: 'run', dependsOn: ['web'] } }, ['projects', 0, 'commands', 'processes', 'api', 'dependsOn'], /`api` → `web` → `api`/]
+    ])('rejects a dependsOn naming %s, with its path', async (_case, processes, path, message) => {
+      const repo = await gitRepo();
+      const failure = await validateConfig(await withProject(repo, { commands: { processes } })).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ZodError);
+      expect((failure as ZodError).issues).toEqual([expect.objectContaining({ path, message: expect.stringMatching(message) })]);
+    });
+
+    it("validates a Worktree override's dependsOn by the same rules", async () => {
+      const repo = await gitRepo();
+      const failure = await validateConfig(await withProject(repo, { worktreeOverrides: [{ path: '../web', commands: { processes: { api: { command: 'run', dependsOn: ['sync'] } } } }] })).catch((error: unknown) => error);
+      expect((failure as ZodError).issues).toEqual([expect.objectContaining({ path: ['projects', 0, 'worktreeOverrides', 0, 'commands', 'processes', 'api', 'dependsOn', 0] })]);
     });
 
     // an override's `commands` replaces the Project's whole set, `processes` included

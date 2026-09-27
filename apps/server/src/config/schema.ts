@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import type { Project, StackCommands, WorktreeOverride } from '../domain/models.js';
+import { declaredProcesses, dependencyCycle } from '../domain/stack-processes.js';
 import { gitCommonDir, listWorktrees } from '../git/worktrees.js';
 import { adapterFor } from '../adapters/registry.js';
 import { codexProgramName, omxProgramName } from '../adapters/program-names.js';
@@ -20,13 +21,30 @@ const command = z.string().min(1).max(32_000).refine((v) => !v.includes('\0'), '
 // a Worktree), so neither is an operator-invokable stack action — see `stackActions`.
 // A Stack process is a named foreground command (`dev: pnpm dev`) the console runs as a
 // window of its Worktree's Workspace session; its name tags and names that window, so it
-// stays a short tmux-safe token. A Worktree may declare several, run as one stack in the
-// map's order. The processes derive the start/stop/restart actions and the running state,
-// so they exclude the daemon-style commands that would configure a second way to run the
-// stack.
+// stays a short tmux-safe token. A Worktree may declare several, run as one stack: a
+// process is its command, or `{ command, dependsOn }` naming the processes of the same map
+// its Start starts first. The map's order is the display order, and the start order where
+// `dependsOn` leaves a tie. The processes derive the start/stop/restart actions and the
+// running state, so they exclude the daemon-style commands that would configure a second
+// way to run the stack.
 const processName = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/u, 'process names are letters, digits, `_` and `-`');
 const maxStackProcesses = 20;
-const stackProcesses = z.record(processName, command).refine(processes => Object.keys(processes).length >= 1, 'processes must declare a process').refine(processes => Object.keys(processes).length <= maxStackProcesses, `processes holds at most ${maxStackProcesses} processes`);
+const stackProcess = z.union([command, z.object({ command, dependsOn: z.array(processName).max(maxStackProcesses).optional() }).strict()]);
+const stackProcesses = z.record(processName, stackProcess).refine(processes => Object.keys(processes).length >= 1, 'processes must declare a process').refine(processes => Object.keys(processes).length <= maxStackProcesses, `processes holds at most ${maxStackProcesses} processes`).superRefine((processes, context) => {
+  // a `dependsOn` names another declared process; a cycle is only looked for once each does
+  const declared = declaredProcesses({ processes });
+  let allDeclared = true;
+  for (const { name, dependsOn } of declared) {
+    dependsOn.forEach((dependency, index) => {
+      if (dependency !== name && Object.hasOwn(processes, dependency)) return;
+      allDeclared = false;
+      context.addIssue({ code: z.ZodIssueCode.custom, path: [name, 'dependsOn', index], message: dependency === name ? `\`${name}\` cannot depend on itself` : `\`${name}\` depends on \`${dependency}\`, which is not declared` });
+    });
+  }
+  if (!allDeclared) return;
+  const cycle = dependencyCycle(declared);
+  if (cycle !== undefined) context.addIssue({ code: z.ZodIssueCode.custom, path: [cycle[0]!, 'dependsOn'], message: `processes depend on each other in a cycle: ${cycle.map(name => `\`${name}\``).join(' → ')}` });
+});
 const processDerivedCommands = ['start', 'stop', 'restart', 'status'] as const;
 const stackCommands = z.object({ start: command.optional(), stop: command.optional(), build: command.optional(), restart: command.optional(), migrate: command.optional(), status: command.optional(), setup: command.optional(), processes: stackProcesses.optional() }).strict().superRefine((commands, context) => {
   if (commands.processes === undefined) return;
@@ -214,7 +232,7 @@ async function resolveProject(raw: ParsedProject): Promise<Project> {
   const optional = {
     ...(worktreeOverrides === undefined ? {} : { worktreeOverrides }),
     ...(worktreeOrder === undefined ? {} : { worktreeOrder }),
-    ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }),
+    ...(raw.commands === undefined ? {} : { commands: raw.commands satisfies StackCommands }),
     ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }),
     ...(raw.hostPath === undefined ? {} : { hostPath: resolve(raw.hostPath) }),
     ...preview

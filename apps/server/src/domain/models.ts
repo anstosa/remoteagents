@@ -17,10 +17,12 @@ export const stackActions = ['start', 'stop', 'build', 'restart', 'migrate'] as 
 export type StackAction = typeof stackActions[number];
 // `status` (a health probe) and `setup` (a run-once, worktree-creation hook) are commands
 // but not operator actions, so they live here yet are absent from `stackActions`.
-// `processes` maps each Stack process's name to its foreground command, in the order they
-// run (config/schema.ts caps the count); they derive start/stop/restart and the running
-// state, so they never sit beside those.
-export type StackCommands = Partial<Record<StackAction | 'status' | 'setup', string>> & { processes?: Record<string, string> };
+// `processes` maps each Stack process's name to its foreground command, in display order
+// (config/schema.ts caps the count), as the config writes it: a command string, or the
+// command with the processes it `dependsOn`, which order its Start (stack-processes.ts);
+// they derive start/stop/restart and the running state, so they never sit beside those.
+export type StackProcessCommand = string | { command: string; dependsOn?: string[] };
+export type StackCommands = Partial<Record<StackAction | 'status' | 'setup', string>> & { processes?: Record<string, StackProcessCommand> };
 // one Stack process as tmux shows it: its pane live, dead with the exit status tmux kept
 // (absent after a signal), or no window at all; `operation` is an action on it alone in flight
 export type StackProcessState = { name: string; state: 'running' | 'exited' | 'stopped'; exitCode?: number; operation?: StackAction };

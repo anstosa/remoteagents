@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
 import { stackActions, type StackAction, type StackProcessState, type Worktree } from '../domain/models.js';
+import { declaredProcesses, dependenciesOf, startOrder, type StackProcess } from '../domain/stack-processes.js';
 import { worktreeById, worktreeHostRoot } from '../workspaces/resolver.js';
 import { serverCheckout, serverCheckoutOnHost } from '../workspaces/server-checkout.js';
 import { run, tmuxLiteralArg, tmuxFormatLiteral } from '../tmux/command.js';
@@ -39,10 +40,7 @@ const processPlaceholder = ['/bin/sh', '-c', 'sleep 30'];
 // `running` is true when every Stack process runs and false when none does; `processes` lists
 // each in config order
 export type StackState = { running?: boolean; transition?: 'starting'|'migrating'; operation?: StackAction; tunnel?: boolean; processes?: StackProcessState[] };
-// a Worktree's configured Stack processes in config order; empty for a daemon-style or
-// one-shot-only stack
-type StackProcess = { name: string; command: string };
-const stackProcesses = (worktree: Worktree): StackProcess[] => Object.entries(worktree.commands?.processes ?? {}).map(([name, command]) => ({ name, command }));
+const stackProcesses = (worktree: Worktree): StackProcess[] => declaredProcesses(worktree.commands);
 // one pane on the stack socket, as `list-panes -a` reports it: its session, the Place its
 // session is the Workspace of, its console role, and the Stack process tags on its window
 // (empty when untagged)
@@ -202,7 +200,7 @@ export class WorktreeCommandService {
   }
 
   // Remove's Stop: a Worktree's Stack processes are not a Remove blocker, so they are stopped
-  // (Ctrl+C, then a kill), in reverse config order, and only then is the checkout `remove`d.
+  // (Ctrl+C, then a kill), in reverse start order, and only then is the checkout `remove`d.
   // The process action guard is held throughout, so a Start cannot reopen a process in a
   // checkout on its way out, and a Start, Stop or Restart already in flight refuses the Remove
   // as busy. False when tmux could not stop them all, and the checkout stays. A daemon-style
@@ -210,7 +208,7 @@ export class WorktreeCommandService {
   async stopForRemoval<T>(worktree: Worktree, remove: () => Promise<T>): Promise<T | 'busy' | false> {
     const declared = stackProcesses(worktree);
     if (declared.length === 0) return await remove();
-    return await this.guarded(worktree, 'stop', undefined, async () => { this.endStarting(worktree); return await this.stopProcesses(worktree, declared) ? await remove() : false; });
+    return await this.guarded(worktree, 'stop', undefined, async () => { this.endStarting(worktree); return await this.stopProcesses(worktree, startOrder(declared)) ? await remove() : false; });
   }
 
   async run(worktreeId: string, action: StackAction): Promise<boolean> {
@@ -224,8 +222,8 @@ export class WorktreeCommandService {
     const worktree = worktreeById(this.discovery.worktreesNow(), worktreeId);
     const declared = worktree === undefined ? [] : stackProcesses(worktree);
     if (processName !== undefined) {
-      const target = declared.filter(entry => entry.name === processName);
-      return worktree === undefined || target.length === 0 || !processActions.includes(action) ? false : await this.processAction(worktree, target, action, processName);
+      const target = declared.find(entry => entry.name === processName);
+      return worktree === undefined || target === undefined || !processActions.includes(action) ? false : await this.processAction(worktree, declared, action, target);
     }
     if (worktree !== undefined && declared.length > 0 && processActions.includes(action)) return await this.processAction(worktree, declared, action);
     const command = worktree?.commands?.[action];
@@ -433,17 +431,30 @@ export class WorktreeCommandService {
 
   // Run one Stack process action on its targets — every declared process, or the one
   // `processName` named — serialized per Worktree by its own guard rather than the one-shot
-  // exclusive session, so `build`/`migrate` still run beside a live process. Start goes in
-  // config order and Stop in reverse; a step that fails ends the sequence. Restart stops each
-  // process but keeps its window, then reruns the command in that same pane, so a Terminal open
-  // on it stays attached; it starts nothing it could not stop. A whole-stack Stop or Restart ends
-  // a Start's wait on the tunnel; one process stopping leaves the rest of the stack waiting.
-  private async processAction(worktree: Worktree, targets: StackProcess[], action: StackAction, processName?: string): Promise<'started'|'busy'|false> {
-    return await this.guarded(worktree, action, processName, async () => {
-      if (processName === undefined && action !== 'start') this.endStarting(worktree);
-      const done = action === 'start' ? await this.startProcesses(worktree, targets)
-        : action === 'stop' ? await this.stopProcesses(worktree, targets)
-        : await this.stopProcesses(worktree, targets, true) && await this.startProcesses(worktree, targets, true);
+  // exclusive session, so `build`/`migrate` still run beside a live process. The whole stack
+  // Starts in start order (dependencies first) and Stops in reverse; a step that fails ends the
+  // sequence. One process Starts after whatever it transitively depends on, and Stops alone,
+  // leaving its dependants running. Restart stops a process but keeps its window, then reruns
+  // the command in that same pane, so a Terminal open on it stays attached; it reruns nothing it
+  // could not stop. One process's Restart reruns only it, first starting any dependency that is
+  // not running, so a dependency that fails leaves it running as it was. `dependsOn` orders
+  // starts only: nothing waits for a dependency to be ready. A
+  // whole-stack Stop or Restart ends a Start's wait on the tunnel; one process stopping leaves
+  // the rest of the stack waiting.
+  private async processAction(worktree: Worktree, declared: StackProcess[], action: StackAction, target?: StackProcess): Promise<'started'|'busy'|false> {
+    return await this.guarded(worktree, action, target?.name, async () => {
+      if (target === undefined) {
+        if (action !== 'start') this.endStarting(worktree);
+        const order = startOrder(declared);
+        const done = action === 'start' ? await this.startProcesses(worktree, order)
+          : action === 'stop' ? await this.stopProcesses(worktree, order)
+          : await this.stopProcesses(worktree, order, true) && await this.startProcesses(worktree, order, true);
+        return done ? 'started' : false;
+      }
+      const dependencies = dependenciesOf(declared, target.name);
+      const done = action === 'start' ? await this.startProcesses(worktree, [...dependencies, target])
+        : action === 'stop' ? await this.stopProcess(worktree, target)
+        : await this.startProcesses(worktree, dependencies) && await this.stopProcess(worktree, target, true) && await this.startProcess(worktree, target, true);
       return done ? 'started' : false;
     });
   }
