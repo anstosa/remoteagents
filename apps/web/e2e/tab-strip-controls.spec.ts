@@ -79,3 +79,57 @@ test('keeps phone icon controls square and aligned with the workspace tab', asyn
   expect(blocked!.y).toBeGreaterThanOrEqual(blockedTab!.y + blockedTab!.height);
   expect(blockedTab!.x + blockedTab!.width / 2).toBeCloseTo(noCallNav!.x + noCallNav!.width / 2, 1);
 });
+
+// keep neutral icon paint aligned across the tab, prompt and workspace controls
+test('uses the same icon and border grays for enabled and disabled controls', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent(`
+    <link rel="stylesheet" href="/src/styles.css">
+    <nav class="tabs"><div class="tab-row-lead"><button class="server-switcher-button server-switcher-voice" aria-label="Call"><svg viewBox="0 0 24 24"></svg></button></div><span class="launcher"><button class="new-agent-tab" aria-label="Launch agent"><svg viewBox="0 0 24 24"></svg></button></span><span class="server-switcher-settings-wrap"><button class="server-switcher-button server-switcher-settings" aria-label="Settings"><svg viewBox="0 0 24 24"></svg></button></span></nav>
+    <section class="agent-composer-column"><button class="attachment-button icon-button" aria-label="Attach files"><svg viewBox="0 0 24 24"></svg></button></section>
+    <section class="workspace-toolbar-actions"><button class="toolbar-button" aria-label="Open a terminal"><svg viewBox="0 0 24 24"></svg></button><button class="more icon-button" aria-label="More options"><svg viewBox="0 0 24 24"></svg></button></section>
+  `);
+  const controls = page.getByRole('button', { name: /^(Call|Launch agent|Settings|Attach files|Open a terminal|More options)$/u });
+  // compare actual computed icon and outline colors rather than palette names
+  await expect.poll(async () => controls.evaluateAll(elements => new Set(elements.map(element => {
+    const style = getComputedStyle(element);
+    return `${style.color}/${style.borderTopColor}`;
+  })).size)).toBe(1);
+  const enabledPaint = await controls.evaluateAll(elements => elements.map(element => {
+    const style = getComputedStyle(element);
+    return { icon: style.color, border: style.borderTopColor };
+  }));
+  expect(enabledPaint).toHaveLength(6);
+  expect(enabledPaint).toEqual(Array.from({ length: 6 }, () => enabledPaint[0]));
+
+  // the plus button hovers like its neutral peers rather than becoming a gradient
+  await controls.first().hover();
+  const hoveredPaint = await controls.first().evaluate(element => {
+    const style = getComputedStyle(element);
+    return { icon: style.color, border: style.borderTopColor, background: style.backgroundColor };
+  });
+  expect(hoveredPaint.icon).not.toBe(enabledPaint[0].icon);
+  expect(hoveredPaint.border).not.toBe(enabledPaint[0].border);
+  for (const control of await controls.all()) {
+    await control.hover();
+    await expect(control).toHaveCSS('border-top-color', hoveredPaint.border);
+    await expect(control).toHaveCSS('color', hoveredPaint.icon);
+    await expect(control).toHaveCSS('background-color', hoveredPaint.background);
+    await expect(control).toHaveCSS('background-image', 'none');
+  }
+
+  // disabling each icon control preserves its neutral paint and dims it equally
+  await page.mouse.move(0, 0);
+  await controls.evaluateAll(elements => elements.forEach(element => { (element as HTMLButtonElement).disabled = true; }));
+  await expect.poll(async () => controls.evaluateAll(elements => elements.map(element => {
+    const style = getComputedStyle(element);
+    return { icon: style.color, border: style.borderTopColor, opacity: style.opacity };
+  }))).toEqual(enabledPaint.map(paint => ({ ...paint, opacity: '0.45' })));
+  // disabled controls stay gray when hovered
+  for (const [index, control] of (await controls.all()).entries()) {
+    await control.hover({ force: true });
+    await expect(control).toHaveCSS('color', enabledPaint[index].icon);
+    await expect(control).toHaveCSS('border-top-color', enabledPaint[index].border);
+    await expect(control).toHaveCSS('background-image', 'none');
+  }
+});

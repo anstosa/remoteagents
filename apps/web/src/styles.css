@@ -173,7 +173,7 @@ main { max-width: 1100px; margin: auto; padding: var(--edge); }
 .server-switcher-settings-wrap .server-switcher-settings.updates-available { z-index: 1; border-color: var(--mauve); color: var(--mauve); box-shadow: inset 0 0 .65rem color-mix(in srgb, var(--mauve) 30%, transparent), 0 0 .6rem color-mix(in srgb, var(--mauve) 48%, transparent); animation: settings-update-glow 1.4s ease-in-out infinite; }
 /* account for the settings button border so its dot shares the server icon inset */
 .server-switcher-settings-update-dot { position: absolute; top: calc(.25rem - 1px); right: calc(.25rem - 1px); width: var(--status-dot-size); height: var(--status-dot-size); border-radius: 50%; background: var(--mauve); box-shadow: 0 0 .5rem color-mix(in srgb, var(--mauve) 75%, transparent); }
-.server-switcher-button:hover { background: color-mix(in srgb, var(--mantle) 86%, var(--lavender)); color: var(--text); filter: none; }
+.server-switcher-button:not(:disabled):hover { background: color-mix(in srgb, var(--mantle) 86%, var(--lavender)); color: var(--text); filter: none; }
 .server-switcher-button[aria-current='page'] { background: linear-gradient(145deg, var(--surface-1), var(--surface-0) 68%, var(--surface-0)); color: var(--text); box-shadow: inset 0 0 0 1px var(--blue), inset 0 0 1.35rem color-mix(in srgb, var(--blue) 34%, transparent), inset 0 1px color-mix(in srgb, var(--text) 14%, transparent); }
 .server-switcher-button.attention-question { color: var(--red); }
 .server-switcher-button.attention-working { color: var(--peach); }
@@ -183,7 +183,7 @@ main { max-width: 1100px; margin: auto; padding: var(--edge); }
 .server-switcher-button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .server-switcher-voice { color: var(--mauve); }
 .server-switcher-voice svg { width: 1rem; height: 1rem; flex: none; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-.server-switcher-voice:hover { background: color-mix(in srgb, var(--mantle) 78%, var(--mauve)); color: var(--text); }
+.server-switcher-voice:not(:disabled):hover { background: color-mix(in srgb, var(--mantle) 78%, var(--mauve)); color: var(--text); }
 .server-switcher-voice.active { border-color: var(--mauve); background: linear-gradient(145deg, color-mix(in srgb, var(--mauve) 55%, var(--surface-0)), color-mix(in srgb, var(--blue) 36%, var(--mantle))); color: var(--text); box-shadow: inset 0 0 0 1px var(--mauve), 0 0 1rem color-mix(in srgb, var(--mauve) 42%, transparent); }
 .server-switcher-attention { position: absolute; top: .25rem; right: .25rem; z-index: 1; width: var(--status-dot-size); height: var(--status-dot-size); border-radius: 50%; opacity: 0; pointer-events: none; }
 .server-switcher-attention.idle { background: var(--surface-2); opacity: 1; }
@@ -196,17 +196,18 @@ main { max-width: 1100px; margin: auto; padding: var(--edge); }
 .tabs > .tab-row-lead { display: flex; flex: 0 1 auto; align-items: center; gap: .375rem; min-width: 0; }
 .tab-row-lead .server-switcher-button { flex: none; height: var(--standard-control-size); min-height: var(--standard-control-size); max-width: 14rem; margin: 0; border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: .35rem .6rem; background: color-mix(in srgb, var(--mantle) 88%, transparent); font: 700 .72rem var(--font-mono); letter-spacing: normal; box-shadow: none; }
 /* keep active call and update accents; only the quiet controls use the standard hover */
-.tab-row-lead .server-switcher-button:not(.active, .updates-available):hover { border-color: var(--lavender); background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); color: var(--text); }
+.tab-row-lead .server-switcher-button:not(.active, .updates-available, :disabled):hover { border-color: var(--lavender); background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); color: var(--text); }
 /* the server selector is only its edge-to-edge icon and one cycling corner status */
 .tabs .tab-row-lead .server-selector { flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); min-width: var(--standard-control-size); border: 0; padding: 0; overflow: hidden; background: transparent; box-shadow: none; }
 .tab-row-lead .server-selector img { display: block; width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 .tab-row-lead .server-selector :is(.server-selector-name, .server-selector-chevron) { display: none; }
 .server-selector-chevron { width: 1rem; height: 1rem; flex: none; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; color: var(--overlay-1); }
-.tab-row-lead .server-switcher-voice:not(.active) { color: var(--mauve); }
+.tab-row-lead .server-switcher-voice:not(.active) { color: var(--subtext-0); }
 /* keep settings at the far edge with the same standalone outline as the other controls */
 .tabs > .server-switcher-settings-wrap { height: var(--standard-control-size); margin-left: auto; }
 .tabs > .server-switcher-settings-wrap .server-switcher-settings { width: var(--standard-control-size); min-width: var(--standard-control-size); height: var(--standard-control-size); border-width: 1px; border-style: solid; border-radius: var(--control-radius); padding: 0; background: color-mix(in srgb, var(--mantle) 88%, transparent); }
-.tabs > .server-switcher-settings-wrap .server-switcher-settings:not(.updates-available) { border-color: var(--surface-1); color: var(--overlay-1); }
+.tabs > .server-switcher-settings-wrap .server-switcher-settings:not(.updates-available) { border-color: var(--surface-1); color: var(--subtext-0); }
+.tabs > .server-switcher-settings-wrap .server-switcher-settings:not(.updates-available, :disabled):hover { border-color: var(--lavender); background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); color: var(--text); }
 @media (max-width: 600px) {
   /* match the call button to the selector, settings and launch squares */
   .tabs .tab-row-lead .server-switcher-voice { flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); min-width: var(--standard-control-size); justify-content: center; padding: 0; }
@@ -1033,7 +1034,7 @@ html.software-keyboard-open .agent-view > .workspace-toolbar { display: none; }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .browser-toggle { --toolbar-accent: var(--blue); }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .code-toggle { --toolbar-accent: var(--mauve); }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .toolbar-button.panel-open { border-color: color-mix(in srgb, var(--toolbar-accent) 70%, var(--surface-1)); background: color-mix(in srgb, var(--toolbar-accent) 12%, var(--mantle)); color: var(--toolbar-accent); }
-:is(.workspace-toolbar-actions, .empty-workspace-actions) .toolbar-button:disabled { opacity: .45; }
+:is(.workspace-toolbar-actions, .empty-workspace-actions) :is(.more, .toolbar-button):disabled { opacity: .45; }
 /* the Notes button's unread-queued alert outranks the neutral toolbar colours */
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .notes-toggle.unread-queued-prompts { border-color: var(--red); color: var(--red); }
 /* a Place without git shows its folder where the git status would be */
@@ -1303,9 +1304,11 @@ html.software-keyboard-open .agent-view > .workspace-toolbar { display: none; }
   .agent-view:has(.log-split.mobile-agent-view > .log-output > .agent-composer, .log-split.mobile-agent-view > .log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar { border-top: 0; }
 }
 
-.tabs .new-agent-tab { flex: 0 0 var(--standard-control-size); justify-content: center; height: var(--standard-control-size); min-height: var(--standard-control-size); margin: 0; border: 1px solid color-mix(in srgb, var(--lavender) 60%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--lavender); white-space: nowrap; padding: 0; box-shadow: none; }
+.tabs .new-agent-tab { flex: 0 0 var(--standard-control-size); justify-content: center; height: var(--standard-control-size); min-height: var(--standard-control-size); margin: 0; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); white-space: nowrap; padding: 0; box-shadow: none; }
 .tabs .new-agent-tab svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.tabs .new-agent-tab:hover { background: linear-gradient(145deg, var(--mauve), var(--blue)); color: var(--crust); }
+/* quiet icon controls share the same neutral disabled and hover treatment */
+.tabs :is(.new-agent-tab, .server-switcher-voice, .server-switcher-settings):disabled { opacity: .45; }
+.tabs .new-agent-tab:not(:disabled):hover { border-color: var(--lavender); background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); color: var(--text); filter: none; }
 .tabs .launcher,.tabs .tab-spacer{flex:0 0 var(--standard-control-size);height:var(--standard-control-size);min-height:var(--standard-control-size)}.tabs .launcher{position:relative;display:block}.tabs .launcher .new-agent-tab{width:100%;height:100%}.launcher-menu{z-index:var(--layer-popover)}.launcher-menu button{justify-content:flex-start!important;border:0!important;padding:.55rem!important;text-align:left}
 .tabs .notification-control,.tabs .notification-status{flex:0 0 auto;align-self:center;min-height:var(--standard-control-size);margin:0;border-radius:var(--control-radius);font:600 .68rem var(--font-mono);letter-spacing:.04em;padding:.35rem .55rem}.tabs .notification-control{border:1px solid var(--blue);background:transparent;color:var(--blue);cursor:pointer}.tabs .notification-control:hover{background:color-mix(in srgb,var(--blue) 14%,transparent)}.tabs .notification-status{color:var(--yellow)}
 /* keep extracted controls from resizing their source terminal */
