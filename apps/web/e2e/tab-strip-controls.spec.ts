@@ -60,24 +60,31 @@ test('keeps phone icon controls square and aligned with the workspace tab', asyn
   expect(settingsBox!.x + settingsBox!.width).toBeCloseTo(desktopNav!.x + desktopNav!.width - 6, 1);
 
   await page.setViewportSize({ width: 390, height: 844 });
+  const withCallTab = await tab.boundingBox();
+  const callBox = await controls[1].boundingBox();
+  const leadGap = await page.locator('.tab-row-lead').evaluate(element => Number.parseFloat(getComputedStyle(element).gap));
+  // removing Davo gives its entire button slot to the Workspace dropdown
   await page.getByRole('button', { name: 'Call' }).evaluate(button => button.remove());
   const noCallTab = await tab.boundingBox();
-  const noCallNav = await page.locator('.tabs').boundingBox();
-  expect(noCallTab!.x + noCallTab!.width / 2).toBeCloseTo(noCallNav!.x + noCallNav!.width / 2, 1);
+  expect(noCallTab!.width - withCallTab!.width).toBeCloseTo(callBox!.width + leadGap, 1);
+  expect(noCallTab!.x + noCallTab!.width).toBeCloseTo(withCallTab!.x + withCallTab!.width, 1);
+  expect(noCallTab!.x).toBeCloseTo(serverBox!.x + serverBox!.width + leadGap, 1);
 
-  // keep enrollment visible below the centered control row
+  // keep enrollment visible below the expanded control row
   await page.locator('.launcher').evaluate(element => element.insertAdjacentHTML('beforebegin', '<button class="notification-control">Enable alerts</button>'));
   const enrollment = await page.locator('.notification-control').boundingBox();
   const enrollmentTab = await tab.boundingBox();
   expect(enrollment!.y).toBeGreaterThanOrEqual(enrollmentTab!.y + enrollmentTab!.height);
-  expect(enrollmentTab!.x + enrollmentTab!.width / 2).toBeCloseTo(noCallNav!.x + noCallNav!.width / 2, 1);
+  expect(enrollmentTab!.x).toBeCloseTo(noCallTab!.x, 1);
+  expect(enrollmentTab!.width).toBeCloseTo(noCallTab!.width, 1);
 
   // keep denied status on the second row too
   await page.locator('.notification-control').evaluate(element => { element.outerHTML = '<span class="notification-status">Alerts blocked</span>'; });
   const blocked = await page.locator('.notification-status').boundingBox();
   const blockedTab = await tab.boundingBox();
   expect(blocked!.y).toBeGreaterThanOrEqual(blockedTab!.y + blockedTab!.height);
-  expect(blockedTab!.x + blockedTab!.width / 2).toBeCloseTo(noCallNav!.x + noCallNav!.width / 2, 1);
+  expect(blockedTab!.x).toBeCloseTo(noCallTab!.x, 1);
+  expect(blockedTab!.width).toBeCloseTo(noCallTab!.width, 1);
 });
 
 // keep neutral icon paint aligned across the tab, prompt and workspace controls

@@ -1846,9 +1846,9 @@ html.software-keyboard-open .agent-view > .workspace-toolbar { display: none; }
 .tab-place-mark.shells { color: var(--green); }
 /* keep primary phone controls on one line around the Workspace dropdown */
 .tabs.workspace-dropdown-row { flex-wrap: nowrap; overflow: hidden; }
-/* reserve the Call slot when voice is disabled so the Workspace stays centered */
-.tabs.workspace-dropdown-row > .tab-row-lead { flex: 0 0 calc(2 * var(--standard-control-size) + .375rem); }
-/* keep optional notification enrollment visible without shifting the balanced control row */
+/* let Workspace absorb the Call slot when Davo is disabled */
+.tabs.workspace-dropdown-row > .tab-row-lead { flex: 0 0 auto; }
+/* keep optional notification enrollment below the primary control row */
 .tabs.workspace-dropdown-row:has(> :is(.notification-control, .notification-status)) { flex-wrap: wrap; }
 .tabs.workspace-dropdown-row > :is(.notification-control, .notification-status) { order: 1; flex: 1 0 100%; }
 .tabs > .workspace-dropdown { flex: 1 1 auto; justify-content: flex-start; white-space: nowrap; }
