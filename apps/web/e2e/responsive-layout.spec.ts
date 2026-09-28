@@ -149,7 +149,8 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(layout.activeTab.right).toBeLessThanOrEqual(layout.viewportWidth);
   expect(Math.abs(layout.output.left)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.output.width - layout.viewportWidth)).toBeLessThanOrEqual(1);
-  expect(layout.outputBorder).toEqual({ top: '0px', bottom: '1px' });
+  // the visible prompt and static controls share one undivided bottom surface
+  expect(layout.outputBorder).toEqual({ top: '0px', bottom: '0px' });
   // the agent panel's header pills float over its top corners, power last
   expect(Math.abs(layout.headerTitle.top - layout.output.top - 6.4)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.headerTitle.left - layout.output.left - 6.4)).toBeLessThanOrEqual(1);
@@ -171,8 +172,9 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(Math.abs(layout.serverSettings.right - layout.tabs.right + 6)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.serverSettings.height - layout.activeTab.height)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.serverSettings.width - layout.serverSettings.height)).toBeLessThanOrEqual(1);
-  // the upper toolbar is gone: tabs sit directly under the output, and no .log-topbar exists
+  // the prompt box and workspace dropdown have the same gap as the buttons
   expect(Math.abs(layout.tabs.top - layout.output.bottom)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.activeTab.top - layout.prompt.bottom - parseFloat(layout.promptGap))).toBeLessThanOrEqual(1);
   // no divider separates the outlined tabs from the buttons beneath them
   expect(layout.tabsBorder).toBe('0px');
   expect(layout.tabsShadow).not.toContain('inset');

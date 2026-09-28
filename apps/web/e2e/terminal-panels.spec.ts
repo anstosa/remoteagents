@@ -1521,6 +1521,14 @@ test('on a phone a visible Terminal shows in-split keys and the agent dot restor
   await expect(column.getByLabel('Terminal keys')).toBeVisible();
   await expect(workspaceToolbar.getByRole('button', { name: 'Open a terminal' })).toBeVisible();
   await expect(workspaceToolbar.getByRole('group', { name: 'Panels' })).toBeVisible();
+  // use one separator color for static, Agent, and Terminal control areas
+  const separators = await page.evaluate(() => ({
+    static: getComputedStyle(document.querySelector<HTMLElement>('.log')!).borderBottomColor,
+    agent: getComputedStyle(document.querySelector<HTMLElement>('.agent-composer')!).borderTopColor,
+    terminal: getComputedStyle(document.querySelector<HTMLElement>('.terminal-pane > .mobile-terminal-keys')!).borderTopColor
+  }));
+  expect(separators.static).toBe(separators.agent);
+  expect(separators.terminal).toBe(separators.agent);
 
   // switching back to the agent panel brings the Agent's composer back and hides the keys;
   // the dots still offer the way back to the Terminal

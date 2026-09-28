@@ -268,7 +268,7 @@ html.software-keyboard-open .tabs { display: none; }
 .agent-view h2, .worktree-view h2 { color: var(--lavender); margin: 0; }
 .agent-view p, .worktree-view p { color: var(--subtext-0); margin: 0; }
 .log-shell { display: grid; grid-template: minmax(0, 1fr) auto / minmax(0, 1fr); width: 100%; min-width: 0; min-height: 0; }
-.log { position: relative; width: 100vw; height: 100%; min-height: 0; margin-left: calc(50% - 50vw); overflow: hidden; container: output-area / size; background: var(--base); border: 0; border-bottom: 1px solid color-mix(in srgb, var(--lavender) 28%, var(--surface-1)); border-radius: 0; padding: 0; box-shadow: inset 0 0 1.25rem #00000040; }
+.log { position: relative; width: 100vw; height: 100%; min-height: 0; margin-left: calc(50% - 50vw); overflow: hidden; container: output-area / size; background: var(--base); border: 0; border-bottom: 1px solid var(--surface-0); border-radius: 0; padding: 0; box-shadow: inset 0 0 1.25rem #00000040; }
 .log-split { position: relative; display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 /* A Workspace with no panel open: the Place, the toolbar's controls repeated, and the transient warning */
 .empty-workspace { display: grid; min-height: 0; place-items: center; padding: 1rem; overflow: auto; }
@@ -880,6 +880,8 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .log-split::-webkit-scrollbar { display: none; }
   .log-split > :is(.log-output, .note-pane, .browser-pane, .code-pane, .terminal-pane) { flex: 0 0 100%; width: 100%; min-width: 0; height: 100%; scroll-snap-align: start; scroll-snap-stop: always; }
   .log-split > .split-resizer { display: none; }
+  /* leave one control gutter from the prompt box to the workspace dropdown */
+  .log-split.mobile-agent-view > .log-output:not(.input-active) > .agent-composer { padding-bottom: 0; }
   /* an expanded panel keeps its own footer while the tab row and toolbar fold away */
   .agent-view:has(.log-split > .expanded) > :is(nav.tabs, section.workspace-toolbar) { display: none; }
 }
@@ -1296,9 +1298,9 @@ html.software-keyboard-open .agent-view > .workspace-toolbar { display: none; }
   .mobile-key-modifiers button { width: 3.15rem; font: 800 .65rem var(--font-mono); }
   .mobile-terminal-keys button svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
   .mobile-terminal-keys button.active { border-color: var(--sky); background: color-mix(in srgb, var(--sky) 32%, var(--surface-0)); color: var(--sky); }
-  /* join the active pane footer to the static bottom bar */
-  .agent-view:has(.log-split.mobile-agent-view > .log-output.input-active, .log-split.mobile-terminal-view) .log { border-bottom: 0; }
-  .agent-view:has(.log-split.mobile-agent-view > .log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar { border-top: 0; }
+  /* join the prompt or active pane footer to the static bottom bar */
+  .agent-view:has(.log-split.mobile-agent-view > .log-output > .agent-composer, .log-split.mobile-agent-view > .log-output.input-active, .log-split.mobile-terminal-view) .log { border-bottom-width: 0; }
+  .agent-view:has(.log-split.mobile-agent-view > .log-output > .agent-composer, .log-split.mobile-agent-view > .log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar { border-top: 0; }
 }
 
 .tabs .new-agent-tab { flex: 0 0 var(--standard-control-size); justify-content: center; height: var(--standard-control-size); min-height: var(--standard-control-size); margin: 0; border: 1px solid color-mix(in srgb, var(--lavender) 60%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--lavender); white-space: nowrap; padding: 0; box-shadow: none; }
