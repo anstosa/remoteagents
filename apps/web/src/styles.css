@@ -861,6 +861,8 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .split-resizer:is(:hover, :focus-visible)::after { background: var(--blue); box-shadow: 0 0 .5rem color-mix(in srgb, var(--blue) 48%, transparent); }
   .log-split:has(> .browser-pane.mobile:not(.expanded)) > .browser-resizer { display: none; }
   .note-pane, .browser-pane, .code-pane { border-top: 0; border-left: 1px solid color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); box-shadow: inset 1px 0 color-mix(in srgb, var(--text) 4%, transparent); }
+  /* editing keeps the note accent on top when the keyboard makes the split wide */
+  .note-pane.editing:not(.expanded) { border-top: 1px solid color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); border-left: 0; box-shadow: inset 0 1px color-mix(in srgb, var(--text) 4%, transparent); }
   .browser-pane { border-left-color: color-mix(in srgb, var(--blue) 58%, var(--surface-1)); }
   .code-pane { border-left-color: color-mix(in srgb, var(--mauve) 52%, var(--surface-1)); }
   :is(.note-pane, .browser-pane, .terminal-pane).expanded { border: 0; }
@@ -885,8 +887,8 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-code, .has-terminals) { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-code, .has-terminals) > :is(.note-pane, .browser-pane, .code-pane, .terminal-pane, .split-resizer) { display: none; }
 html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-code, .has-terminals) > .log-output { display: grid; }
-/* typing above a software keyboard leaves room for the output: the row beneath the tabs folds away */
-html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) > .workspace-toolbar { display: none; }
+/* keep the entire static bottom bar behind any open software keyboard */
+html.software-keyboard-open .agent-view > .workspace-toolbar { display: none; }
 .xterm { height: 100%; }
 /* A Terminal panel: a floating header over a streamed pane, focusable, with a sky inset ring
    marking the panel that receives keys (First-class terminal panes, composition A). */

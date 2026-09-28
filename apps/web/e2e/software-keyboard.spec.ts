@@ -45,20 +45,25 @@ test('hides the tablist under the keyboard and keeps pane focus across streamed 
   await seedPaneSize(page, 'agent-1', 80, 24);
   await pushBytes(page, 'agent-1', 'Ready\r\n');
   const tabs = page.getByRole('tablist');
+  const staticBar = page.getByRole('region', { name: 'Workspace toolbar' });
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
   await expect(tabs).toBeVisible();
+  await expect(staticBar).toBeVisible();
 
   // A shrink with nothing focused is not a keyboard; tabs stay.
   await setViewportHeight(500);
   await expect(tabs).toBeVisible();
+  await expect(staticBar).toBeVisible();
   await setViewportHeight(900);
 
   // Composer focus + shrink hides the tabs; restoring the height brings them back.
   await prompt.focus();
   await setViewportHeight(500);
   await expect(tabs).toBeHidden();
+  await expect(staticBar).toBeHidden();
   await setViewportHeight(900);
   await expect(tabs).toBeVisible();
+  await expect(staticBar).toBeVisible();
 
   // Focusing the pane and shrinking hides the tabs too.
   const output = page.getByLabel('Live log');
@@ -68,6 +73,7 @@ test('hides the tablist under the keyboard and keeps pane focus across streamed 
   await expect(page.locator('.log-output')).toHaveClass(/input-active/u);
   await setViewportHeight(500);
   await expect(tabs).toBeHidden();
+  await expect(staticBar).toBeHidden();
 
   // Streamed output while typing never steals focus.
   await pushBytes(page, 'agent-1', 'Updated output while typing\r\n');
@@ -78,6 +84,7 @@ test('hides the tablist under the keyboard and keeps pane focus across streamed 
   // Closing the keyboard restores the tabs.
   await setViewportHeight(900);
   await expect(tabs).toBeVisible();
+  await expect(staticBar).toBeVisible();
 
   // On the phone a second panel joins the carousel; typing in the composer shows the agent alone,
   // and closing the keyboard brings the carousel and its dots back where they were.

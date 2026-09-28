@@ -299,6 +299,11 @@ test('swiping a note in preview or edit mode changes splits', async ({ page }) =
   await note.locator('.note-markdown').click({ position: { x: 20, y: 55 } });
   const editor = note.getByRole('textbox', { name: 'Note content' });
   await expect(editor).toBeVisible();
+  // a short edit viewport keeps the note accent on top, not beside the split
+  await page.setViewportSize({ width: 428, height: 420 });
+  await expect(note).toHaveCSS('border-top-width', '1px');
+  await expect(note).toHaveCSS('border-left-width', '0px');
+  await page.setViewportSize({ width: 428, height: 880 });
   await editor.fill('Phone checklist\nSwipe draft');
 
   // an editing note yields the same horizontal gesture without losing its draft

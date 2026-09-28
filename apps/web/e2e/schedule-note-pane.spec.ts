@@ -59,14 +59,16 @@ test('sets and removes a note Schedule from the pane against a stateful notes st
   await page.getByRole('button', { name: '+ New note' }).click();
   await expect(page.getByRole('dialog', { name: 'Note' })).toBeVisible();
   const editor = page.getByRole('group', { name: 'Schedule', exact: true });
-  await expect(editor).toContainText('Not scheduled.');
-  await expect(editor).toContainText('atlas · main worktree');
+  // unscheduled notes keep the creation action in the header menu
+  await expect(editor).toHaveCount(0);
+  await page.getByRole('button', { name: 'More note actions' }).click();
+  await page.getByRole('group', { name: 'More note actions' }).getByRole('button', { name: 'Schedule note' }).click();
 
   const openFlyout = () => page.getByRole('button', { name: 'Notes' }).click();
   const closeFlyout = () => page.locator('.flyout-backdrop').click();
 
   // create → the pane shows the sentence and the server's nextRun
-  await editor.getByRole('button', { name: 'Schedule this note' }).click();
+  await expect(editor).toContainText('atlas · main worktree');
   await expect(editor.getByRole('switch', { name: 'Schedule enabled' })).toHaveText('● Runs');
   await expect(editor).toContainText('Next Mon 7 Sep 9:00 AM');
   await expect.poll(() => scheduleWrites.at(-1)).toEqual({ method: 'PUT', body: { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true } });
@@ -87,8 +89,11 @@ test('sets and removes a note Schedule from the pane against a stateful notes st
 
   // remove → back to unscheduled, request recorded, badge gone
   await editor.getByRole('button', { name: 'Remove schedule' }).click();
-  await expect(editor).toContainText('Not scheduled.');
+  await expect(editor).toHaveCount(0);
   await expect.poll(() => scheduleWrites.at(-1)).toEqual({ method: 'DELETE' });
+  await page.getByRole('button', { name: 'More note actions' }).click();
+  await expect(page.getByRole('group', { name: 'More note actions' }).getByRole('button', { name: 'Schedule note' })).toBeVisible();
+  await closeFlyout();
   await openFlyout();
   await expect(page.locator('.note-schedule-badge')).toHaveCount(0);
 });
@@ -208,7 +213,8 @@ test('picks the Adapter and target from the pane and records each write', async 
   await page.getByRole('button', { name: 'Notes' }).click();
   await page.getByRole('button', { name: '+ New note' }).click();
   const editor = page.getByRole('group', { name: 'Schedule', exact: true });
-  await editor.getByRole('button', { name: 'Schedule this note' }).click();
+  await page.getByRole('button', { name: 'More note actions' }).click();
+  await page.getByRole('group', { name: 'More note actions' }).getByRole('button', { name: 'Schedule note' }).click();
   await expect.poll(() => scheduleWrites.at(-1)).toEqual({ method: 'PUT', body: { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true } });
 
   // retarget to Scratch (resolves to Codex): the Adapter follows, and the write is recorded
