@@ -11,6 +11,10 @@ export const agentKinds: readonly AgentKind[] = ['codex', 'omx', 'claude', 'pi',
 // per-kind badge glyph and display label, shared by the split button, tab badge and AGENTS card
 export const agentKindGlyph: Record<AgentKind, string> = { codex: '◆', omx: '◈', claude: '✳', pi: 'π', opencode: '◇' };
 export const agentKindLabel: Record<AgentKind, string> = { codex: 'Codex', omx: 'OMX', claude: 'Claude', pi: 'Pi', opencode: 'OpenCode' };
+// share version and update actions between every launch flyout
+export type AgentUpdateStatus = { kind: AgentKind; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string };
+type AgentLaunchSettings = { statuses: AgentUpdateStatus[]; updating?: AgentKind; errors: string[]; defaultAgent?: AgentKind; defaultPending: boolean; setDefaultAgent: (kind: AgentKind) => void; updateAgent: (kind: AgentKind) => void };
+export const AgentLaunchSettingsContext = createContext<AgentLaunchSettings | undefined>(undefined);
 
 // The capability record the Dashboard publishes per registered kind (ADR 0002). The web
 // reads presence and reasons; it never re-derives capabilities. `sandbox*` stay undefined
@@ -80,22 +84,29 @@ function LaunchMenuEntries({ entries }: { entries: readonly LaunchMenuEntry[] })
 // `entries` the caller adds. `launchDisabled` holds every launch row back, leaving the entries.
 export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], launchDisabled = false }: { verb: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice: LaunchChoice) => void; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean }) {
   const adapters = useContext(AdaptersContext);
+  const settings = useContext(AgentLaunchSettingsContext);
   const kinds = configuredKinds(adapters);
   if (kinds.length === 0) return <><p className="launch-menu-empty">No agents configured. Add an <code>adapters</code> entry to the console config to launch agents.</p><LaunchMenuEntries entries={entries} /></>;
   const unsandboxable = kinds.filter(kind => adapters?.[kind]?.launchable === true && defaultSandboxed(adapters?.[kind]));
   const skipped = resolution?.skipped;
   return <>
     <p className="launch-menu-heading">{verb} · {label}</p>
-    {kinds.map(kind => {
+    {/* render each configured kind with its version and actions */}{kinds.map(kind => {
       const capability = adapters![kind]!;
       const sandboxed = defaultSandboxed(capability);
       const resolved = resolution?.kind === kind;
-      return <button key={kind} type="button" role="menuitem" className="launch-row" disabled={!capability.launchable || launchDisabled} title={capability.unavailableReason} onClick={() => onLaunch({ kind, sandboxed })}>
+      const status = settings?.statuses.find(candidate => candidate.kind === kind);
+      // show both versions only while an update is available
+      const version = status?.currentVersion === undefined ? undefined : status.currentVersion.startsWith('v') ? status.currentVersion : `v${status.currentVersion}`;
+      const latest = status?.latestVersion === undefined ? undefined : status.latestVersion.startsWith('v') ? status.latestVersion : `v${status.latestVersion}`;
+      const versionLabel = status?.updateAvailable && version !== undefined && latest !== undefined ? `${version} → ${latest}` : version;
+      return <div key={kind} role="group" aria-label={`${agentKindLabel[kind]} agent`} className="launch-agent-line"><button type="button" role="menuitem" className="launch-row" disabled={!capability.launchable || launchDisabled} title={capability.unavailableReason} onClick={() => onLaunch({ kind, sandboxed })}>
         <KindMark kind={kind} />
-        <span className="launch-row-copy"><strong>{agentKindLabel[kind]}{resolved && <em> · {originCopy(resolution?.origin)}</em>}</strong><small>{capability.launchable ? sandboxCopy(kind, capability, sandboxed) : capability.unavailableReason ?? 'Unavailable'}</small></span>
+        <span className="launch-row-copy"><strong>{agentKindLabel[kind]}{resolved && <em> · {originCopy(resolution?.origin)}</em>}</strong>{versionLabel !== undefined && <span className="launch-agent-version">{versionLabel}</span>}<small>{capability.launchable ? sandboxCopy(kind, capability, sandboxed) : capability.unavailableReason ?? 'Unavailable'}</small></span>
         {capability.launchable && sandboxed && <LockIcon />}
-      </button>;
+      </button>{/* keep an unavailable persisted default visible */}{settings !== undefined && (capability.launchable || settings.defaultAgent === kind) && <button type="button" role="menuitemradio" className="launch-agent-default" aria-label={`Make ${agentKindLabel[kind]} default`} aria-checked={settings.defaultAgent === kind} title={settings.defaultAgent === kind ? 'Default agent' : `Make ${agentKindLabel[kind]} default`} disabled={!capability.launchable || settings.defaultAgent === kind || settings.defaultPending} onClick={() => settings.setDefaultAgent(kind)}>{settings.defaultAgent === kind ? '★' : '☆'}</button>}{status?.updateAvailable && <button type="button" role="menuitem" className="launch-agent-update" aria-label={`Update ${agentKindLabel[kind]} to ${status.latestVersion ?? 'latest'}`} disabled={settings?.updating !== undefined} onClick={() => settings?.updateAgent(kind)}>{settings?.updating === kind ? <><span className="spinner" />Updating…</> : 'Update'}</button>}</div>;
     })}
+    {/* retain distinct version and operation errors */}{settings?.errors.map(error => <p key={error} className="launch-menu-error" role="alert">{error}</p>)}
     {unsandboxable.length > 0 && <><hr className="more-menu-divider" /><p className="launch-menu-heading launch-menu-subheading">Without sandbox — this launch only</p>{unsandboxable.map(kind => <button key={`${kind}-unsandboxed`} type="button" role="menuitem" className="launch-row launch-row-unsandboxed" disabled={launchDisabled} onClick={() => onLaunch({ kind, sandboxed: false })}><KindMark kind={kind} /><span className="launch-row-copy"><strong>{agentKindLabel[kind]}</strong><small>{sandboxCopy(kind, adapters?.[kind], false)}</small></span><UnlockIcon /></button>)}</>}
     {skipped !== undefined && <p className="launch-menu-note">Remembered {agentKindLabel[skipped.kind]} ({scopeCopy(skipped.origin)}) skipped — {skipped.reason}</p>}
     <LaunchMenuEntries entries={entries} />

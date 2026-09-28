@@ -45,7 +45,7 @@ async function openSettings(page: import('@playwright/test').Page, adapters: unk
       options.onDavo?.(payload);
       return route.fulfill({ json: { davo: { ...payload, available: davo.available } } });
     }
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false }], projects: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters, scratchLaunch: { kind: 'codex', origin: 'default' }, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false }], projects: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
     if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/saved-prompts') return route.fulfill({ json: { prompts: [] } });
@@ -64,120 +64,93 @@ async function openSettings(page: import('@playwright/test').Page, adapters: unk
   return page.getByRole('dialog', { name: 'Settings' });
 }
 
-test('shows flat agent settings and the Codex accounts section', async ({ page }) => {
+// open the shared agent chooser from the global launcher
+async function openAgentMenu(page: import('@playwright/test').Page) {
+  await page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: /^Launch agent/u }).click();
+  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Choose agent' }).first().click();
+  return page.getByRole('menu', { name: 'Choose agent' });
+}
+
+test('hides agents in settings while keeping Codex accounts', async ({ page }) => {
   const settingsPage = await openSettings(page, {
     codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
     claude: { program: '/opt/claude', launchable: false, unavailableReason: '/opt/claude is not an executable file', stateSource: 'reported', turnCapture: false, inlineQuestions: false, commands: true, sandbox: false }
   }, { defaultAgent: 'codex' });
-  const agents = settingsPage.getByRole('radiogroup', { name: 'Agents' });
-  await expect(agents).toBeVisible();
-  const codex = agents.getByRole('radio', { name: 'Codex' });
-  await expect(codex).toBeChecked();
-  await expect(codex).toBeDisabled();
-  await expect(codex.locator('.client-settings-agent-star')).toHaveText('★');
-  await expect(codex).toContainText('Codex');
-  await expect(codex).toContainText('/usr/local/bin/codex');
-  await expect(codex).toContainText('Default');
-  // an unlaunchable kind is dimmed and shows its reason
-  const claude = agents.getByRole('radio', { name: 'Claude' });
-  await expect(claude).not.toBeChecked();
-  await expect(claude).toBeDisabled();
-  await expect(claude).toHaveClass(/unavailable/);
-  await expect(claude).toContainText('is not an executable file');
-  await expect(settingsPage.getByRole('combobox', { name: 'Default agent' })).toHaveCount(0);
-  const clientStyle = await settingsPage.getByRole('group', { name: 'Client' }).evaluate(element => ({ border: getComputedStyle(element).borderWidth, background: getComputedStyle(element).backgroundColor }));
-  expect(clientStyle).toEqual({ border: '0px', background: 'rgba(0, 0, 0, 0)' });
-  const clientBounds = await settingsPage.getByRole('group', { name: 'Client' }).boundingBox();
-  const serverBounds = await settingsPage.getByRole('group', { name: 'Server' }).boundingBox();
-  // align the flat settings on one shared edge
-  if (clientBounds === null || serverBounds === null) throw new Error('Settings have no layout bounds');
-  expect(Math.abs(clientBounds.x - serverBounds.x)).toBeLessThanOrEqual(1);
-  await expect(settingsPage.getByText('GENERAL', { exact: true })).toHaveCount(0);
-  await expect(settingsPage.getByRole('heading', { name: 'Console', exact: true })).toHaveCount(0);
-  // Codex accounts render because adapters.codex exists
-  const accountsTitle = settingsPage.getByRole('heading', { name: 'Accounts' });
-  const addAccount = settingsPage.getByRole('button', { name: '+ Add account' });
-  await expect(addAccount).toBeVisible();
-  const [titleBounds, addBounds] = await Promise.all([accountsTitle.boundingBox(), addAccount.boundingBox()]);
-  expect(addBounds?.x).toBeGreaterThan((titleBounds?.x ?? 0) + (titleBounds?.width ?? 0));
-  expect(addBounds?.height).toBeLessThanOrEqual(32);
-  await expect(settingsPage.getByText('Identify this browser and server')).toHaveCount(0);
-  await expect(settingsPage.getByText('Choose the account Codex uses')).toHaveCount(0);
-  await expect(settingsPage.getByText('Manage this console, its display, and connected accounts.')).toHaveCount(0);
+  await expect(settingsPage.getByRole('radiogroup', { name: 'Agents' })).toHaveCount(0);
+  await expect(settingsPage.getByRole('heading', { name: 'Accounts' })).toBeVisible();
+  await expect(settingsPage.getByRole('button', { name: '+ Add account' })).toBeVisible();
 });
 
-test('changes the server default agent without closing settings', async ({ page }) => {
+test('changes the default agent from the launch menu', async ({ page }) => {
   let selected: string | undefined;
-  const settingsPage = await openSettings(page, {
+  await openSettings(page, {
     codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
     claude: { program: '/opt/claude', launchable: true, stateSource: 'reported', turnCapture: false, inlineQuestions: false, commands: true, sandbox: false }
-  }, { defaultAgent: 'codex', onDefaultAgent: kind => { selected = kind; } });
-
-  const codex = settingsPage.getByRole('radio', { name: 'Codex' });
-  const claude = settingsPage.getByRole('radio', { name: 'Claude' });
-  await claude.click();
-
+  }, { defaultAgent: 'codex', onDefaultAgent: kind => { selected = kind; }, open: false });
+  const menu = await openAgentMenu(page);
+  await expect(menu.getByRole('menuitemradio', { name: 'Make Codex default' })).toHaveAttribute('aria-checked', 'true');
+  await menu.getByRole('menuitemradio', { name: 'Make Claude default' }).click();
   await expect.poll(() => selected).toBe('claude');
-  await expect(claude).toBeChecked();
-  await expect(claude.locator('.client-settings-agent-star')).toHaveText('★');
-  await expect(codex).not.toBeChecked();
-  await expect(codex.locator('.client-settings-agent-star')).toHaveText('☆');
-  await expect(settingsPage.getByRole('combobox', { name: 'Default agent' })).toHaveCount(0);
-  await expect(settingsPage).toBeVisible();
+  await expect(menu.getByRole('menuitemradio', { name: 'Make Claude default' })).toHaveAttribute('aria-checked', 'true');
 });
 
-test('shows agent versions, updates one agent, and aggregates availability on settings', async ({ page }) => {
+test('shows agent versions and updates in launch menu with indicator on launch button', async ({ page }) => {
   const adapters = {
     codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
     omx: { program: '/usr/local/bin/omx', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false }
   };
-  const settingsPage = await openSettings(page, adapters, {
-    defaultAgent: 'omx',
-    open: false,
+  await openSettings(page, adapters, {
+    defaultAgent: 'omx', open: false,
     agentUpdates: [
       { kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true },
       { kind: 'omx', currentVersion: '0.21.3', latestVersion: '0.21.3', updateAvailable: false }
     ],
     onAgentUpdate: kind => ({ kind, currentVersion: '0.153.2', latestVersion: '0.153.2', updateAvailable: false })
   });
-  const trigger = page.getByRole('button', { name: /Global settings/u });
-  await expect(trigger.locator('.server-switcher-settings-update-dot')).toBeVisible();
-  // pulse while any update remains available
-  await expect(trigger).toHaveAccessibleName('Global settings — updates available');
-  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBeGreaterThan(0);
+  const launch = page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: /^Launch agent/u });
+  const settings = page.getByRole('button', { name: 'Global settings' });
+  await expect(launch.locator('.new-agent-update-dot')).toBeVisible();
+  await expect(launch).toHaveAccessibleName('Launch agent — update available');
+  await expect(settings.locator('.server-switcher-settings-update-dot')).toHaveCount(0);
+  await expect.poll(() => launch.evaluate(element => element.getAnimations().length)).toBeGreaterThan(0);
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBe(0);
-  const reducedMotionStyle = await trigger.evaluate(element => { const style = getComputedStyle(element); return { borderColor: style.borderTopColor, color: style.color, shadow: style.boxShadow }; });
-  expect(reducedMotionStyle.borderColor).toBe(reducedMotionStyle.color);
-  expect(reducedMotionStyle.shadow).toContain('inset');
+  await expect.poll(() => launch.evaluate(element => element.getAnimations().length)).toBe(0);
+  await expect(launch.locator('.new-agent-update-dot')).toBeVisible();
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBeGreaterThan(0);
-  // the in-app Reduced motion setting stills the pulse but keeps the dot
-  await trigger.click();
-  const reducedMotion = settingsPage.getByRole('switch', { name: 'Reduced motion' });
-  await expect(reducedMotion).not.toBeChecked();
-  await reducedMotion.check();
-  await expect(reducedMotion).toBeChecked();
-  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBe(0);
-  await expect(trigger.locator('.server-switcher-settings-update-dot')).toBeVisible();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem('rac.reduced-motion'))).toBe('enabled');
-  await reducedMotion.uncheck();
-  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBeGreaterThan(0);
-  await expect.poll(() => page.evaluate(() => localStorage.getItem('rac.reduced-motion'))).toBeNull();
-  await expect(settingsPage.getByRole('radio', { name: 'Codex' }).locator('.client-settings-agent-version')).toHaveText('v0.152.1 → v0.153.2');
-  await expect(settingsPage.getByRole('radio', { name: 'OMX' }).locator('.client-settings-agent-version')).toHaveText('v0.21.3');
-  await settingsPage.getByRole('button', { name: 'Update Codex to 0.153.2' }).click();
-  await expect(settingsPage.getByRole('radio', { name: 'Codex' }).locator('.client-settings-agent-version')).toHaveText('v0.153.2');
-  await expect(settingsPage.getByRole('button', { name: /Update Codex/u })).toHaveCount(0);
-  await expect(trigger.locator('.server-switcher-settings-update-dot')).toHaveCount(0);
-  await expect(trigger).toHaveAccessibleName('Global settings');
-  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBe(0);
+  const menu = await openAgentMenu(page);
+  await expect(menu.getByRole('group', { name: 'Codex agent' }).getByText('v0.152.1 → v0.153.2', { exact: true })).toBeVisible();
+  await expect(menu.getByRole('group', { name: 'OMX agent' }).getByText('v0.21.3', { exact: true })).toBeVisible();
+  await menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' }).click();
+  await expect(menu.getByRole('group', { name: 'Codex agent' }).getByText('v0.153.2', { exact: true })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: /Update Codex/u })).toHaveCount(0);
+  await expect(launch.locator('.new-agent-update-dot')).toHaveCount(0);
+  await expect(launch).toHaveAccessibleName('Launch agent');
 });
 
-test('reports agent version check failures', async ({ page }) => {
-  const adapters = { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } };
-  const settingsPage = await openSettings(page, adapters, { agentUpdates: [{ kind: 'codex', updateAvailable: false, error: 'Version check failed' }] });
-  await expect(settingsPage.getByRole('alert')).toHaveText('Version check failed');
+test('keeps version errors visible while changing the default agent', async ({ page }) => {
+  const adapters = {
+    codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
+    claude: { program: '/opt/claude', launchable: true, stateSource: 'reported', turnCapture: false, inlineQuestions: false, commands: true, sandbox: false }
+  };
+  await openSettings(page, adapters, { defaultAgent: 'codex', open: false, agentUpdates: [{ kind: 'codex', updateAvailable: false, error: 'Version check failed' }] });
+  const menu = await openAgentMenu(page);
+  await expect(menu.getByRole('alert')).toHaveText('Version check failed');
+  await menu.getByRole('group', { name: 'Claude agent' }).getByRole('menuitemradio', { name: 'Make Claude default' }).click();
+  await expect(menu.getByRole('group', { name: 'Claude agent' }).getByRole('menuitemradio', { name: 'Make Claude default' })).toHaveAttribute('aria-checked', 'true');
+  await expect(menu.getByRole('alert')).toHaveText('Version check failed');
+});
+
+test('marks an unavailable persisted default in the launch menu', async ({ page }) => {
+  const adapters = {
+    codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
+    claude: { program: '/opt/claude', launchable: false, unavailableReason: 'Not executable', stateSource: 'reported', turnCapture: false, inlineQuestions: false, commands: true, sandbox: false }
+  };
+  await openSettings(page, adapters, { defaultAgent: 'claude', open: false });
+  const menu = await openAgentMenu(page);
+  const claude = menu.getByRole('group', { name: 'Claude agent' });
+  await expect(claude.getByRole('menuitemradio', { name: 'Make Claude default' })).toHaveAttribute('aria-checked', 'true');
+  await expect(claude.getByRole('menuitemradio', { name: 'Make Claude default' })).toBeDisabled();
+  await expect(claude.getByRole('menuitem', { name: /Claude/u })).toBeDisabled();
 });
 
 test('enables Davo and saves a configurable name and context', async ({ page }) => {
@@ -266,12 +239,13 @@ test('polls queued Codex and OMX updates through completion', async ({ page }) =
     codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
     omx: { program: '/usr/local/bin/omx', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false }
   };
-  const settingsPage = await openSettings(page, adapters, {
-    agentUpdates: [
+  await openSettings(page, adapters, {
+    open: false, agentUpdates: [
       { kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true },
       { kind: 'omx', currentVersion: '0.21.3', latestVersion: '0.22.0', updateAvailable: true }
     ]
   });
+  const menu = await openAgentMenu(page);
   await page.clock.install();
   const posts: Record<string, number> = { codex: 0, omx: 0 };
   const polls: Record<string, number> = { codex: 0, omx: 0 };
@@ -300,8 +274,8 @@ test('polls queued Codex and OMX updates through completion', async ({ page }) =
     return route.fallback();
   });
 
-  const codexUpdate = settingsPage.getByRole('button', { name: 'Update Codex to 0.153.2' });
-  const omxUpdate = settingsPage.getByRole('button', { name: 'Update OMX to 0.22.0' });
+  const codexUpdate = menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' });
+  const omxUpdate = menu.getByRole('menuitem', { name: 'Update OMX to 0.22.0' });
   await codexUpdate.click();
   await expect.poll(() => polls.codex).toBeGreaterThan(0);
   await expect(codexUpdate).toContainText('Updating…');
@@ -315,7 +289,7 @@ test('polls queued Codex and OMX updates through completion', async ({ page }) =
   expect(posts.codex).toBe(1);
   complete.add('codex');
   await page.clock.runFor(1_001);
-  await expect(settingsPage.getByRole('radio', { name: 'Codex' }).locator('.client-settings-agent-version')).toHaveText('v0.153.2');
+  await expect(menu.getByRole('group', { name: 'Codex agent' }).getByText('v0.153.2', { exact: true })).toBeVisible();
   await expect(codexUpdate).toHaveCount(0);
 
   await omxUpdate.click();
@@ -324,7 +298,7 @@ test('polls queued Codex and OMX updates through completion', async ({ page }) =
   expect(posts.omx).toBe(1);
   complete.add('omx');
   await page.clock.runFor(1_001);
-  await expect(settingsPage.getByRole('radio', { name: 'OMX' }).locator('.client-settings-agent-version')).toHaveText('v0.22.0');
+  await expect(menu.getByRole('group', { name: 'OMX agent' }).getByText('v0.22.0', { exact: true })).toBeVisible();
   await expect(omxUpdate).toHaveCount(0);
   expect(posts).toEqual({ codex: 1, omx: 1 });
 });
@@ -332,7 +306,8 @@ test('polls queued Codex and OMX updates through completion', async ({ page }) =
 // recover one queued update after a proxy timeout page
 test('recovers agent update polling after a transient HTML 524 response', async ({ page }) => {
   const adapters = { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } };
-  const settingsPage = await openSettings(page, adapters, { agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
+  await openSettings(page, adapters, { open: false, agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
+  const menu = await openAgentMenu(page);
   await page.clock.install();
   let posts = 0;
   let polls = 0;
@@ -355,13 +330,13 @@ test('recovers agent update polling after a transient HTML 524 response', async 
     return route.fallback();
   });
 
-  const update = settingsPage.getByRole('button', { name: 'Update Codex to 0.153.2' });
+  const update = menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' });
   await update.click();
   await expect.poll(() => polls).toBe(1);
   await expect(update).toContainText('Updating…');
   await expect(page.getByRole('alert', { name: 'Reconnecting to console' })).toHaveCount(0);
   await page.clock.runFor(1_001);
-  await expect(settingsPage.getByRole('radio', { name: 'Codex' }).locator('.client-settings-agent-version')).toHaveText('v0.153.2');
+  await expect(menu.getByRole('group', { name: 'Codex agent' }).getByText('v0.153.2', { exact: true })).toBeVisible();
   expect({ posts, polls }).toEqual({ posts: 1, polls: 2 });
   await expect(page.getByRole('alert', { name: 'Reconnecting to console' })).toHaveCount(0);
 });
@@ -369,7 +344,8 @@ test('recovers agent update polling after a transient HTML 524 response', async 
 // surface one terminal job failure without disconnecting the console
 test('reports a failed queued agent update without global reconnect', async ({ page }) => {
   const adapters = { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } };
-  const settingsPage = await openSettings(page, adapters, { agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
+  await openSettings(page, adapters, { open: false, agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
+  const menu = await openAgentMenu(page);
   let posts = 0;
   await page.route('**/api/agents/**', async route => {
     const request = route.request();
@@ -384,9 +360,9 @@ test('reports a failed queued agent update without global reconnect', async ({ p
     return route.fallback();
   });
 
-  const update = settingsPage.getByRole('button', { name: 'Update Codex to 0.153.2' });
+  const update = menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' });
   await update.click();
-  await expect(settingsPage.getByRole('alert')).toHaveText('Agent update failed after starting.');
+  await expect(menu.getByRole('alert')).toHaveText('Agent update failed after starting.');
   await expect(update).toBeEnabled();
   expect(posts).toBe(1);
   await expect(page.getByRole('alert', { name: 'Reconnecting to console' })).toHaveCount(0);
@@ -398,12 +374,13 @@ test('rejects stale and mismatched agent update jobs', async ({ page }) => {
     codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
     omx: { program: '/usr/local/bin/omx', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false }
   };
-  const settingsPage = await openSettings(page, adapters, {
-    agentUpdates: [
+  await openSettings(page, adapters, {
+    open: false, agentUpdates: [
       { kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true },
       { kind: 'omx', currentVersion: '0.21.3', latestVersion: '0.22.0', updateAvailable: true }
     ]
   });
+  const menu = await openAgentMenu(page);
   const posts: Record<string, number> = { codex: 0, omx: 0 };
   const staleMessage = 'Agent update status is unknown. Check the installed version before retrying.';
   await page.route('**/api/agents/**', async route => {
@@ -423,25 +400,26 @@ test('rejects stale and mismatched agent update jobs', async ({ page }) => {
     return route.fallback();
   });
 
-  const codexUpdate = settingsPage.getByRole('button', { name: 'Update Codex to 0.153.2' });
+  const codexUpdate = menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' });
   await codexUpdate.click();
-  await expect(settingsPage.getByRole('alert')).toHaveText(staleMessage);
+  await expect(menu.getByRole('alert')).toHaveText(staleMessage);
   await expect(codexUpdate).toBeEnabled();
-  await expect(settingsPage.getByRole('radio', { name: 'Codex' }).locator('.client-settings-agent-version')).toHaveText('v0.152.1 → v0.153.2');
+  await expect(menu.getByRole('group', { name: 'Codex agent' }).getByText('v0.152.1 → v0.153.2', { exact: true })).toBeVisible();
 
-  const omxUpdate = settingsPage.getByRole('button', { name: 'Update OMX to 0.22.0' });
+  const omxUpdate = menu.getByRole('menuitem', { name: 'Update OMX to 0.22.0' });
   await omxUpdate.click();
-  await expect(settingsPage.getByRole('alert')).toBeVisible();
-  await expect(settingsPage.getByRole('alert')).not.toHaveText(staleMessage);
+  await expect(menu.getByRole('alert')).toBeVisible();
+  await expect(menu.getByRole('alert')).not.toHaveText(staleMessage);
   await expect(omxUpdate).toBeEnabled();
-  await expect(settingsPage.getByRole('radio', { name: 'OMX' }).locator('.client-settings-agent-version')).toHaveText('v0.21.3 → v0.22.0');
+  await expect(menu.getByRole('group', { name: 'OMX agent' }).getByText('v0.21.3 → v0.22.0', { exact: true })).toBeVisible();
   expect(posts).toEqual({ codex: 1, omx: 1 });
 });
 
 // stop polling one uncertain job after the bounded wait
 test('stops transient agent update polling at the seven-minute deadline', async ({ page }) => {
   const adapters = { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } };
-  const settingsPage = await openSettings(page, adapters, { agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
+  await openSettings(page, adapters, { open: false, agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
+  const menu = await openAgentMenu(page);
   await page.clock.install();
   let posts = 0;
   let polls = 0;
@@ -462,13 +440,13 @@ test('stops transient agent update polling at the seven-minute deadline', async 
   });
 
   const unknownStatus = 'Update status is unavailable. The update may still be running; check installed versions before retrying.';
-  const update = settingsPage.getByRole('button', { name: 'Update Codex to 0.153.2' });
+  const update = menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' });
   await update.click();
   await expect(update).toContainText('Updating…');
   await page.clock.runFor(1_001);
   await expect.poll(() => polls).toBeGreaterThan(0);
   await page.clock.fastForward(420_000);
-  await expect(settingsPage.getByRole('alert')).toHaveText(unknownStatus);
+  await expect(menu.getByRole('alert')).toHaveText(unknownStatus);
   await expect(update).toBeEnabled();
   expect(posts).toBe(1);
   expect(polls).toBeGreaterThan(0);
@@ -478,7 +456,8 @@ test('stops transient agent update polling at the seven-minute deadline', async 
 // never replay one installer after an ambiguous start response
 test('does not retry an agent update POST after an HTML 524 response', async ({ page }) => {
   const adapters = { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } };
-  const settingsPage = await openSettings(page, adapters, { agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
+  await openSettings(page, adapters, { open: false, agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
+  const menu = await openAgentMenu(page);
   let posts = 0;
   let polls = 0;
   await page.route('**/api/agents/**', async route => {
@@ -498,9 +477,9 @@ test('does not retry an agent update POST after an HTML 524 response', async ({ 
   });
 
   const unknownStatus = 'Update status is unavailable. The update may still be running; check installed versions before retrying.';
-  const update = settingsPage.getByRole('button', { name: 'Update Codex to 0.153.2' });
+  const update = menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' });
   await update.click();
-  await expect(settingsPage.getByRole('alert')).toHaveText(unknownStatus);
+  await expect(menu.getByRole('alert')).toHaveText(unknownStatus);
   await expect(update).toBeEnabled();
   expect({ posts, polls }).toEqual({ posts: 1, polls: 0 });
   await page.waitForTimeout(1_100);

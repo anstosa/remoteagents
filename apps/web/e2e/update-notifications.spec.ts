@@ -32,17 +32,23 @@ async function serveConsole(page: Page, updates: unknown[], serverUpdate: { avai
   });
 }
 
-test('announces agent updates and opens settings from the notification route', async ({ page }) => {
+test('announces agent updates and opens the launcher from the notification route', async ({ page }) => {
   await captureNotifications(page);
   await serveConsole(page, [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }], { available: false, commitCount: 0 });
 
   await page.goto('/');
 
   await expect.poll(async () => await page.evaluate(() => (window as typeof window & { __testNotifications: Array<{ title: string; options?: NotificationOptions }> }).__testNotifications)).toEqual([
-    expect.objectContaining({ title: 'Codex update available', options: expect.objectContaining({ body: '0.152.1 -> 0.153.2', tag: 'agent-update-codex', data: expect.objectContaining({ url: '/#settings' }) }) })
+    expect.objectContaining({ title: 'Codex update available', options: expect.objectContaining({ body: '0.152.1 -> 0.153.2', tag: 'agent-update-codex', data: expect.objectContaining({ url: '/#launch' }) }) })
   ]);
-  await page.evaluate(() => { location.hash = '#settings'; });
-  await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
+  await page.evaluate(() => { location.hash = '#launch'; });
+  await expect(page.getByRole('group', { name: 'Agent launcher' })).toBeVisible();
+  // dismissing the launcher consumes only its notification destination
+  await page.locator('.flyout-backdrop').click({ position: { x: 2, y: 2 } });
+  await expect(page.getByRole('group', { name: 'Agent launcher' })).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('');
+  await page.reload();
+  await expect(page.getByRole('group', { name: 'Agent launcher' })).toHaveCount(0);
 });
 
 test('announces upstream Remote Agent Console commits', async ({ page }) => {

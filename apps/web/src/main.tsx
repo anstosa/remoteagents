@@ -27,7 +27,7 @@ import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
 import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
-import { AdaptersContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, defaultSandboxed, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, originCopy, sandboxCopy, type AdapterCapabilities, type AgentKind, type LaunchMenuEntry, type LaunchResolution, type LaunchChoice } from './launch-profile.js';
+import { AdaptersContext, AgentLaunchSettingsContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, defaultSandboxed, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, originCopy, sandboxCopy, type AdapterCapabilities, type AgentKind, type AgentUpdateStatus, type LaunchMenuEntry, type LaunchResolution, type LaunchChoice } from './launch-profile.js';
 import { ScheduleEditor, defaultScheduleCron, lastRunNeedsAttention, scheduleInvalid, type Schedule, type ScheduleAdapterOption, type ScheduleSetBody, type ScheduleTarget, type ScheduleTargetOption } from './schedule-editor.js';
 import './styles.css';
 
@@ -746,7 +746,6 @@ const DashboardGenerationContext = createContext<{ generation?: number; notesRev
 type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
 type ServerUpdateAvailability = { available: boolean; commitCount?: number; targetSha?: string };
 type ServerRevision = { sha: string; committedAt: string };
-type AgentUpdateStatus = { kind: AgentKind; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string };
 type AgentUpdateJob =
   | { id: string; kind: AgentKind; state: 'running' }
   | { id: string; kind: AgentKind; state: 'complete'; agent: AgentUpdateStatus }
@@ -762,16 +761,12 @@ type ClientSettings = {
   serverUpdateAvailable: boolean;
   serverUpdateVisible: boolean;
   serverUpdateMinimized: boolean;
-  defaultAgent?: AgentKind;
   davo: DavoSettings;
   renameClient: (name: string) => Promise<string | undefined>;
   renameServer: (name: string) => Promise<string | undefined>;
   loadServerRevision: () => Promise<ServerRevision | undefined>;
   reloadClient: () => void;
   openServerUpdate: () => void;
-  setDefaultAgent: (kind: AgentKind) => Promise<string | undefined>;
-  agentUpdates: () => Promise<{ agents?: AgentUpdateStatus[]; error?: string }>;
-  updateAgent: (kind: AgentKind) => Promise<{ agent?: AgentUpdateStatus; error?: string }>;
   updateDavo: (settings: Pick<DavoSettings, 'enabled' | 'name' | 'context'>) => Promise<string | undefined>;
   codexAccounts: () => Promise<{ accounts?: CodexAccount[]; error?: string }>;
   switchCodexAccount: (id: string) => Promise<{ account?: CodexAccount; restarts?: CodexAccountRestart[]; error?: string }>;
@@ -854,7 +849,7 @@ const announceAgentUpdates = (statuses: AgentUpdateStatus[]) => {
     // suppress repeat polling alerts
     if (announcedAgentUpdates.get(status.kind) === fingerprint) continue;
     announcedAgentUpdates.set(status.kind, fingerprint);
-    void showNotification('system', `${agentKindLabel[status.kind]} update available`, `${current} -> ${latest}`, `agent-update-${status.kind}`, '/#settings');
+    void showNotification('system', `${agentKindLabel[status.kind]} update available`, `${current} -> ${latest}`, `agent-update-${status.kind}`, '/#launch');
   }
 };
 // validate one bounded upstream commit
@@ -1347,8 +1342,6 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
 // render the full-screen client settings page
 function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const adapters = useContext(AdaptersContext);
-  // one row per configured kind (a configured kind carries a program), in registry order
-  const configuredAdapters = agentKinds.flatMap(kind => { const capability = adapters?.[kind]; return capability?.program === undefined ? [] : [[kind, capability] as const]; });
   // Codex account management is available only when adapters.codex is configured
   const codexConfigured = adapters?.codex?.program !== undefined;
   const terminalFontSize = useTerminalFontSize();
@@ -1362,11 +1355,6 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const [renamingAccount, setRenamingAccount] = useState<CodexAccount>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
-  const [defaultAgentPending, setDefaultAgentPending] = useState(false);
-  const [defaultAgentError, setDefaultAgentError] = useState('');
-  const [agentUpdateStatuses, setAgentUpdateStatuses] = useState<AgentUpdateStatus[]>([]);
-  const [updatingAgent, setUpdatingAgent] = useState<AgentKind>();
-  const [agentUpdateError, setAgentUpdateError] = useState('');
   const [serverRevision, setServerRevision] = useState<ServerRevision>();
   const [serverRevisionLoading, setServerRevisionLoading] = useState(false);
   const [davoEnabled, setDavoEnabled] = useState(settings.davo.enabled);
@@ -1390,37 +1378,6 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const accountLoginRequest = useRef(0);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
-  // keep the aggregate settings indicator current while the console is open
-  useEffect(() => {
-    let active = true;
-    // refresh the cached server-side comparisons
-    const refresh = async () => {
-      const result = await settings.agentUpdates();
-      // ignore responses after unmount
-      if (!active) return;
-      // retain the last good snapshot after request failure
-      if (result.agents === undefined) {
-        setAgentUpdateError(result.error ?? 'Unable to check agent versions.');
-        return;
-      }
-      setAgentUpdateStatuses(result.agents);
-      setAgentUpdateError(result.agents.find(status => status.error !== undefined)?.error ?? '');
-      announceAgentUpdates(result.agents);
-    };
-    void refresh();
-    const interval = window.setInterval(() => { void refresh(); }, 15 * 60_000);
-    return () => { active = false; window.clearInterval(interval); };
-  }, [settings.agentUpdates]);
-  // open settings from an update notification
-  useEffect(() => {
-    const openFromHash = () => {
-      // accept only the dedicated settings destination
-      if (location.hash === '#settings') setOpen(true);
-    };
-    openFromHash();
-    window.addEventListener('hashchange', openFromHash);
-    return () => window.removeEventListener('hashchange', openFromHash);
-  }, []);
   // move focus into the page and restore the trigger on close
   useEffect(() => {
     // skip focus work while the page is closed
@@ -1506,28 +1463,6 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     const restarted = result.restarts?.filter(item => item.status === 'restarted').length ?? 0;
     const failed = result.restarts?.filter(item => item.status === 'failed').length ?? 0;
     setAccountMessage(`Switched to ${codexAccountName(account)}. Restarted ${restarted} idle ${restarted === 1 ? 'worktree' : 'worktrees'}${failed === 0 ? '.' : `; ${failed} failed.`}`);
-  };
-  // run one configured agent update without closing settings
-  const updateAgent = async (kind: AgentKind) => {
-    // ignore duplicate update clicks
-    if (updatingAgent !== undefined) return;
-    setUpdatingAgent(kind);
-    setAgentUpdateError('');
-    const result = await settings.updateAgent(kind);
-    setUpdatingAgent(undefined);
-    // retain the available update after failure
-    if (result.agent === undefined) {
-      setAgentUpdateError(result.error ?? 'Unable to update the agent.');
-      return;
-    }
-    const updated = result.agent;
-    setAgentUpdateStatuses(current => [...current.filter(status => status.kind !== kind), updated]);
-    setAgentUpdateError(updated.error ?? '');
-    // remove the completed update alert
-    if (!updated.updateAvailable) {
-      announcedAgentUpdates.delete(kind);
-      void dismissNotification(`agent-update-${kind}`);
-    }
   };
   // redeem one available reset credit
   const useAccountReset = async (account: CodexAccount) => {
@@ -1721,17 +1656,6 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
       setPending(false);
     }
   };
-  // persist one launch fallback without closing settings
-  const selectDefaultAgent = async (kind: AgentKind) => {
-    // ignore unavailable or duplicate selections
-    if (!adapters?.[kind]?.launchable || kind === settings.defaultAgent || defaultAgentPending) return;
-    setDefaultAgentPending(true);
-    setDefaultAgentError('');
-    const failure = await settings.setDefaultAgent(kind);
-    setDefaultAgentPending(false);
-    // retain the previous choice after a failed write
-    if (failure !== undefined) setDefaultAgentError(failure);
-  };
   // persist the voice feature gate immediately
   const toggleDavo = async (event: React.ChangeEvent<HTMLInputElement>) => {
     // prevent duplicate writes
@@ -1824,20 +1748,6 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     const busy = accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined || pending;
     return <div key={account.id} className="chatgpt-account-option"><button className="chatgpt-account-select" type="button" role="radio" aria-checked={account.active} disabled={account.active || busy} onClick={() => void switchAccount(account)}><span className="chatgpt-account-check" aria-hidden="true">{switchingAccountId === account.id ? <span className="spinner" /> : account.active ? '✓' : ''}</span><span className="chatgpt-account-copy"><strong title={email}>{email}{inlinePlan}</strong>{account.email !== undefined && account.email !== account.label && <small>{account.email}</small>}{account.authMode === 'apikey' && <ApiKeySpendSummary spend={account.spend} now={accountClock} />}{details.map((window, index) => <CodexLimitUsage key={`${account.id}:${index}`} window={window} now={accountClock} />)}{account.authMode !== 'apikey' && account.resetCount !== undefined && account.resetCount > 0 && <small>{account.resetCount} {account.resetCount === 1 ? 'reset' : 'resets'} available</small>}{account.error !== undefined && <small className="chatgpt-account-error">{account.error}</small>}</span></button>{/* keep account actions in one shared row */}<div className="chatgpt-account-actions" role="group" aria-label={`Actions for ${email}`}><button className="chatgpt-account-rename" type="button" aria-label={`Rename ${email}`} disabled={busy} onClick={() => { /* edit this account label */ beginAccountRename(account); }}>Rename</button>{atLimit && account.resetCount !== undefined && account.resetCount > 0 && <button className="chatgpt-account-reset" type="button" aria-label={`Use reset for ${email}`} disabled={busy} onClick={() => void useAccountReset(account)}>{resettingAccountId === account.id ? <><span className="spinner" />Using reset…</> : 'Use reset'}</button>}{account.error !== undefined && account.authMode !== 'apikey' && <button className="chatgpt-account-relogin" type="button" aria-label={`Re-login to ${email}`} disabled={busy} onClick={() => void beginAccountLogin(account)}>Re-login</button>}</div></div>;
   });
-  // let each configured agent select the server-wide launch fallback
-  const agentsSetting = configuredAdapters.length === 0 ? null : <div className="client-settings-setting client-settings-agents" role="radiogroup" aria-label="Agents"><header><small>AGENTS</small>{defaultAgentPending && <span className="spinner" role="status" aria-label="Saving default agent" />}</header><div className="client-settings-agent-list">{configuredAdapters.map(([kind, capability]) => {
-    const selected = kind === settings.defaultAgent;
-    const updateStatus = agentUpdateStatuses.find(status => status.kind === kind);
-    const version = updateStatus?.currentVersion;
-    const currentVersionLabel = version === undefined ? undefined : version.startsWith('v') ? version : `v${version}`;
-    const latest = updateStatus?.latestVersion;
-    const latestVersionLabel = latest === undefined ? undefined : latest.startsWith('v') ? latest : `v${latest}`;
-    const versionLabel = updateStatus?.updateAvailable && currentVersionLabel !== undefined && latestVersionLabel !== undefined ? `${currentVersionLabel} → ${latestVersionLabel}` : currentVersionLabel;
-    let availability = capability.unavailableReason ?? 'Unavailable';
-    // label launchable agents by default state
-    if (capability.launchable) availability = selected ? 'Default' : 'Available';
-    return <div className="client-settings-agent-row" key={kind}><button type="button" className={`client-settings-agent${selected ? ' selected' : ''}${capability.launchable ? '' : ' unavailable'}`} role="radio" aria-checked={selected} aria-label={agentKindLabel[kind]} disabled={selected || !capability.launchable || defaultAgentPending} onClick={() => void selectDefaultAgent(kind)}><span className="client-settings-agent-star" aria-hidden="true">{selected ? '★' : '☆'}</span><span className="client-settings-agent-glyph" aria-hidden="true">{agentKindGlyph[kind]}</span><span className="client-settings-agent-copy"><strong>{agentKindLabel[kind]}{versionLabel !== undefined && <span className="client-settings-agent-version">{versionLabel}</span>}</strong><span className="client-settings-agent-availability">{availability}</span><span className="client-settings-agent-program">{capability.program}</span></span></button>{updateStatus?.updateAvailable && <button className="client-settings-agent-update" type="button" aria-label={`Update ${agentKindLabel[kind]} to ${updateStatus.latestVersion ?? 'latest'}`} disabled={updatingAgent !== undefined} onClick={() => void updateAgent(kind)}>{updatingAgent === kind ? <><span className="spinner" />Updating…</> : 'Update'}</button>}</div>;
-  })}</div>{(defaultAgentError || agentUpdateError) && <span className="client-settings-agent-error" role="alert">{defaultAgentError || agentUpdateError}</span>}</div>;
   // keep the preview and reserved controls in one stable row
   const terminalFontSetting = <div className="client-settings-setting client-settings-terminal-font" role="group" aria-label="Terminal font"><header><small>TERMINAL FONT</small></header><div className="client-settings-terminal-control"><span className="client-settings-terminal-preview" aria-label="Terminal font preview" style={{ fontSize: `${terminalFontSize}px` }}>Aa ~/agent $</span><div className="client-settings-stepper"><button className={`client-settings-font-reset${terminalFontIsDefault ? ' reserved' : ''}`} type="button" aria-label="Reset terminal font" aria-hidden={terminalFontIsDefault} tabIndex={terminalFontIsDefault ? -1 : undefined} disabled={terminalFontIsDefault} onClick={() => resetTerminalFontSize()}>Reset</button><button type="button" aria-label="Smaller terminal font" disabled={terminalFontSize <= minTerminalFontSize} onClick={() => stepTerminalFontSize(-1)}>−</button><strong aria-live="polite">{terminalFontSize}px</strong><button type="button" aria-label="Larger terminal font" disabled={terminalFontSize >= maxTerminalFontSize} onClick={() => stepTerminalFontSize(1)}>+</button></div></div></div>;
   // switch the persisted browser theme
@@ -1863,7 +1773,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
       <span>{serverHostLabel(settings.serverUrl)}</span>
       <span className="client-settings-server-revision" aria-label={serverRevision === undefined ? 'Server revision unavailable' : `Server revision ${serverRevision.sha.slice(0, 7)}, committed ${updateCommitDate(serverRevision.committedAt)}`}>{serverRevisionContent}</span>
     </div>
-    {terminalFontSetting}{themeSetting}{reducedMotionSetting}{dynamicWorktreesSetting}{agentsSetting}
+    {terminalFontSetting}{themeSetting}{reducedMotionSetting}{dynamicWorktreesSetting}
   </div>;
   // configure the optional voice surface without an outer card
   const davoTitle = davoDraft.name.trim() || 'Davo';
@@ -1900,7 +1810,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     event.preventDefault();
     controls.at(next)?.focus();
   };
-  const settingsPage = !open ? null : createPortal(<div ref={pageRef} id="global-settings-page" className="client-settings-page" role="dialog" aria-modal={settings.serverUpdateVisible ? undefined : true} aria-hidden={settings.serverUpdateVisible || undefined} inert={settings.serverUpdateVisible} aria-labelledby="global-settings-title" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined || defaultAgentPending || davoPending} tabIndex={-1} onKeyDown={pageKey}><header className="client-settings-page-header"><div className="client-settings-page-heading"><small>REMOTE AGENT CONSOLE</small><h1 id="global-settings-title">Settings</h1></div><button className="client-settings-page-close" type="button" aria-label="Back to console" title="Back to console" onClick={closeSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10" /></svg><span>Back to console</span></button></header><div className="client-settings-page-content"><section className="client-settings-section client-settings-console" aria-label="Console settings">{settingsRows}</section>{davoSection}{accountsSection}</div></div>, document.body);
+  const settingsPage = !open ? null : createPortal(<div ref={pageRef} id="global-settings-page" className="client-settings-page" role="dialog" aria-modal={settings.serverUpdateVisible ? undefined : true} aria-hidden={settings.serverUpdateVisible || undefined} inert={settings.serverUpdateVisible} aria-labelledby="global-settings-title" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined || davoPending} tabIndex={-1} onKeyDown={pageKey}><header className="client-settings-page-header"><div className="client-settings-page-heading"><small>REMOTE AGENT CONSOLE</small><h1 id="global-settings-title">Settings</h1></div><button className="client-settings-page-close" type="button" aria-label="Back to console" title="Back to console" onClick={closeSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10" /></svg><span>Back to console</span></button></header><div className="client-settings-page-content"><section className="client-settings-section client-settings-console" aria-label="Console settings">{settingsRows}</section>{davoSection}{accountsSection}</div></div>, document.body);
   const renameTarget = dialog === 'client' || dialog === 'server' || dialog === 'account-rename' ? dialog : undefined;
   let renameTitle = renamingAccount?.authMode === 'apikey' ? 'API key' : 'account';
   let renameMaxLength = 120;
@@ -1936,8 +1846,8 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     else setOpen(true);
     setError('');
   };
-  // pulse the trigger for every pending update source
-  const updatesAvailable = settings.clientUpdateAvailable || settings.serverUpdateAvailable || settings.serverUpdateMinimized || agentUpdateStatuses.some(status => status.updateAvailable);
+  // pulse settings for client and server updates only
+  const updatesAvailable = settings.clientUpdateAvailable || settings.serverUpdateAvailable || settings.serverUpdateMinimized;
   return <span className="server-switcher-settings-wrap"><button ref={triggerRef} type="button" className={`server-switcher-button server-switcher-settings${updatesAvailable ? ' updates-available' : ''}`} aria-label={updatesAvailable ? 'Global settings — updates available' : 'Global settings'} aria-haspopup="dialog" aria-controls="global-settings-page" aria-expanded={open} onClick={toggleSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06-.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" /></svg>{updatesAvailable && <span className="server-switcher-settings-update-dot" aria-hidden="true" />}</button>{settingsPage}{renameDialog}{accountLoginDialog}</span>;
 }
 
@@ -6995,6 +6905,7 @@ function PruneWorktreesDialog({ project, request, onClose, onPruned }: { project
 function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => void; onInactive: () => void }) {
   const serverInfo = useContext(ServerContext) ?? fallbackServerInfo();
   const clientSettings = useContext(ClientSettingsContext);
+  const agentLaunchSettings = useContext(AgentLaunchSettingsContext);
   const davo = clientSettings?.davo ?? legacyDavoSettings;
   const dynamicWorktrees = useDynamicWorktrees();
   const [data, setData] = useState<Dashboard>();
@@ -7047,6 +6958,19 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     setPendingSessionLaunches(next);
   }, []);
   const [launcherOpen, setLauncherOpen] = useState(false);
+  // consume the notification destination when its launcher closes
+  const closeLauncher = () => {
+    setLauncherOpen(false);
+    // preserve unrelated navigation hashes
+    if (location.hash === '#launch') history.replaceState(history.state, '', `${location.pathname}${location.search}`);
+  };
+  // route update notifications to the agent launcher
+  useEffect(() => {
+    const openFromHash = () => { /* honor the launch destination */ if (location.hash === '#launch') setLauncherOpen(true); };
+    openFromHash();
+    window.addEventListener('hashchange', openFromHash);
+    return () => window.removeEventListener('hashchange', openFromHash);
+  }, []);
   const phone = usePhoneLayout();
   // Places opened from + (Terminal, Empty workspace) that keep a tab while the operator is on it
   // though nothing keeps them yet (no Agent, shell, pin or draft); leaving one closes it
@@ -7731,7 +7655,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     };
     const selectedChoice = choice ?? launch.choice;
     setLaunchErrorMessage('');
-    setLauncherOpen(false);
+    closeLauncher();
     setCreatingAgent(true);
     updatePendingSessionLaunches(current => current.map(candidate => candidate.id === launch.id ? { ...candidate, phase: 'launching', choice: selectedChoice, kind: selectedChoice?.kind ?? candidate.resolution?.kind, sandboxed: selectedChoice?.sandboxed, agentId: undefined, error: undefined, confirmationTimer: undefined } : candidate));
     showOperationFeedback({ tone: 'pending', message: `Starting ${launch.label}…`, detail: launch.scope === 'scratch' ? 'Creating a new temporary session and waiting for it to become ready.' : 'Creating a new session in the project directory and waiting for it to become ready.' });
@@ -7831,7 +7755,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     const kind = choice?.kind ?? worktree.launch?.kind;
     pendingWorktreeLaunches.set(worktree.id, { operationKey: key, ...(kind === undefined ? {} : { kind }) });
     let handedOff = false;
-    setLauncherOpen(false);
+    closeLauncher();
     setActivateWorktreeId(worktree.id);
     setLaunchErrorMessage('');
     showOperationFeedback({ tone: 'pending', message: `Starting ${worktree.label}…`, detail: worktreeLaunchPendingDetail(kind), worktreeId: worktree.id });
@@ -7887,7 +7811,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   };
   // open a Place's Workspace from +: its tab stays while the operator is there, and is selected
   const openPlace = (placeId: string) => {
-    setLauncherOpen(false);
+    closeLauncher();
     setOpenedPlaces(current => current.has(placeId) ? current : new Set(current).add(placeId));
     navigateToWorktree(placeId);
   };
@@ -7901,7 +7825,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const openEmptyWorkspace = (placeId: string) => {
     const index = placeTabIndex(placeId);
     if (index >= 0) {
-      setLauncherOpen(false);
+      closeLauncher();
       return select(index);
     }
     forgetOpenPanels(placeId);
@@ -7935,7 +7859,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   // new tab (its agent when one launched, else the idle worktree)
   const worktreeCreated = async (result: WorktreeCreated) => {
     setNewWorktreeProjectId(undefined);
-    setLauncherOpen(false);
+    closeLauncher();
     await refresh();
     if (result.agentId !== undefined) setActivateAgentId(result.agentId);
     else setActivateWorktreeId(result.worktreeId);
@@ -7947,14 +7871,14 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   // a worktree just removed from a tab or the launcher: close everything and refresh
   const worktreeRemoved = async (message: string) => {
     setRemoveWorktreeId(undefined);
-    setLauncherOpen(false);
+    closeLauncher();
     await refresh();
     showOperationFeedback({ tone: 'success', message: 'Worktree removed', detail: message });
   };
   // stale checkouts and records just pruned for one Project
   const worktreesPruned = async () => {
     setPruneProjectId(undefined);
-    setLauncherOpen(false);
+    closeLauncher();
     await refresh();
     showOperationFeedback({ tone: 'success', message: 'Worktrees pruned', detail: 'Stale checkouts and orphaned records were cleared.' });
   };
@@ -8134,7 +8058,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   // a + row's control while an Agent runs at its Place: Open selects it, and a kind from the menu
   // launches another beside it through `endpoint`, held back as the toolbar's launch-another is
   const openAgentSplit = (place: { id: string; label: string; consoleShells?: number }, agent: Agent, resolution: LaunchResolution | undefined, endpoint: string, { worktreeId, unavailable = false }: { worktreeId?: string; unavailable?: boolean } = {}): ReactNode =>
-    <LaunchSplitButton label={place.label} resolution={resolution} compact primary={{ label: 'Open', ariaLabel: `Open ${place.label}`, onSelect: () => { setLauncherOpen(false); selectTarget({ worktreeId: place.id, agentId: agent.id }); } }} entries={placeEntries(place)} launchDisabled={creatingAgent || launchingAnotherAt !== undefined || unavailable} onLaunch={choice => { setLauncherOpen(false); navigateToWorktree(place.id); void launchAnother({ key: placeItemKey(place.id), label: place.label, endpoint, worktreeId }, choice); }} />;
+    <LaunchSplitButton label={place.label} resolution={resolution} compact primary={{ label: 'Open', ariaLabel: `Open ${place.label}`, onSelect: () => { closeLauncher(); selectTarget({ worktreeId: place.id, agentId: agent.id }); } }} entries={placeEntries(place)} launchDisabled={creatingAgent || launchingAnotherAt !== undefined || unavailable} onLaunch={choice => { closeLauncher(); navigateToWorktree(place.id); void launchAnother({ key: placeItemKey(place.id), label: place.label, endpoint, worktreeId }, choice); }} />;
   // a directory-Project or Scratch row's control: Open while an Agent runs at its Place, else Launch
   const launcherPlaceSplit = (label: string, place: Place | undefined, resolution: LaunchResolution | undefined, endpoint: string, launch: (choice?: LaunchChoice) => void): ReactNode => {
     const running = place === undefined ? undefined : data.agents.find(agent => agentPlaceId(agent) === place.id);
@@ -8167,10 +8091,12 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     const rows = visibleWorktrees.map(worktree => <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{launcherRowLabel(worktree, project)}</span>{launcherWorktreeControls(worktree, project)}</div>);
     return <div key={project.id} className="launcher-project" role="group" aria-label={project.label}><div className={`launcher-project-header${inlineWorktree === undefined ? '' : ' inline-worktree'}`}><span>{project.label}</span>{staleCount > 0 && <button type="button" className="launcher-prune" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setPruneProjectId(project.id)}>{staleCount} stale · Prune</button>}{inlineWorktree !== undefined && <div className="launcher-project-worktree-controls" role="group" aria-label={`${project.label} worktree controls`}>{launcherWorktreeControls(inlineWorktree, project)}</div>}</div>{rows}{project.mode === 'directory' && <div className="launcher-row"><span className="launcher-row-label">{project.label}</span>{launcherPlaceControls(directoryPlace(project.id))}{launcherPlaceSplit(project.label, directoryPlace(project.id), project.launch, `/api/projects/${encodeURIComponent(project.id)}/launch`, choice => void launchProjectDirectory(project, choice))}</div>}{dynamicWorktrees && <button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}><LauncherLabelIcon name="add" /><span>New worktree…</span></button>}</div>;
   };
+  // keep the launch button's visual and accessible update state in sync
+  const agentUpdatesAvailable = agentLaunchSettings?.statuses.some(status => status.updateAvailable) === true;
   const tabBar = <><nav className={`tabs${phone ? ' workspace-dropdown-row' : ''}`} ref={tabsRef} role="tablist" aria-label="Agents and worktrees"><TabRowLead />{phone ? <WorkspaceDropdown items={items} current={visibleActive} onSelect={index => select(index)} onNewWorkspace={() => setLauncherOpen(true)} onRenameWorktree={setRenameWorktreeId} renameDisabled={creatingAgent} /> : items.map((entry, index) => {
     const { transition, label, className } = tabStatus(entry);
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${className}`} title={label} aria-label={`${entry.label} — ${label}`} aria-busy={transition !== undefined} onClick={() => select(index)}><TabKindStack entry={entry} />{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}><span className="flyout-caret" aria-hidden="true" />{creatingAgent ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}{launcherPlaceSplit('~ Scratch', scratchPlace, data.scratchLaunch, '/api/agents/launch', choice => void createAgent(choice))}</div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}{clientSettings && <ClientSettingsMenu settings={clientSettings} />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
+  })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className={`new-agent-tab${agentUpdatesAvailable ? ' updates-available' : ''}`} type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : agentUpdatesAvailable ? 'Launch agent — update available' : 'Launch agent'} title={agentUpdatesAvailable ? 'Agent update available' : undefined} aria-expanded={launcherOpen} onClick={() => { /* toggle the launcher */ if (launcherOpen) closeLauncher(); else setLauncherOpen(true); }}><span className="flyout-caret" aria-hidden="true" />{creatingAgent ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}{agentUpdatesAvailable && <span className="new-agent-update-dot" aria-hidden="true" />}</button></span>{launcherOpen && <FlyoutPortal onDismiss={closeLauncher}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}{launcherPlaceSplit('~ Scratch', scratchPlace, data.scratchLaunch, '/api/agents/launch', choice => void createAgent(choice))}</div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}{clientSettings && <ClientSettingsMenu settings={clientSettings} />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
   return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item !== undefined && agent !== undefined && <AgentPlaceCard key={item.key} agent={agent} agents={item.agents} onSelectAgent={agentId => select(visibleActive, agentId)} active={agentState(agent) === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(agent)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} launch={activeLaunch} {...(activeWorktree !== undefined || activePlace === undefined ? {} : { pinned: activePlace.pinned, onTogglePin: () => void togglePin(activePlace) })} {...(activeWorktree === undefined ? {} : { worktreeLabel: activeWorktree.label, ...(activeWorktree.main ? {} : { onRemoveWorktree: () => setRemoveWorktreeId(activeWorktree.id), removeDisabledReason: 'Turn off the agents here before removing this worktree' }) })} />}{item?.worktree !== undefined && agent === undefined && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} transient={item.transient === true} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onTogglePin={() => void togglePin(item.worktree!)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place !== undefined && agent === undefined && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} transient={item.transient === true} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
@@ -8187,6 +8113,12 @@ function App() {
   const [serverUpdateAvailable, setServerUpdateAvailable] = useState(false);
   const [serverUpdateOpen, setServerUpdateOpen] = useState(false);
   const [serverUpdateMinimized, setServerUpdateMinimized] = useState(false);
+  const [agentUpdateStatuses, setAgentUpdateStatuses] = useState<AgentUpdateStatus[]>([]);
+  const [updatingAgent, setUpdatingAgent] = useState<AgentKind>();
+  const [agentUpdateError, setAgentUpdateError] = useState('');
+  const [versionCheckError, setVersionCheckError] = useState('');
+  const [defaultAgentError, setDefaultAgentError] = useState('');
+  const [defaultAgentPending, setDefaultAgentPending] = useState(false);
   const announcedServerUpdateTarget = useRef<string | undefined>(undefined);
   const [reconnecting, setReconnecting] = useState(!consoleReachable);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
@@ -8295,6 +8227,55 @@ function App() {
       job = status.update;
     }
   }, []);
+  // refresh agent versions while the authenticated console is open
+  useEffect(() => {
+    // skip unauthenticated version checks
+    if (state !== 'ready') return;
+    let active = true;
+    // retain the last good snapshot after request failures
+    const refresh = async () => {
+      const result = await agentUpdates();
+      // ignore responses after unmount
+      if (!active) return;
+      // report failed version checks in launch menus
+      if (result.agents === undefined) { setVersionCheckError(result.error ?? 'Unable to check agent versions.'); return; }
+      setAgentUpdateStatuses(result.agents);
+      setVersionCheckError('');
+      announceAgentUpdates(result.agents);
+    };
+    void refresh();
+    const interval = window.setInterval(() => { void refresh(); }, 15 * 60_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [agentUpdates, state]);
+  // keep default selection alongside each agent's launch action
+  const selectDefaultAgent = useCallback(async (kind: AgentKind) => {
+    // ignore duplicate selections
+    if (kind === sessionInfo?.defaultAgent || defaultAgentPending) return;
+    setDefaultAgentPending(true);
+    setDefaultAgentError('');
+    const failure = await setDefaultAgent(kind);
+    setDefaultAgentPending(false);
+    // retain the previous choice on failure
+    if (failure !== undefined) setDefaultAgentError(failure);
+  }, [defaultAgentPending, sessionInfo?.defaultAgent, setDefaultAgent]);
+  // update one agent and retain its version on failure
+  const runAgentUpdate = useCallback(async (kind: AgentKind) => {
+    // ignore concurrent installers
+    if (updatingAgent !== undefined) return;
+    setUpdatingAgent(kind);
+    setAgentUpdateError('');
+    const result = await updateAgent(kind);
+    setUpdatingAgent(undefined);
+    // retain the available version after failure
+    if (result.agent === undefined) { setAgentUpdateError(result.error ?? 'Unable to update the agent.'); return; }
+    const updated = result.agent;
+    setAgentUpdateStatuses(current => [...current.filter(status => status.kind !== kind), updated]);
+    // clear the completed update notification
+    if (!updated.updateAvailable) {
+      announcedAgentUpdates.delete(kind);
+      void dismissNotification(`agent-update-${kind}`);
+    }
+  }, [updateAgent, updatingAgent]);
   // persist the server-wide voice identity and feature gate
   const updateDavo = useCallback(async (settings: Pick<DavoSettings, 'enabled' | 'name' | 'context'>): Promise<string | undefined> => {
     const response = await request('/api/server/davo', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) });
@@ -8625,8 +8606,10 @@ function App() {
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
   // expose settings without a manual server update bypass
-  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, clientUpdateAvailable, serverUpdateAvailable, serverUpdateVisible: serverUpdateOpen && !serverUpdateMinimized, serverUpdateMinimized, defaultAgent: sessionInfo.defaultAgent, davo: sessionInfo.davo ?? legacyDavoSettings, renameClient, renameServer, loadServerRevision, reloadClient, openServerUpdate, setDefaultAgent, agentUpdates, updateAgent, updateDavo, codexAccounts, switchCodexAccount, renameCodexAccount, resetCodexAccount, addCodexApiKeyAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [addCodexApiKeyAccount, agentUpdates, cancelCodexAccountLogin, clientUpdateAvailable, codexAccountLoginStatus, codexAccounts, loadServerRevision, openServerUpdate, reloadClient, renameClient, renameServer, renameCodexAccount, resetCodexAccount, serverInfo.name, serverInfo.url, serverUpdateAvailable, serverUpdateMinimized, serverUpdateOpen, sessionInfo?.davo, sessionInfo?.defaultAgent, sessionInfo?.deviceName, setDefaultAgent, startCodexAccountLogin, state, switchCodexAccount, updateAgent, updateDavo]);
-  return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}>{screen}<ServerUpdateDialog open={serverUpdateOpen} minimized={serverUpdateMinimized} onMinimize={minimizeServerUpdate} onClose={closeServerUpdate} />{reconnecting && <ReconnectingOverlay />}</ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
+  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, clientUpdateAvailable, serverUpdateAvailable, serverUpdateVisible: serverUpdateOpen && !serverUpdateMinimized, serverUpdateMinimized, davo: sessionInfo.davo ?? legacyDavoSettings, renameClient, renameServer, loadServerRevision, reloadClient, openServerUpdate, updateDavo, codexAccounts, switchCodexAccount, renameCodexAccount, resetCodexAccount, addCodexApiKeyAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [addCodexApiKeyAccount, cancelCodexAccountLogin, clientUpdateAvailable, codexAccountLoginStatus, codexAccounts, loadServerRevision, openServerUpdate, reloadClient, renameClient, renameServer, renameCodexAccount, resetCodexAccount, serverInfo.name, serverInfo.url, serverUpdateAvailable, serverUpdateMinimized, serverUpdateOpen, sessionInfo?.davo, sessionInfo?.deviceName, startCodexAccountLogin, state, switchCodexAccount, updateDavo]);
+  // share the current launch settings with every flyout
+  const agentLaunchSettings = useMemo(() => ({ statuses: agentUpdateStatuses, updating: updatingAgent, errors: Array.from(new Set([defaultAgentError, agentUpdateError, versionCheckError, ...agentUpdateStatuses.map(status => status.error ?? '')].filter(Boolean))), defaultAgent: sessionInfo?.defaultAgent, defaultPending: defaultAgentPending, setDefaultAgent: (kind: AgentKind) => { /* persist one default */ void selectDefaultAgent(kind); }, updateAgent: (kind: AgentKind) => { /* run one installer */ void runAgentUpdate(kind); } }), [agentUpdateStatuses, updatingAgent, agentUpdateError, versionCheckError, defaultAgentError, sessionInfo?.defaultAgent, defaultAgentPending, selectDefaultAgent, runAgentUpdate]);
+  return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}><AgentLaunchSettingsContext.Provider value={agentLaunchSettings}>{screen}<ServerUpdateDialog open={serverUpdateOpen} minimized={serverUpdateMinimized} onMinimize={minimizeServerUpdate} onClose={closeServerUpdate} />{reconnecting && <ReconnectingOverlay />}</AgentLaunchSettingsContext.Provider></ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 // Reflect the stored flavour before the first render, now that the stylesheet is

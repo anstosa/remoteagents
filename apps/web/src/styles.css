@@ -1304,10 +1304,15 @@ html.software-keyboard-open .agent-view > .workspace-toolbar { display: none; }
   .agent-view:has(.log-split.mobile-agent-view > .log-output > .agent-composer, .log-split.mobile-agent-view > .log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar { border-top: 0; }
 }
 
-.tabs .new-agent-tab { flex: 0 0 var(--standard-control-size); justify-content: center; height: var(--standard-control-size); min-height: var(--standard-control-size); margin: 0; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); white-space: nowrap; padding: 0; box-shadow: none; }
+.tabs .new-agent-tab { position: relative; flex: 0 0 var(--standard-control-size); justify-content: center; height: var(--standard-control-size); min-height: var(--standard-control-size); margin: 0; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); white-space: nowrap; padding: 0; box-shadow: none; }
 .tabs .new-agent-tab svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 /* quiet icon controls share the same neutral disabled and hover treatment */
 .tabs :is(.new-agent-tab, .server-switcher-voice, .server-switcher-settings):disabled { opacity: .45; }
+/* call attention to pending agent updates on the launcher itself */
+.tabs .new-agent-tab.updates-available { z-index: 1; border-color: var(--mauve); color: var(--mauve); box-shadow: inset 0 0 .65rem color-mix(in srgb, var(--mauve) 30%, transparent), 0 0 .6rem color-mix(in srgb, var(--mauve) 48%, transparent); animation: settings-update-glow 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .tabs .new-agent-tab.updates-available { animation: none; } }
+:root[data-motion="reduced"] .tabs .new-agent-tab.updates-available { animation: none; }
+.new-agent-update-dot { position: absolute; top: calc(.25rem - 1px); right: calc(.25rem - 1px); width: var(--status-dot-size); height: var(--status-dot-size); border-radius: 50%; background: var(--mauve); box-shadow: 0 0 .5rem color-mix(in srgb, var(--mauve) 75%, transparent); }
 .tabs .new-agent-tab:not(:disabled):hover { border-color: var(--lavender); background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); color: var(--text); filter: none; }
 .tabs .launcher,.tabs .tab-spacer{flex:0 0 var(--standard-control-size);height:var(--standard-control-size);min-height:var(--standard-control-size)}.tabs .launcher{position:relative;display:block}.tabs .launcher .new-agent-tab{width:100%;height:100%}.launcher-menu{z-index:var(--layer-popover)}.launcher-menu button{justify-content:flex-start!important;border:0!important;padding:.55rem!important;text-align:left}
 .tabs .notification-control,.tabs .notification-status{flex:0 0 auto;align-self:center;min-height:var(--standard-control-size);margin:0;border-radius:var(--control-radius);font:600 .68rem var(--font-mono);letter-spacing:.04em;padding:.35rem .55rem}.tabs .notification-control{border:1px solid var(--blue);background:transparent;color:var(--blue);cursor:pointer}.tabs .notification-control:hover{background:color-mix(in srgb,var(--blue) 14%,transparent)}.tabs .notification-status{color:var(--yellow)}
@@ -1473,25 +1478,6 @@ html.software-keyboard-open .agent-view > .workspace-toolbar { display: none; }
 .client-settings-setting > .client-settings-server-revision { display: flex; align-items: baseline; gap: .5rem; overflow: visible; white-space: normal; }
 .client-settings-server-revision code { color: var(--blue); font: 700 .64rem var(--font-mono); }
 .client-settings-server-revision time { color: var(--overlay-1); }
-.client-settings-agents { gap: .45rem; }
-.client-settings-agents .spinner { box-sizing: border-box; flex: 0 0 1rem; width: 1rem; height: 1rem; }
-.client-settings-agent-list { display: grid; min-width: 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: .8rem 1.5rem; }
-.client-settings-agent-row { display: flex; min-width: 0; align-items: flex-start; gap: .65rem; }
-.client-settings-agent { display: flex; width: 100%; min-width: 0; flex: 1 1 auto; align-items: flex-start; gap: .5rem; border: 0; border-radius: 0; padding: .1rem 0; background: transparent; box-shadow: none; color: var(--text); text-align: left; white-space: normal; }
-.client-settings-agent:not(:disabled):hover { background: transparent; color: var(--lavender); filter: none; }
-.client-settings-agent:disabled[aria-checked='true'] { cursor: default; opacity: 1; }
-.client-settings-agent.unavailable { opacity: .55; }
-.client-settings-agent-star { display: grid; flex: none; width: 1rem; height: 1.15rem; place-items: center; color: var(--overlay-0); font-size: .9rem; line-height: 1; }
-.client-settings-agent.selected .client-settings-agent-star { color: var(--yellow); }
-.client-settings-agent-glyph { flex: none; color: var(--text); font-size: .95rem; line-height: 1.2; }
-.client-settings-agent-copy { display: flex; min-width: 0; flex-direction: column; gap: .1rem; }
-.client-settings-agent-copy > strong { display: flex; min-width: 0; align-items: baseline; gap: .45rem; color: var(--text); font-size: .74rem; }
-.client-settings-agent-version { overflow: hidden; color: var(--mauve); font: 700 .58rem var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-.client-settings-agent-availability { color: var(--overlay-1); font: 600 .6rem var(--font-mono); }
-.client-settings-agent-program { overflow: hidden; color: var(--overlay-0); font: 600 .58rem var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-.client-settings-agent-update { width: auto; min-width: 4.8rem; min-height: 1.8rem; flex: none; justify-content: center; gap: .35rem; border-color: var(--mauve); padding: .25rem .6rem; background: color-mix(in srgb, var(--mauve) 14%, transparent); color: var(--mauve); box-shadow: none; font: 700 .64rem var(--font-mono); }
-.client-settings-agent-update:not(:disabled):hover { background: var(--mauve); color: var(--crust); }
-.client-settings-setting > .client-settings-agent-error { color: var(--red); font: 600 .64rem var(--font-mono); white-space: normal; }
 .client-settings-terminal-control { display: flex; min-width: 0; min-height: 1.8rem; align-items: center; gap: .8rem; }
 .client-settings-terminal-preview { display: flex; min-width: 0; height: 1.8rem; flex: 1 1 auto; align-items: center; overflow: hidden; color: var(--subtext-0); font-family: var(--font-mono); line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .client-settings-stepper { display: flex; flex: none; align-items: center; gap: .5rem; }
@@ -1805,6 +1791,17 @@ html.software-keyboard-open .agent-view > .workspace-toolbar { display: none; }
 .launch-menu-note { margin: .4rem .5rem .2rem; color: var(--yellow); font: 600 .64rem var(--font-mono); white-space: normal; }
 .launch-menu-empty { margin: .4rem .5rem; color: var(--overlay-1); font: 600 .7rem var(--font-mono); white-space: normal; }
 .launch-menu-empty code { color: var(--mauve); }
+.launch-agent-line { display: flex; width: 100%; align-items: center; border-radius: calc(var(--control-radius) - .1rem); }
+.launch-agent-line:has(.launch-row:not(:disabled):hover) { background: var(--surface-0); }
+.launch-agent-line > .launch-row { flex: 1 1 auto; width: auto; min-width: 0; }
+.launch-agent-version { color: var(--mauve); font: 700 .62rem var(--font-mono); }
+.launch-menu-error { color: var(--red) !important; }
+.launch-menu-error { margin: .4rem .5rem; font: 600 .64rem var(--font-mono); white-space: normal; }
+.launch-menu .launch-agent-default, .launch-menu .launch-agent-update { width: auto; min-width: 0; min-height: 1.7rem; flex: none; justify-content: center !important; align-self: center; margin-right: .3rem; padding: .2rem .4rem !important; border: 1px solid var(--surface-2) !important; border-radius: .3rem; background: transparent; box-shadow: none; color: var(--overlay-1); font: 700 .63rem var(--font-mono); }
+.launch-menu .launch-agent-default { font-size: .9rem; }
+.launch-menu .launch-agent-default[aria-checked='true'] { color: var(--yellow); }
+.launch-menu .launch-agent-update { border-color: var(--mauve) !important; background: color-mix(in srgb, var(--mauve) 14%, transparent); color: var(--mauve); }
+.launch-menu .launch-agent-update:not(:disabled):hover { background: var(--mauve); color: var(--crust); }
 .launch-row { display: flex !important; width: 100%; align-items: center; gap: .6rem; padding: .5rem .55rem !important; border: 0 !important; border-radius: calc(var(--control-radius) - .1rem); background: transparent; color: var(--text); box-shadow: none; text-align: left; white-space: normal; }
 .launch-row:not(:disabled):hover { background: var(--surface-0); filter: none; }
 .launch-row:disabled { opacity: .5; }
