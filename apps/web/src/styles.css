@@ -1292,11 +1292,14 @@ html.software-keyboard-open .agent-view > .workspace-toolbar { display: none; }
     border-top: 1px solid var(--surface-0);
     background: color-mix(in srgb, var(--mantle) 60%, transparent);
   }
-  .mobile-key-modifiers { display: grid; grid-template-columns: repeat(2, 3.15rem); gap: .2rem; }
+  /* shrink modifier columns on narrow phones without adding a row */
+  .mobile-key-modifiers { display: grid; min-width: 0; grid-template-columns: repeat(3, minmax(0, 3.15rem)); gap: .2rem; }
   .mobile-arrow-keys { display: grid; grid-template-columns: repeat(3, 2rem); gap: .2rem; }
   .mobile-terminal-keys button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: var(--prompt-control-border); border-radius: var(--control-radius); background: var(--prompt-control-background); color: var(--prompt-control-foreground); box-shadow: none; }
   .mobile-terminal-keys button:not(.active):hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
-  .mobile-key-modifiers button { width: 3.15rem; font: 800 .65rem var(--font-mono); }
+  .mobile-key-modifiers button { width: 100%; font: 800 .65rem var(--font-mono); }
+  /* place fn beside both existing modifier rows */
+  .mobile-key-modifiers .mobile-key-fn { grid-column: 3; grid-row: 1 / 3; height: 100%; }
   .mobile-terminal-keys button svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
   .mobile-terminal-keys button.active { border-color: var(--sky); background: color-mix(in srgb, var(--sky) 32%, var(--surface-0)); color: var(--sky); }
   /* join the prompt or active pane footer to the static bottom bar */

@@ -360,13 +360,21 @@ const terminalFocusers = new Map<string, () => void>();
 const answeredQuestionActions = new Map<string, (question: ChoiceQuestion) => void>();
 // the id of a just-answered question, kept per agent so its optimistic dismissal survives a remount
 const dismissedQuestionIds = new Map<string, string>();
-const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: boolean }>();
-// The pane's sticky mobile modifiers, defaulted so every reader gets the same shape.
-const stickyModifiers = (id: string) => mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
-// Apply those modifiers to a typed key: Alt prefixes ESC, Ctrl maps a letter to its
-// control char, Shift upper-cases it; anything else passes through unchanged.
+const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: boolean; fn: boolean }>();
+// default every pane's sticky modifiers
+const stickyModifiers = (id: string) => mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false, fn: false };
+// translate fn digits before applying the existing printable-key modifiers
 const applyStickyModifiers = (id: string, data: string): string => {
-  const { alt, ctrl, shift } = stickyModifiers(id);
+  const { alt, ctrl, shift, fn } = stickyModifiers(id);
+  // interpret only a single digit as a function key
+  if (fn && /^[0-9]$/u.test(data)) {
+    const key = Number(data) || 10;
+    const modifier = 1 + Number(shift) + Number(alt) * 2 + Number(ctrl) * 4;
+    // match xterm's ss3 and modified csi sequences for f1 through f4
+    if (key <= 4) return modifier === 1 ? `\x1bO${'PQRS'[key - 1]}` : `\x1b[1;${modifier}${'PQRS'[key - 1]}`;
+    const code = [15, 17, 18, 19, 20, 21][key - 5];
+    return `\x1b[${code}${modifier === 1 ? '' : `;${modifier}`}~`;
+  }
   const first = data.charAt(0);
   return `${alt ? '\x1b' : ''}${ctrl && /^[a-z]$/iu.test(first) ? String.fromCharCode(first.toLowerCase().charCodeAt(0) - 96) : shift && /^[a-z]$/iu.test(first) ? `${first.toUpperCase()}${data.slice(1)}` : data}`;
 };
@@ -2085,15 +2093,19 @@ function MobileTerminalKeys({ id }: { id: string }) {
   const [ctrlActive, setCtrlActive] = useState(false);
   const [shiftActive, setShiftActive] = useState(false);
   const [altActive, setAltActive] = useState(false);
+  const [fnActive, setFnActive] = useState(false);
+  // publish the mounted pane's sticky toggle state
   useEffect(() => {
-    mobileModifiers.set(id, { alt: altActive, ctrl: ctrlActive, shift: shiftActive });
+    mobileModifiers.set(id, { alt: altActive, ctrl: ctrlActive, shift: shiftActive, fn: fnActive });
+    // discard modifiers when these controls unmount
     return () => { mobileModifiers.delete(id); };
-  }, [id, altActive, ctrlActive, shiftActive]);
+  }, [id, altActive, ctrlActive, shiftActive, fnActive]);
   // toggle one sticky modifier
-  const toggleModifier = (name: 'alt'|'ctrl'|'shift') => {
-    const setters = { alt: setAltActive, ctrl: setCtrlActive, shift: setShiftActive };
+  const toggleModifier = (name: 'alt'|'ctrl'|'shift'|'fn') => {
+    const setters = { alt: setAltActive, ctrl: setCtrlActive, shift: setShiftActive, fn: setFnActive };
     const current = stickyModifiers(id);
     mobileModifiers.set(id, { ...current, [name]: !current[name] });
+    // mirror the immediate modifier change in the button state
     setters[name](value => !value);
   };
   // send one mobile key sequence
@@ -2107,7 +2119,7 @@ function MobileTerminalKeys({ id }: { id: string }) {
   };
   // send one direct control character
   const mobileControl = (value: '\x1b'|'\x03') => { terminalInputs.get(id)?.(value); };
-  return <div className="mobile-terminal-keys" aria-label="Terminal keys"><div className="mobile-control-keys"><button type="button" aria-label="Esc" onPointerDown={event => { event.preventDefault(); mobileControl('\x1b'); }}>Esc</button><button type="button" aria-label="Ctrl+C" onPointerDown={event => { event.preventDefault(); mobileControl('\x03'); }}>Ctrl+C</button></div><div className="mobile-key-modifiers"><button type="button" aria-label="Tab" onPointerDown={event => { event.preventDefault(); mobileKey('tab'); }}>Tab</button><button type="button" className={shiftActive ? 'active' : ''} aria-pressed={shiftActive} onPointerDown={event => { event.preventDefault(); toggleModifier('shift'); }}>Shift</button><button type="button" className={ctrlActive ? 'active' : ''} aria-pressed={ctrlActive} onPointerDown={event => { event.preventDefault(); toggleModifier('ctrl'); }}>Ctrl</button><button type="button" className={altActive ? 'active' : ''} aria-pressed={altActive} onPointerDown={event => { event.preventDefault(); toggleModifier('alt'); }}>Alt</button></div><div className="mobile-arrow-keys"><button type="button" aria-label="Slash" onPointerDown={event => { event.preventDefault(); mobileKey('slash'); }}>/</button><button type="button" aria-label="Up arrow" onPointerDown={event => { event.preventDefault(); mobileKey('up'); }}><MobileKeyIcon name="up" /></button><button type="button" aria-label="Dollar" onPointerDown={event => { event.preventDefault(); mobileKey('dollar'); }}>$</button><button type="button" aria-label="Left arrow" onPointerDown={event => { event.preventDefault(); mobileKey('left'); }}><MobileKeyIcon name="left" /></button><button type="button" aria-label="Down arrow" onPointerDown={event => { event.preventDefault(); mobileKey('down'); }}><MobileKeyIcon name="down" /></button><button type="button" aria-label="Right arrow" onPointerDown={event => { event.preventDefault(); mobileKey('right'); }}><MobileKeyIcon name="right" /></button></div></div>;
+  return <div className="mobile-terminal-keys" aria-label="Terminal keys"><div className="mobile-control-keys"><button type="button" aria-label="Esc" onPointerDown={event => { event.preventDefault(); mobileControl('\x1b'); }}>Esc</button><button type="button" aria-label="Ctrl+C" onPointerDown={event => { event.preventDefault(); mobileControl('\x03'); }}>Ctrl+C</button></div><div className="mobile-key-modifiers"><button type="button" aria-label="Tab" onPointerDown={event => { event.preventDefault(); mobileKey('tab'); }}>Tab</button><button type="button" className={shiftActive ? 'active' : ''} aria-pressed={shiftActive} onPointerDown={event => { event.preventDefault(); toggleModifier('shift'); }}>Shift</button><button type="button" className={ctrlActive ? 'active' : ''} aria-pressed={ctrlActive} onPointerDown={event => { event.preventDefault(); toggleModifier('ctrl'); }}>Ctrl</button><button type="button" className={altActive ? 'active' : ''} aria-pressed={altActive} onPointerDown={event => { event.preventDefault(); toggleModifier('alt'); }}>Alt</button><button type="button" className={`mobile-key-fn${fnActive ? ' active' : ''}`} aria-pressed={fnActive} title="Function keys: 1–9 for F1–F9, 0 for F10" onPointerDown={event => { /* preserve terminal focus while toggling fn */ event.preventDefault(); toggleModifier('fn'); }}>Fn</button></div><div className="mobile-arrow-keys"><button type="button" aria-label="Slash" onPointerDown={event => { event.preventDefault(); mobileKey('slash'); }}>/</button><button type="button" aria-label="Up arrow" onPointerDown={event => { event.preventDefault(); mobileKey('up'); }}><MobileKeyIcon name="up" /></button><button type="button" aria-label="Dollar" onPointerDown={event => { event.preventDefault(); mobileKey('dollar'); }}>$</button><button type="button" aria-label="Left arrow" onPointerDown={event => { event.preventDefault(); mobileKey('left'); }}><MobileKeyIcon name="left" /></button><button type="button" aria-label="Down arrow" onPointerDown={event => { event.preventDefault(); mobileKey('down'); }}><MobileKeyIcon name="down" /></button><button type="button" aria-label="Right arrow" onPointerDown={event => { event.preventDefault(); mobileKey('right'); }}><MobileKeyIcon name="right" /></button></div></div>;
 }
 
 // render the agent panel's composer: prompt history above attach on the left, the prompt, and

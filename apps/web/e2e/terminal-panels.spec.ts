@@ -1568,6 +1568,73 @@ test('on a phone the helper keys drive the visible Terminal, and the Agent pane 
   await expect.poll(() => paneInputText(page, 'agent-1')).toContain(esc);
 });
 
+// verify Fn stays isolated and resets with unmounted phone controls
+test('on a phone Fn stays scoped to its Agent or Terminal pane', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', '$ \r\n');
+  const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
+  await terminal.locator('.xterm-screen').click();
+  const modifiers = terminal.locator('.mobile-key-modifiers');
+  const terminalFn = terminal.getByRole('button', { name: 'Fn', exact: true });
+  const terminalShift = terminal.getByRole('button', { name: 'Shift', exact: true });
+  const terminalAlt = terminal.getByRole('button', { name: 'Alt', exact: true });
+  await expect(terminalFn).toHaveAttribute('aria-pressed', 'false');
+  await terminalFn.click();
+  await expect(terminalFn).toHaveAttribute('aria-pressed', 'true');
+  await expect(terminal.locator('.xterm-helper-textarea')).toBeFocused();
+  await page.keyboard.type('1');
+  await expect.poll(() => paneInputText(page, '%5')).toBe('\x1bOP');
+
+  await chooseSplit(page, 'Agent output');
+  const output = page.locator('.log-output');
+  await output.locator('.xterm-screen').click();
+  const agentFn = output.getByRole('button', { name: 'Fn', exact: true });
+  await expect(agentFn).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.type('2');
+  await expect.poll(() => paneInputText(page, 'agent-1')).toBe('2');
+  await agentFn.click();
+  await page.keyboard.type('2');
+  await expect.poll(() => paneInputText(page, 'agent-1')).toBe(`2\x1bOQ`);
+
+  await chooseSplit(page, 'Terminal build');
+  await expect(terminalFn).toHaveAttribute('aria-pressed', 'false');
+  await terminal.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.type('3');
+  await expect.poll(() => paneInputText(page, '%5')).toBe('\x1bOP3');
+  await terminalFn.click();
+  await expect(terminal.locator('.xterm-helper-textarea')).toBeFocused();
+  await page.keyboard.type('3');
+  await expect.poll(() => paneInputText(page, '%5')).toBe('\x1bOP3\x1bOR');
+
+  const [keyBounds, modifierBounds, fnBounds, shiftBounds, altBounds] = await Promise.all([
+    terminal.getByLabel('Terminal keys').boundingBox(),
+    modifiers.boundingBox(),
+    terminalFn.boundingBox(),
+    terminalShift.boundingBox(),
+    terminalAlt.boundingBox()
+  ]);
+  // require measurable two-row controls
+  if (keyBounds === null || modifierBounds === null || fnBounds === null || shiftBounds === null || altBounds === null) throw new Error('mobile Fn keys have no layout bounds');
+  expect(fnBounds.x).toBeGreaterThan(shiftBounds.x + shiftBounds.width);
+  expect(fnBounds.x).toBeGreaterThan(altBounds.x + altBounds.width);
+  expect(fnBounds.y).toBeCloseTo(shiftBounds.y, 1);
+  expect(fnBounds.y + fnBounds.height).toBeCloseTo(altBounds.y + altBounds.height, 1);
+  expect(fnBounds.y).toBeCloseTo(modifierBounds.y, 1);
+  expect(fnBounds.y + fnBounds.height).toBeCloseTo(modifierBounds.y + modifierBounds.height, 1);
+  expect(keyBounds.x).toBeGreaterThanOrEqual(0);
+  expect(keyBounds.x + keyBounds.width).toBeLessThanOrEqual(320);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await page.screenshot({ path: testInfo.outputPath('mobile-fn-terminal-320.png'), fullPage: true });
+});
+
 test('on a phone a tap on a Terminal focuses its textarea', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 880 });
   await installPaneMock(page);

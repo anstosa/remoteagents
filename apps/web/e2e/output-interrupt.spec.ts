@@ -123,6 +123,107 @@ test('the mobile terminal keys drive the pane, including the Ctrl latch', async 
   await expect.poll(() => paneInputText(page, 'agent-1')).toBe('\x03\x1b\x03');
 });
 
+// exercise the native phone controls and xterm input path
+test.describe('mobile Fn input', () => {
+  test.use({
+    hasTouch: true,
+    isMobile: true,
+    userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36',
+    viewport: { width: 390, height: 844 }
+  });
+
+  // map only a single soft-keyboard digit
+  test('the mobile Fn latch maps only single digits in Agent output', async ({ page }, testInfo) => {
+    await installPaneMock(page);
+    await routeApi(page);
+    await page.goto('/');
+    await seedPaneSize(page, 'agent-1', 80, 24);
+    await pushBytes(page, 'agent-1', 'ready\r\n');
+
+    const output = page.locator('.log-output');
+    await output.locator('.xterm-accessibility-tree').tap();
+    const textarea = output.locator('.xterm-helper-textarea');
+    const keys = output.getByLabel('Terminal keys');
+    const modifiers = keys.locator('.mobile-key-modifiers');
+    const fn = keys.getByRole('button', { name: 'Fn', exact: true });
+    const shift = keys.getByRole('button', { name: 'Shift', exact: true });
+    const ctrl = keys.getByRole('button', { name: 'Ctrl', exact: true });
+    const alt = keys.getByRole('button', { name: 'Alt', exact: true });
+    // model Android's keycode-229 textarea mutation
+    const insertImeText = (value: string) => textarea.evaluate((element, text) => {
+      // require xterm's textarea
+      if (!(element instanceof HTMLTextAreaElement)) throw new Error('xterm input is not a textarea');
+      const keydown = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Unidentified' });
+      Object.defineProperty(keydown, 'keyCode', { value: 229 });
+      element.dispatchEvent(keydown);
+      // mutate before xterm's deferred diff
+      element.value += text;
+      element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, data: text, inputType: 'insertText' }));
+      const keyup = new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Unidentified' });
+      Object.defineProperty(keyup, 'keyCode', { value: 229 });
+      element.dispatchEvent(keyup);
+    }, value);
+    await expect(fn).toBeVisible();
+    await expect(fn).toHaveAttribute('aria-pressed', 'false');
+    await expect(textarea).toBeFocused();
+
+    await fn.tap();
+    await expect(fn).toHaveAttribute('aria-pressed', 'true');
+    await expect(textarea).toBeFocused();
+    await insertImeText('5');
+    await expect.poll(() => paneInputText(page, 'agent-1')).toBe('\x1b[15~');
+    await fn.tap();
+    await page.keyboard.type('1');
+    await fn.tap();
+    await page.keyboard.type('1234567890');
+    await fn.tap();
+    await expect(fn).toHaveAttribute('aria-pressed', 'false');
+    await expect(textarea).toBeFocused();
+    await page.keyboard.type('0');
+
+    await fn.tap();
+    await ctrl.tap();
+    await page.keyboard.type('1');
+    await ctrl.tap();
+    await shift.tap();
+    await page.keyboard.type('5');
+    await ctrl.tap();
+    await alt.tap();
+    await page.keyboard.type('0');
+    await ctrl.tap();
+    await shift.tap();
+    await alt.tap();
+
+    // preserve non-digits, multi-character input and xterm escape sequences
+    await page.keyboard.type('a');
+    await insertImeText('12');
+    await page.keyboard.press('ArrowUp');
+    const escape = '\x1b';
+    const functionKeys = `${escape}OP${escape}OQ${escape}OR${escape}OS${escape}[15~${escape}[17~${escape}[18~${escape}[19~${escape}[20~${escape}[21~`;
+    await expect.poll(() => paneInputText(page, 'agent-1')).toBe(`${escape}[15~1${functionKeys}0${escape}[1;5P${escape}[15;2~${escape}[21;8~a12${escape}[A`);
+
+    const [keyBounds, modifierBounds, fnBounds, shiftBounds, altBounds] = await Promise.all([
+      keys.boundingBox(),
+      modifiers.boundingBox(),
+      fn.boundingBox(),
+      shift.boundingBox(),
+      alt.boundingBox()
+    ]);
+    // require measurable two-row controls
+    if (keyBounds === null || modifierBounds === null || fnBounds === null || shiftBounds === null || altBounds === null) throw new Error('mobile Fn keys have no layout bounds');
+    expect(fnBounds.x).toBeGreaterThan(shiftBounds.x + shiftBounds.width);
+    expect(fnBounds.x).toBeGreaterThan(altBounds.x + altBounds.width);
+    expect(fnBounds.y).toBeCloseTo(shiftBounds.y, 1);
+    expect(fnBounds.y + fnBounds.height).toBeCloseTo(altBounds.y + altBounds.height, 1);
+    expect(fnBounds.y).toBeCloseTo(modifierBounds.y, 1);
+    expect(fnBounds.y + fnBounds.height).toBeCloseTo(modifierBounds.y + modifierBounds.height, 1);
+    expect(keyBounds.x).toBeGreaterThanOrEqual(0);
+    expect(keyBounds.x + keyBounds.width).toBeLessThanOrEqual(390);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    await page.screenshot({ path: testInfo.outputPath('mobile-fn-output-390.png'), fullPage: true });
+  });
+});
+
 // preserve the current mode for desktop clicks and mobile taps
 for (const touch of [false, true]) {
   // give touch activation a real touch-capable browser context
