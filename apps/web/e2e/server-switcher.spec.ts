@@ -18,6 +18,7 @@ test('shows and switches the configured server on authentication and output scre
   let statusAvailable = true;
   const remoteServer = { name: 'Framework', url: 'https://framework.santosa.dev', icon: 'heart' };
   const server = { name: 'X1 Carbon', url: 'https://x1carbon.santosa.dev', icon: 'potato', remotes: [remoteServer] };
+  const revision = { sha: 'a1b2c3d4e5f6789012345678901234567890abcd', committedAt: '2026-09-06T14:22:31-07:00' };
   await page.addInitScript(() => {
     class MockWebSocket {
       static readonly CONNECTING = 0;
@@ -66,6 +67,8 @@ test('shows and switches the configured server on authentication and output scre
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
+    // publish the current server revision in its selector submenu
+    if (url.pathname === '/api/server/revision') return route.fulfill({ json: revision });
     // provide the mutable peer-attention fixture
     if (url.pathname === '/api/server-statuses') {
       // simulate an aggregate outage
@@ -172,7 +175,15 @@ test('shows and switches the configured server on authentication and output scre
   await expect(selector).toHaveAttribute('aria-expanded', 'true');
   const menu = page.getByRole('group', { name: 'Remote Agents servers' });
   await expect(menu).toBeVisible();
-  await expect(menu.locator('a, button')).toHaveCount(2);
+  await expect(menu.locator('.server-menu-item')).toHaveCount(2);
+  const details = menu.getByRole('group', { name: 'Current server details' });
+  await expect(details).toContainText('X1 Carbon');
+  await expect(details).toContainText('x1carbon.santosa.dev');
+  await expect(details.getByText(revision.sha.slice(0, 7))).toBeVisible();
+  await expect(details.locator('time')).toHaveAttribute('datetime', revision.committedAt);
+  await expect(details).toContainText('Up to date');
+  await expect(details.getByRole('button', { name: 'Rename Server' })).toBeVisible();
+  await expect(details.getByRole('button', { name: 'View upstream update' })).toHaveCount(0);
   const current = menu.locator('button.server-menu-item');
   const remote = menu.locator('a.server-menu-item');
   await expect(current).toHaveAttribute('aria-current', 'page');
@@ -294,7 +305,8 @@ test('leads the empty console tab row with the server selector', async ({ page }
   await expect(page.locator('.tabs > .server-switcher-settings-wrap').getByRole('button', { name: 'Global settings' })).toBeVisible();
   await lead.getByRole('button', { name: 'Switch server (X1 Carbon)' }).click();
   const menu = page.getByRole('group', { name: 'Remote Agents servers' });
-  await expect(menu.locator('a, button')).toHaveCount(1);
+  await expect(menu.locator('.server-menu-item')).toHaveCount(1);
+  await expect(menu.getByRole('group', { name: 'Current server details' }).getByRole('button', { name: 'Rename Server' })).toBeVisible();
   await expect(menu.locator('button.server-menu-item')).toHaveAttribute('aria-current', 'page');
 });
 
@@ -369,6 +381,36 @@ test('cycles one corner status dot through configured servers at narrow phone wi
   expect(dotBounds.width).toBe(6);
   expect(dotBounds.x + dotBounds.width).toBeLessThanOrEqual(buttonBounds.x + buttonBounds.width);
   expect(dotBounds.y).toBeGreaterThanOrEqual(buttonBounds.y);
+});
+
+test('adds a purple update turn to the server selector status cycle', async ({ page }) => {
+  await page.clock.install();
+  const server = { name: 'X1 Carbon', url: 'https://x1carbon.santosa.dev', icon: 'potato', remotes: [] };
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    // keep one configured server and one upstream update
+    if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device', server } });
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [] } });
+    if (path === '/api/server-statuses') return route.fulfill({ json: { servers: [{ ...server, attention: 'idle' }] } });
+    if (path === '/api/server/update-available') return route.fulfill({ json: { available: true } });
+    if (path === '/api/push/public-key') return route.fulfill({ json: {} });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  const selector = page.locator('.tab-row-lead .server-selector');
+  const dot = selector.locator(':scope > .server-switcher-attention');
+  await expect(selector).toHaveAccessibleName('Switch server (X1 Carbon) — update available');
+  await expect(selector).toHaveAttribute('aria-description', 'X1 Carbon — Idle');
+  await expect(dot).toHaveClass(/idle/u);
+  // update follows the server's own status in the same corner
+  await page.clock.runFor(1_000);
+  await expect(selector).toHaveAttribute('aria-description', 'X1 Carbon — Update available');
+  await expect(dot).toHaveClass(/update/u);
+  await expect(dot).toHaveCSS('background-color', 'rgb(203, 166, 247)');
+  await page.clock.runFor(1_000);
+  await expect(selector).toHaveAttribute('aria-description', 'X1 Carbon — Idle');
+  await expect(dot).toHaveClass(/idle/u);
+  await expect(dot).toHaveCount(1);
 });
 
 test('renders a single configured server as the current button', async ({ page }) => {

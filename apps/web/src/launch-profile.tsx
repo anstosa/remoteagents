@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useViewportFlyout } from './viewport-flyout.js';
 import { usePhoneLayout } from './panel-header.js';
 
@@ -15,6 +15,9 @@ export const agentKindLabel: Record<AgentKind, string> = { codex: 'Codex', omx: 
 export type AgentUpdateStatus = { kind: AgentKind; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string };
 type AgentLaunchSettings = { statuses: AgentUpdateStatus[]; updating?: AgentKind; errors: string[]; defaultAgent?: AgentKind; defaultPending: boolean; setDefaultAgent: (kind: AgentKind) => void; updateAgent: (kind: AgentKind) => void };
 export const AgentLaunchSettingsContext = createContext<AgentLaunchSettings | undefined>(undefined);
+// keep Codex account controls in the launcher without coupling this module to settings
+export type CodexAccountsMenu = { content: ReactNode; onOpen: () => void; onClose: () => void };
+export const CodexAccountsMenuContext = createContext<CodexAccountsMenu | undefined>(undefined);
 
 // The capability record the Dashboard publishes per registered kind (ADR 0002). The web
 // reads presence and reasons; it never re-derives capabilities. `sandbox*` stay undefined
@@ -73,18 +76,30 @@ const launchHint = (adapters: AdapterCapabilities | undefined, resolution: Launc
 export type LaunchMenuEntry = { key: string; label: string; detail: string; icon: ReactNode; onSelect: () => void };
 
 // the entries after the kinds, divided from them
-function LaunchMenuEntries({ entries }: { entries: readonly LaunchMenuEntry[] }) {
+function LaunchMenuEntries({ entries, divider = true }: { entries: readonly LaunchMenuEntry[]; divider?: boolean }) {
   if (entries.length === 0) return null;
-  return <><hr className="more-menu-divider" />{entries.map(entry => <button key={entry.key} type="button" role="menuitem" className="launch-row launch-row-entry" onClick={entry.onSelect}><span className="launch-kind-mark launch-entry-icon" aria-hidden="true">{entry.icon}</span><span className="launch-row-copy"><strong>{entry.label}</strong><small>{entry.detail}</small></span></button>)}</>;
+  return <>{divider && <hr className="more-menu-divider" />}{entries.map(entry => <button key={entry.key} type="button" role="menuitem" className="launch-row launch-row-entry" onClick={entry.onSelect}><span className="launch-kind-mark launch-entry-icon" aria-hidden="true">{entry.icon}</span><span className="launch-row-copy"><strong>{entry.label}</strong><small>{entry.detail}</small></span></button>)}</>;
 }
 
 // The menu of launch actions: one row per configured kind (the resolved one annotated
 // with why), unavailable kinds disabled with their reason, then "without sandbox" rows for
 // kinds that default to Sandboxed, a footnote when a remembered kind was skipped, and last any
 // `entries` the caller adds. `launchDisabled` holds every launch row back, leaving the entries.
-export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], launchDisabled = false }: { verb: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice: LaunchChoice) => void; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean }) {
+export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], launchDisabled = false, accounts, accountsView: controlledAccountsView, onAccountsViewChange }: { verb: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice: LaunchChoice) => void; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean; accounts?: CodexAccountsMenu; accountsView?: boolean; onAccountsViewChange?: (visible: boolean) => void }) {
   const adapters = useContext(AdaptersContext);
   const settings = useContext(AgentLaunchSettingsContext);
+  const [localAccountsView, setLocalAccountsView] = useState(false);
+  // preserve the toolbar submenu across desktop and phone render paths
+  const accountsView = controlledAccountsView ?? localAccountsView;
+  const setAccountsView = onAccountsViewChange ?? setLocalAccountsView;
+  // fetch account state only while its launcher submenu is visible
+  useEffect(() => {
+    if (!accountsView || accounts === undefined) return;
+    accounts.onOpen();
+    return accounts.onClose;
+  }, [accountsView, accounts?.onOpen, accounts?.onClose]);
+  // return to the kind list without closing the launcher flyout
+  if (accountsView && accounts !== undefined) return <div className="launch-accounts-submenu" role="group" aria-label="Codex accounts"><button className="launch-submenu-back" type="button" onClick={() => setAccountsView(false)}>‹ Back to agents</button>{accounts.content}</div>;
   const kinds = configuredKinds(adapters);
   if (kinds.length === 0) return <><p className="launch-menu-empty">No agents configured. Add an <code>adapters</code> entry to the console config to launch agents.</p><LaunchMenuEntries entries={entries} /></>;
   const unsandboxable = kinds.filter(kind => adapters?.[kind]?.launchable === true && defaultSandboxed(adapters?.[kind]));
@@ -104,7 +119,7 @@ export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], la
         <KindMark kind={kind} />
         <span className="launch-row-copy"><strong>{agentKindLabel[kind]}{resolved && <em> · {originCopy(resolution?.origin)}</em>}</strong>{versionLabel !== undefined && <span className="launch-agent-version">{versionLabel}</span>}<small>{capability.launchable ? sandboxCopy(kind, capability, sandboxed) : capability.unavailableReason ?? 'Unavailable'}</small></span>
         {capability.launchable && sandboxed && <LockIcon />}
-      </button>{/* keep an unavailable persisted default visible */}{settings !== undefined && (capability.launchable || settings.defaultAgent === kind) && <button type="button" role="menuitemradio" className="launch-agent-default" aria-label={`Make ${agentKindLabel[kind]} default`} aria-checked={settings.defaultAgent === kind} title={settings.defaultAgent === kind ? 'Default agent' : `Make ${agentKindLabel[kind]} default`} disabled={!capability.launchable || settings.defaultAgent === kind || settings.defaultPending} onClick={() => settings.setDefaultAgent(kind)}>{settings.defaultAgent === kind ? '★' : '☆'}</button>}{status?.updateAvailable && <button type="button" role="menuitem" className="launch-agent-update" aria-label={`Update ${agentKindLabel[kind]} to ${status.latestVersion ?? 'latest'}`} disabled={settings?.updating !== undefined} onClick={() => settings?.updateAgent(kind)}>{settings?.updating === kind ? <><span className="spinner" />Updating…</> : 'Update'}</button>}</div>;
+      </button>{/* keep the codex submenu next to launch */}{kind === 'codex' && accounts !== undefined && <button type="button" role="menuitem" className="launch-agent-accounts" aria-label="Codex accounts" aria-haspopup="menu" onClick={() => setAccountsView(true)}>Accounts <span aria-hidden="true">›</span></button>}{/* put update before the default star */}{status?.updateAvailable && <button type="button" role="menuitem" className="launch-agent-update" aria-label={`Update ${agentKindLabel[kind]} to ${status.latestVersion ?? 'latest'}`} disabled={settings?.updating !== undefined} onClick={() => settings?.updateAgent(kind)}>{settings?.updating === kind ? <><span className="spinner" />Updating…</> : 'Update'}</button>}{/* keep an unavailable persisted default visible */}{settings !== undefined && (capability.launchable || settings.defaultAgent === kind) && <button type="button" role="menuitemradio" className="launch-agent-default" aria-label={`Make ${agentKindLabel[kind]} default`} aria-checked={settings.defaultAgent === kind} title={settings.defaultAgent === kind ? 'Default agent' : `Make ${agentKindLabel[kind]} default`} disabled={!capability.launchable || settings.defaultAgent === kind || settings.defaultPending} onClick={() => settings.setDefaultAgent(kind)}>{settings.defaultAgent === kind ? '★' : '☆'}</button>}</div>;
     })}
     {/* retain distinct version and operation errors */}{settings?.errors.map(error => <p key={error} className="launch-menu-error" role="alert">{error}</p>)}
     {unsandboxable.length > 0 && <><hr className="more-menu-divider" /><p className="launch-menu-heading launch-menu-subheading">Without sandbox — this launch only</p>{unsandboxable.map(kind => <button key={`${kind}-unsandboxed`} type="button" role="menuitem" className="launch-row launch-row-unsandboxed" disabled={launchDisabled} onClick={() => onLaunch({ kind, sandboxed: false })}><KindMark kind={kind} /><span className="launch-row-copy"><strong>{agentKindLabel[kind]}</strong><small>{sandboxCopy(kind, adapters?.[kind], false)}</small></span><UnlockIcon /></button>)}</>}
@@ -127,11 +142,19 @@ export type LaunchPrimary = { label: string; ariaLabel: string; onSelect: () => 
 // dashboard carries no resolution (`resolution === undefined`) the desktop control degrades to a
 // single plain "Launch agent" that launches without a kind, as before the split button. On a
 // phone, a single button always opens the agent menu instead of launching a default kind.
-export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch, disabled = false, disabledReason, pending = false, compact = false, quiet = false, primary, entries = [], launchDisabled = false }: { verb?: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice?: LaunchChoice) => void; disabled?: boolean; disabledReason?: string; pending?: boolean; compact?: boolean; quiet?: boolean; primary?: LaunchPrimary; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean }) {
+export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch, disabled = false, disabledReason, pending = false, compact = false, quiet = false, primary, entries = [], launchDisabled = false, placeActionsOnly = false, alwaysShowMenu = false, showUpdateIndicator = false }: { verb?: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice?: LaunchChoice) => void; disabled?: boolean; disabledReason?: string; pending?: boolean; compact?: boolean; quiet?: boolean; primary?: LaunchPrimary; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean; placeActionsOnly?: boolean; alwaysShowMenu?: boolean; showUpdateIndicator?: boolean }) {
   const adapters = useContext(AdaptersContext);
+  const accounts = useContext(CodexAccountsMenuContext);
+  const settings = useContext(AgentLaunchSettingsContext);
+  // reserve update attention for the persistent toolbar Launch control
+  const updatesAvailable = showUpdateIndicator && settings?.statuses.some(status => status.updateAvailable) === true;
   const phone = usePhoneLayout();
   const [open, setOpen] = useState(false);
-  const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(open);
+  const [accountsView, setAccountsView] = useState(false);
+  // close both flyout pages for every dismissal path
+  const closeMenu = useCallback(() => { setOpen(false); setAccountsView(false); }, []);
+  // remeasure the recreated flyout when the phone control replaces the desktop split
+  const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(open, { align: phone ? 'center' : 'end' });
   // an outside press closes the menu, including one inside the "+" launcher flyout these
   // rows live in — its backdrop only covers presses outside itself
   useEffect(() => {
@@ -139,50 +162,68 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
     const close = (event: MouseEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
+      // keep the account submenu behind its own rename and login dialogs
+      if (target instanceof Element && target.closest('[data-launch-submenu-dialog]')) return;
       if (anchorRef.current?.contains(target) || flyoutRef.current?.contains(target)) return;
-      setOpen(false);
+      closeMenu();
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      // leave account dialogs to their own escape handling
+      if (event.key !== 'Escape' || document.querySelector('[data-launch-submenu-dialog]')) return;
+      closeMenu();
     };
     document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [open]);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', closeOnEscape); };
+  }, [open, closeMenu]);
   const primaryClass = compact ? 'launch-compact' : 'queue';
-  const launch = (choice?: LaunchChoice) => { setOpen(false); onLaunch(choice); };
+  const launch = (choice?: LaunchChoice) => { closeMenu(); onLaunch(choice); };
   // an entry closes the menu before it acts, as a launch does
-  const menuEntries = entries.map(entry => ({ ...entry, onSelect: () => { setOpen(false); entry.onSelect(); } }));
-  const primaryButton = primary === undefined ? undefined : <button type="button" className={`${primaryClass} launch-primary`} aria-label={primary.ariaLabel} disabled={disabled} onClick={() => { setOpen(false); primary.onSelect(); }}>{primary.label}</button>;
+  const menuEntries = entries.map(entry => ({ ...entry, onSelect: () => { closeMenu(); entry.onSelect(); } }));
+  const primaryButton = primary === undefined ? undefined : <button type="button" className={`${primaryClass} launch-primary`} aria-label={primary.ariaLabel} disabled={disabled} onClick={() => { closeMenu(); primary.onSelect(); }}>{primary.label}</button>;
   // both phone and desktop controls open the same anchored menu, including extra actions
-  const menuLabel = entries.length > 0 ? 'More ways to open' : 'Choose agent';
-  const menu = <LaunchMenu verb={verb} label={label} resolution={resolution} onLaunch={launch} entries={menuEntries} launchDisabled={launchDisabled} />;
-  const flyout = open && createPortal(<div ref={flyoutRef} style={style} className="more-menu flyout-menu launch-menu" role="menu" aria-label={menuLabel}>{menu}</div>, document.body);
+  let menuLabel = 'Choose agent';
+  // name the place and mixed-action flyouts explicitly
+  if (placeActionsOnly) menuLabel = 'More workspace actions';
+  else if (entries.length > 0) menuLabel = 'More ways to open';
+  // the + flyout lists only place actions; agent management belongs to the toolbar
+  const menu = placeActionsOnly ? <LaunchMenuEntries entries={menuEntries} divider={false} /> : <LaunchMenu verb={verb} label={label} resolution={resolution} onLaunch={launch} entries={menuEntries} launchDisabled={launchDisabled} accounts={accounts} accountsView={accountsView} onAccountsViewChange={setAccountsView} />;
+  const flyout = open && createPortal(<div ref={flyoutRef} style={style} className="more-menu flyout-menu launch-menu" role="menu" aria-label={menuLabel} onKeyDown={event => { /* close the chooser on escape */ if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeMenu(); } }}>{menu}</div>, document.body);
+  // compact place rows and the empty card keep a direct action without agent details
+  if (placeActionsOnly && entries.length === 0) return primaryButton ?? <button type="button" className={primaryClass} aria-label={`Launch ${label}`} disabled={disabled || launchDisabled || pending || (resolution !== undefined && resolution.kind === undefined)} onClick={() => launch(resolution?.kind === undefined ? undefined : { kind: resolution.kind, sandboxed: defaultSandboxed(adapters?.[resolution.kind]) })}>{pending ? <span className="spinner" /> : null}{verb}</button>;
   // launcher rows keep their split action even on a phone; the full-size Launch uses one chooser
   if (phone && !compact && primary === undefined) {
     return <>
-      <span className={`launch-split launch-menu-only${quiet ? ' quiet' : ''}`} ref={anchorRef}>
-        <button type="button" className="queue launch-menu-trigger" aria-label={`${verb} agent`} aria-haspopup="menu" aria-expanded={open} disabled={disabled || pending} title={disabled ? disabledReason : undefined} onClick={() => setOpen(value => !value)}>
+      <span className={`launch-split launch-menu-only${quiet ? ' quiet' : ''}${updatesAvailable ? ' updates-available' : ''}`} ref={anchorRef}>
+        <button type="button" className="queue launch-menu-trigger" aria-label={updatesAvailable ? `${verb} agent — update available` : `${verb} agent`} aria-haspopup="menu" aria-expanded={open} disabled={disabled || pending} title={disabled ? disabledReason : undefined} onClick={() => { /* toggle the same menu on phone */ if (open) closeMenu(); else setOpen(true); }}>
           {pending ? <span className="spinner" /> : resolution?.kind === undefined ? <span className="launch-kind-mark" aria-hidden="true">+</span> : <KindMark kind={resolution.kind} />}
           <span className="launch-menu-trigger-label">{verb} agent</span><span className="flyout-caret" aria-hidden="true" />
         </button>
+        {updatesAvailable && <span className="launch-update-dot" aria-hidden="true" />}
       </span>
       {flyout}
     </>;
   }
   // no resolution from the server: a plain, chevron-less launch of the default kind (or the
   // replacement primary), rendered exactly like the pre-split-button launch control
-  if (resolution === undefined) return primaryButton ?? <button type="button" className={`${primaryClass}${quiet ? ' launch-quiet' : ''}`} disabled={disabled || launchDisabled || pending} onClick={() => launch()}>{pending ? <span className="spinner" /> : null}{actionCopy(verb, undefined)}</button>;
+  if (resolution === undefined && !alwaysShowMenu && !placeActionsOnly) return primaryButton ?? <button type="button" className={`${primaryClass}${quiet ? ' launch-quiet' : ''}`} disabled={disabled || launchDisabled || pending} onClick={() => launch()}>{pending ? <span className="spinner" /> : null}{actionCopy(verb, undefined)}</button>;
   const none = configuredKinds(adapters).length === 0;
-  const resolvedKind = resolution.kind;
+  const resolvedKind = resolution?.kind;
   const sandboxed = defaultSandboxed(resolvedKind === undefined ? undefined : adapters?.[resolvedKind]);
-  const hint = primary === undefined ? launchHint(adapters, resolution) : undefined;
+  const hint = primary === undefined && resolution !== undefined && !placeActionsOnly ? launchHint(adapters, resolution) : undefined;
   // let the icon identify compact agents without widening the new-task column
-  const visibleAction = (compact || quiet) && resolvedKind !== undefined ? verb : actionCopy(verb, resolvedKind);
-  const primaryTitle = (disabled ? disabledReason : undefined) ?? hint ?? (resolvedKind === undefined ? undefined : `${agentKindLabel[resolvedKind]} — ${originCopy(resolution.origin)}${sandboxed ? ' — sandboxed' : ''}`);
+  let visibleAction = actionCopy(verb, resolvedKind);
+  // use a short verb for place and compact launch controls
+  if (placeActionsOnly || ((compact || quiet) && resolvedKind !== undefined)) visibleAction = verb;
+  const primaryTitle = (disabled ? disabledReason : undefined) ?? hint ?? (placeActionsOnly || resolvedKind === undefined ? undefined : `${agentKindLabel[resolvedKind]} — ${originCopy(resolution?.origin)}${sandboxed ? ' — sandboxed' : ''}`);
   return <>
     {!compact && hint !== undefined && <small className="launch-hint">{hint}</small>}
-    <span className={`launch-split${compact ? ' compact' : ''}${quiet ? ' quiet' : ''}`} role="group" aria-label={`${verb} agent`} ref={anchorRef}>
-      {primaryButton ?? <button type="button" className={`${primaryClass} launch-primary`} aria-label={actionCopy(verb, resolvedKind)} disabled={resolvedKind === undefined || disabled || launchDisabled || pending} title={primaryTitle} onClick={() => resolvedKind !== undefined && launch({ kind: resolvedKind, sandboxed })}>
-        {pending ? <span className="spinner" /> : resolvedKind !== undefined && <KindMark kind={resolvedKind} />}<span className="launch-primary-label">{visibleAction}</span>{sandboxed && <LockIcon />}
+    <span className={`launch-split${compact ? ' compact' : ''}${quiet ? ' quiet' : ''}${updatesAvailable ? ' updates-available' : ''}`} role="group" aria-label={`${verb} agent`} ref={anchorRef}>
+      {primaryButton ?? <button type="button" className={`${primaryClass} launch-primary`} aria-label={placeActionsOnly ? `${verb} ${label}` : actionCopy(verb, resolvedKind)} disabled={(resolution !== undefined && resolvedKind === undefined) || disabled || launchDisabled || pending} title={primaryTitle} onClick={() => launch(resolvedKind === undefined ? undefined : { kind: resolvedKind, sandboxed })}>
+        {pending ? <span className="spinner" /> : !placeActionsOnly && resolvedKind !== undefined && <KindMark kind={resolvedKind} />}<span className="launch-primary-label">{visibleAction}</span>{!placeActionsOnly && sandboxed && <LockIcon />}
       </button>}
-      <button type="button" className={`launch-chevron${compact ? ' compact' : ''}`} aria-label={menuLabel} aria-haspopup="menu" aria-expanded={open} disabled={(none && entries.length === 0) || disabled || pending} onClick={() => setOpen(value => !value)}><ChevronIcon /></button>
+      <button type="button" className={`launch-chevron${compact ? ' compact' : ''}`} aria-label={updatesAvailable ? `${menuLabel} — update available` : menuLabel} aria-haspopup="menu" aria-expanded={open} disabled={(none && entries.length === 0) || disabled || pending} onClick={() => { /* toggle the split flyout */ if (open) closeMenu(); else setOpen(true); }}><ChevronIcon /></button>
+      {updatesAvailable && <span className="launch-update-dot" aria-hidden="true" />}
     </span>
     {flyout}
   </>;

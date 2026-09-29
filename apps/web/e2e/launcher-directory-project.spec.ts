@@ -49,7 +49,7 @@ test('a non-git directory Project offers an in-place Launch and keeps New worktr
 
   // the Project-level Launch button launches the resolved kind in place, in one click
   const projectRow = launcher.locator('.launcher-project .launcher-row').last();
-  await projectRow.getByRole('button', { name: 'Launch Codex' }).click();
+  await projectRow.getByRole('button', { name: 'Launch Notes' }).click();
   await expect.poll(() => posts).toEqual([{ path: '/api/projects/notes/launch', body: { kind: 'codex', sandboxed: false } }]);
 });
 
@@ -86,7 +86,7 @@ test('Terminal from + works at a directory Project and at Scratch, creating a sh
   const terminalFrom = async (row: string) => {
     await page.locator('.new-agent-tab').click();
     const launcher = page.getByRole('group', { name: 'Agent launcher' });
-    await launcher.locator('.launcher-row').filter({ hasText: row }).getByRole('button', { name: 'More ways to open' }).click();
+    await launcher.locator('.launcher-row').filter({ hasText: row }).getByRole('button', { name: 'More workspace actions' }).click();
     await page.locator('.launch-menu').getByRole('menuitem', { name: /^Terminal/u }).click();
   };
 
@@ -106,12 +106,12 @@ test('Empty workspace from + at a directory Project shows its path and warns unt
   await mount(page, { generation: 1, adapters: { codex }, agents: [], projects: [directoryProject()], places: [{ id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', pinned: false }] });
   await page.locator('.new-agent-tab').click();
   const launcher = page.getByRole('group', { name: 'Agent launcher' });
-  await launcher.locator('.launcher-row').filter({ hasText: 'Notes' }).getByRole('button', { name: 'More ways to open' }).click();
+  await launcher.locator('.launcher-row').filter({ hasText: 'Notes' }).getByRole('button', { name: 'More workspace actions' }).click();
   await page.locator('.launch-menu').getByRole('menuitem', { name: /^Empty workspace/u }).click();
   await expect(page.getByRole('tab', { name: /^Notes —/u })).toHaveAttribute('aria-selected', 'true');
   const empty = page.getByRole('region', { name: 'Empty workspace' });
   await expect(empty).toContainText('/data/notes');
-  await expect(empty.getByRole('button', { name: 'Launch Codex' })).toBeVisible();
+  await expect(empty.getByRole('button', { name: 'Launch Notes' })).toBeVisible();
   // a Place without git has no Code panel
   await expect(empty.getByRole('button', { name: 'Code', exact: true })).toHaveCount(0);
   await expect(empty).toContainText('closes when you switch away');

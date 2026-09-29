@@ -1,11 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
 import { installPaneMock, paneInputList, pushBytes, pushMetadata, pushQuestion } from './pane-stream-mock';
 
-// open the reviewed host update from global settings
+// open the reviewed host update from the current server submenu
 const openUpstreamUpdate = async (page: Page) => {
-  await page.getByRole('button', { name: /Global settings/u }).click();
-  const settings = page.getByRole('dialog', { name: 'Settings' });
-  await settings.getByRole('button', { name: 'View upstream update' }).click();
+  const selector = page.getByRole('button', { name: /^Switch server/u });
+  await expect(selector).toHaveAccessibleName(/update available/u);
+  await selector.click();
+  const server = page.getByRole('group', { name: 'Current server details' });
+  await server.getByRole('button', { name: 'View upstream update' }).click();
 };
 
 // let React consume one completed mock response and paint its resulting state
@@ -74,11 +76,17 @@ test('reloads a stale client instead of restarting the server', async ({ page })
   const tabs = page.getByRole('tablist');
   await expect(tabs.getByRole('button', { name: 'Reload local update' })).toHaveCount(0);
   await expect(tabs.getByRole('button', { name: 'View upstream update' })).toHaveCount(0);
-  await page.getByRole('button', { name: /Global settings/u }).click();
-  const settings = page.getByRole('dialog', { name: 'Settings' });
-  const server = settings.getByRole('group', { name: 'Server' });
+  const selector = page.getByRole('button', { name: /^Switch server/u });
+  await selector.click();
+  const server = page.getByRole('group', { name: 'Current server details' });
   await expect(server.getByText(revisionSha.slice(0, 7))).toBeVisible();
   await expect(server.locator('time')).toHaveAttribute('datetime', committedAt);
+  await expect(server.getByRole('button', { name: 'Rename Server' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('group', { name: 'Remote Agents servers' })).toHaveCount(0);
+  await page.getByRole('button', { name: /Global settings/u }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings' });
+  await expect(settings.getByRole('group', { name: 'Server' })).toHaveCount(0);
   const reload = settings.getByRole('button', { name: 'Reload local update' });
   await expect(reload).toBeVisible();
   await reload.click();
@@ -147,8 +155,11 @@ test('opens the commit review before starting and retains update failures in the
   await expect(dialog).toBeHidden();
   const visibleStatusChecks = updateStatusChecks;
   await expect.poll(() => updateStatusChecks).toBeGreaterThan(visibleStatusChecks);
-  const reopen = page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: 'Reopen server update' });
-  await expect(reopen).toBeFocused();
+  const selector = page.getByRole('button', { name: /^Switch server/u });
+  await expect(selector).toBeFocused();
+  await expect(selector).toHaveAccessibleName(/update available/u);
+  await selector.click();
+  const reopen = page.getByRole('group', { name: 'Current server details' }).getByRole('button', { name: 'Reopen server update' });
   await reopen.click();
   await expect(dialog).toBeVisible();
   await expect(dialog).toBeFocused();
@@ -206,9 +217,6 @@ test('opens an advisor for flagged update paths before enabling Update', async (
 
   await page.goto('/');
   await openUpstreamUpdate(page);
-  const settingsPage = page.locator('#global-settings-page');
-  await expect(settingsPage).toHaveAttribute('inert', '');
-  await expect(settingsPage).toHaveAttribute('aria-hidden', 'true');
   const dialog = page.getByRole('dialog', { name: 'Review update' });
   await expect(dialog.getByText('Change server configuration')).toBeVisible();
   await expect(dialog.getByText('.env.example')).toBeVisible();
@@ -299,9 +307,7 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toBeVisible();
   await dialog.getByRole('button', { name: 'Close server update' }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(settingsPage).not.toHaveAttribute('inert', '');
-  await expect(settingsPage).not.toHaveAttribute('aria-hidden', 'true');
-  await expect(settingsPage.getByRole('button', { name: 'View upstream update' })).toBeFocused();
+  await expect(page.getByRole('button', { name: /^Switch server/u })).toBeFocused();
   await expect.poll(() => advisorStops).toBe(1);
 });
 

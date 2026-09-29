@@ -23,3 +23,13 @@ export async function mockAccountSocket(page: Page): Promise<void> {
     Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
   });
 }
+
+// open the shared Codex account submenu from the persistent launcher
+export async function openCodexAccounts(page: Page, navigate = true) {
+  // preserve the page when checking a submenu refresh
+  if (navigate) await page.goto('/');
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: /^(Choose agent|Launch agent)$/u }).click();
+  const menu = page.getByRole('menu', { name: 'Choose agent', exact: true });
+  await menu.getByRole('menuitem', { name: 'Codex accounts', exact: true }).click();
+  return menu.getByRole('group', { name: 'Codex accounts', exact: true });
+}

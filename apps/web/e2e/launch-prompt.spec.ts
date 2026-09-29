@@ -108,6 +108,13 @@ const attach = async (page: Page, name: string, contents: string) => {
 const openAgentLauncher = async (page: Page) => {
   await page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: 'Launch agent', exact: true }).click();
 };
+// select the scratch header or a project place action
+const launcherLaunchButton = (page: Page, label: string) => {
+  const launcher = page.getByRole('group', { name: 'Agent launcher' });
+  // scratch is the launcher header rather than a place row
+  if (label === 'Scratch') return launcher.getByRole('button', { name: 'Launch ~ Scratch' });
+  return launcher.locator('.launcher-row').filter({ hasText: label }).getByRole('button', { name: `Launch ${label}` });
+};
 
 // mount one scratch-like lifecycle
 const mountPendingSession = async (page: Page, scope: 'scratch' | 'directory', options: { fail?: boolean; withAnchor?: boolean } = {}): Promise<PendingSessionHarness> => {
@@ -189,8 +196,7 @@ const mountPendingSession = async (page: Page, scope: 'scratch' | 'directory', o
 const verifyPendingSessionHandoff = async (page: Page, scope: 'scratch' | 'directory') => {
   const harness = await mountPendingSession(page, scope);
   await openAgentLauncher(page);
-  const launcher = page.getByRole('group', { name: 'Agent launcher' });
-  await launcher.locator('.launcher-row').filter({ hasText: harness.label }).getByRole('button', { name: 'Launch Codex' }).click();
+  await launcherLaunchButton(page, harness.label).click();
   await expect.poll(harness.launchRequests).toBe(1);
 
   const composer = page.getByRole('region', { name: 'Prompt composer' });
@@ -320,7 +326,7 @@ test('shows the editable launch composer without overflowing a mobile viewport',
   const harness = await mountLifecycle(page);
   // the phone launch action opens a chooser before starting the selected agent
   await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Launch agent' }).click();
-  await page.getByRole('menu', { name: 'Choose agent' }).getByRole('menuitem', { name: /^Codex/u }).click();
+  await page.getByRole('menu', { name: 'Choose agent' }).getByRole('menuitem', { name: /^Codex ·/u }).click();
   await expect.poll(harness.attempts).toBe(1);
 
   const composer = page.getByRole('region', { name: 'Prompt composer' });
@@ -357,7 +363,7 @@ test('retains an unpinned worktree tab when a held launch fails after drafting',
   const harness = await mountLifecycle(page, { failFirst: true, holdFailure: true, pinned: false });
   await openAgentLauncher(page);
   const launcher = page.getByRole('group', { name: 'Agent launcher' });
-  await launcher.locator('.launcher-row').filter({ hasText: 'Cora' }).getByRole('button', { name: 'Launch Codex' }).click();
+  await launcher.locator('.launcher-row').filter({ hasText: 'Cora' }).getByRole('button', { name: 'Launch Cora' }).click();
   await expect.poll(harness.attempts).toBe(1);
 
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
@@ -429,7 +435,7 @@ test('keeps one returned scratch launch pending beyond the discovery timeout', a
   await page.clock.install();
   const harness = await mountPendingSession(page, 'scratch');
   await openAgentLauncher(page);
-  await page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' }).click();
+  await launcherLaunchButton(page, 'Scratch').click();
   await expect.poll(harness.launchRequests).toBe(1);
 
   const composer = page.getByRole('region', { name: 'Prompt composer' });
@@ -443,8 +449,8 @@ test('keeps one returned scratch launch pending beyond the discovery timeout', a
   await expect(page.getByRole('status', { name: 'Starting Scratch' })).toBeVisible();
   await expect(prompt).toHaveValue('Late scratch handoff');
   await expect(page.getByLabel('Selected attachments')).toContainText('late-context.txt');
-  // no retry while the launch is still under way: it would sit in the row beneath the tabs
-  await expect(page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Launch Codex' })).toHaveCount(0);
+  // the persistent launch stays visible, while this pending session offers no retry
+  await expect(page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Launch Codex' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Discard failed launch' })).toHaveCount(0);
   expect(harness.launchRequests()).toBe(1);
 
@@ -465,7 +471,7 @@ test('keeps one returned scratch launch pending beyond the discovery timeout', a
 test('confirms and discards a failed directory launch without server cleanup', async ({ page }) => {
   const harness = await mountPendingSession(page, 'directory', { fail: true, withAnchor: true });
   await openAgentLauncher(page);
-  await page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: 'Docs' }).getByRole('button', { name: 'Launch Codex' }).click();
+  await page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: 'Docs' }).getByRole('button', { name: 'Launch Docs' }).click();
   await expect.poll(harness.launchRequests).toBe(1);
 
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
@@ -526,7 +532,7 @@ test('confirms and discards a failed directory launch without server cleanup', a
 test('keeps the scratch composer selected when its agent appears before the launch response', async ({ page }) => {
   const harness = await mountPendingSession(page, 'scratch');
   await openAgentLauncher(page);
-  await page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' }).click();
+  await launcherLaunchButton(page, 'Scratch').click();
   await expect.poll(harness.launchRequests).toBe(1);
 
   const pendingTab = page.getByRole('tab', { name: 'Scratch — Starting agent' });
@@ -558,7 +564,7 @@ test('keeps the scratch composer selected when its agent appears before the laun
 test('does not steal selection when a scratch launch completes in the background', async ({ page }) => {
   const harness = await mountPendingSession(page, 'scratch', { withAnchor: true });
   await openAgentLauncher(page);
-  await page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' }).click();
+  await launcherLaunchButton(page, 'Scratch').click();
   await expect.poll(harness.launchRequests).toBe(1);
   await page.getByRole('textbox', { name: 'Prompt' }).fill('Background scratch draft');
   await attach(page, 'background-context.txt', 'background context');

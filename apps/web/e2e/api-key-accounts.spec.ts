@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { mockAccountSocket } from './account-fixture';
+import { mockAccountSocket, openCodexAccounts } from './account-fixture';
 
 // provide isolated accounts without touching real credentials
 async function setupAccounts(page: Page) {
@@ -14,7 +14,7 @@ async function setupAccounts(page: Page) {
     // restore one controlling browser
     if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'account-csrf', active: true, deviceName: 'Test device', server: { name: 'Test server', url: 'https://agents.example.com', remotes: [] } } });
     // expose configured Codex without live agents
-    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } }, agents: [], projects: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } }, agents: [], projects: [], scratchLaunch: { kind: 'codex', origin: 'default' }, cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
     // authorize the inert dashboard socket
     if (path === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     // avoid unrelated update indicators
@@ -45,11 +45,10 @@ async function setupAccounts(page: Page) {
   return state;
 }
 
-// open the add popup through global settings
+// open the add popup through the Codex account submenu
 async function openAccountDialog(page: Page) {
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Global settings' }).click();
-  await page.getByRole('dialog', { name: 'Settings', exact: true }).getByRole('button', { name: '+ Add account' }).click();
+  const accounts = await openCodexAccounts(page);
+  await accounts.getByRole('button', { name: '+ Add account' }).click();
   return page.getByRole('dialog', { name: 'Add ChatGPT account', exact: true });
 }
 
@@ -90,14 +89,14 @@ test('adds a masked API key without changing the selected account', async ({ pag
   expect(state.saved).toEqual([{ apiKey: 'sk-synthetic-test-only' }]);
   expect(state.csrf).toBe('account-csrf');
   expect(state.cancelled).toEqual(['device-1']);
-  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
-  await expect(settings.getByRole('radio', { name: 'personal@example.com' })).toHaveAttribute('aria-checked', 'true');
-  const savedKey = settings.getByRole('radio', { name: /API key \(API Key\)/u });
+  const accounts = page.getByRole('group', { name: 'Codex accounts', exact: true });
+  await expect(accounts.getByRole('radio', { name: 'personal@example.com' })).toHaveAttribute('aria-checked', 'true');
+  const savedKey = accounts.getByRole('radio', { name: /API key \(API Key\)/u });
   await expect(savedKey).toHaveAttribute('aria-checked', 'false');
   await expect(savedKey.getByText('API key (API Key)', { exact: true })).toBeVisible();
-  await expect(settings.getByRole('status')).toContainText('API key added. Select it to use it.');
-  await expect(settings).not.toContainText('account-2');
-  await settings.getByRole('button', { name: 'Rename API key', exact: true }).click();
+  await expect(accounts.getByRole('status')).toContainText('API key added. Select it to use it.');
+  await expect(accounts).not.toContainText('account-2');
+  await accounts.getByRole('button', { name: 'Rename API key', exact: true }).click();
   const rename = page.getByRole('dialog', { name: 'Rename API key', exact: true });
   await expect(rename.getByLabel('API key name', { exact: true })).toHaveValue('API key');
   await expect(rename).not.toContainText('account-2');
@@ -105,11 +104,11 @@ test('adds a masked API key without changing the selected account', async ({ pag
   // verify no browser storage retains the pasted key
   const storage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
   expect(storage).not.toContain('sk-synthetic-test-only');
-  await settings.getByRole('button', { name: '+ Add account' }).click();
+  await accounts.getByRole('button', { name: '+ Add account' }).click();
   await expect(input).toHaveValue('');
   await input.fill('sk-cancelled-test-only');
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await settings.getByRole('button', { name: '+ Add account' }).click();
+  await accounts.getByRole('button', { name: '+ Add account' }).click();
   await expect(input).toHaveValue('');
   expect(errors).toEqual([]);
 });
@@ -128,15 +127,15 @@ test('reuses an already selected API-key account', async ({ page }) => {
   await dialog.getByLabel('API key', { exact: true }).fill('sk-synthetic-test-only');
   await dialog.getByRole('button', { name: 'Add API key', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
-  const rows = settings.getByRole('radiogroup', { name: 'ChatGPT accounts' }).getByRole('radio');
+  const accounts = page.getByRole('group', { name: 'Codex accounts', exact: true });
+  const rows = accounts.getByRole('radiogroup', { name: 'ChatGPT accounts' }).getByRole('radio');
   await expect(rows).toHaveCount(2);
   await expect(rows.first()).toHaveAccessibleName(/Production \(API Key\)/u);
   await expect(rows.first()).toHaveAttribute('aria-checked', 'true');
   await expect(rows.first().getByText('$1.25', { exact: true })).toBeVisible();
   await expect(rows.first().getByText('$8.50', { exact: true })).toBeVisible();
   await expect(rows.first()).not.toContainText('Unavailable');
-  await expect(settings.getByRole('status')).toContainText('Production saved. This account is already selected.');
+  await expect(accounts.getByRole('status')).toContainText('Production saved. This account is already selected.');
 });
 
 // prevent device authentication from overwriting a failed API-key account
@@ -144,15 +143,13 @@ test('does not offer ChatGPT repair or reset actions for an API-key account', as
   await setupAccounts(page);
   // expose a failed API-key account with stale usage metadata
   await page.route('**/api/codex/accounts', route => route.fulfill({ json: { accounts: [{ id: 'account-1', label: 'API key (account-1)', authMode: 'apikey', active: true, error: 'Account query failed', primary: { usedPercent: 100 }, resetCount: 1 }] } }));
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Global settings' }).click();
-  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
-  const savedKey = settings.getByRole('radio', { name: /API key \(API Key\)/u });
+  const accounts = await openCodexAccounts(page);
+  const savedKey = accounts.getByRole('radio', { name: /API key \(API Key\)/u });
   await expect(savedKey).toContainText('Account query failed');
   await expect(savedKey).not.toContainText('account-1');
-  await expect(settings.getByRole('button', { name: /Re-login/u })).toHaveCount(0);
-  await expect(settings.getByRole('button', { name: /Use reset/u })).toHaveCount(0);
-  await settings.getByRole('button', { name: '+ Add account' }).click();
+  await expect(accounts.getByRole('button', { name: /Re-login/u })).toHaveCount(0);
+  await expect(accounts.getByRole('button', { name: /Use reset/u })).toHaveCount(0);
+  await accounts.getByRole('button', { name: '+ Add account' }).click();
   await expect(page.getByRole('dialog', { name: 'Add ChatGPT account', exact: true }).getByLabel('API key', { exact: true })).toBeVisible();
 });
 
@@ -238,11 +235,11 @@ test('ignores a stale device completion while saving an API key', async ({ page 
   await dialog.getByLabel('API key', { exact: true }).fill('sk-synthetic-test-only');
   await dialog.getByRole('button', { name: 'Add API key', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
-  await expect(settings.getByRole('radio', { name: /API key \(API Key\)/u })).toBeVisible();
-  await expect(settings.getByRole('radio', { name: 'stale@example.com' })).toHaveCount(0);
-  await expect(settings.getByRole('status')).toContainText('API key added.');
-  await expect(settings).not.toContainText('account-2');
+  const accounts = page.getByRole('group', { name: 'Codex accounts', exact: true });
+  await expect(accounts.getByRole('radio', { name: /API key \(API Key\)/u })).toBeVisible();
+  await expect(accounts.getByRole('radio', { name: 'stale@example.com' })).toHaveCount(0);
+  await expect(accounts.getByRole('status')).toContainText('API key added.');
+  await expect(accounts).not.toContainText('account-2');
 });
 
 // let an already-finalizing device login finish without adding a second account
@@ -269,9 +266,9 @@ test('waits when device completion wins the cancellation race', async ({ page })
   expect(state.saved).toEqual([]);
   completed = true;
   await expect(dialog).toHaveCount(0);
-  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
-  await expect(settings.getByRole('radio', { name: 'device@example.com' })).toBeVisible();
-  await expect(settings.getByRole('status')).toContainText('device@example.com added.');
+  const accounts = page.getByRole('group', { name: 'Codex accounts', exact: true });
+  await expect(accounts.getByRole('radio', { name: 'device@example.com' })).toBeVisible();
+  await expect(accounts.getByRole('status')).toContainText('device@example.com added.');
   expect(state.saved).toEqual([]);
 });
 

@@ -67,7 +67,8 @@ test('launcher lists per-project sections and pins a worktree', async ({ page })
     return style;
   });
   expect(projectStyle.fontSize).toBe(projectStyle.worktreeFontSize);
-  expect(projectStyle.height).toBe(projectStyle.worktreeHeight);
+  // compact project headers remain readable beside their larger launch rows
+  expect(projectStyle.height).toBeGreaterThan(30);
   expect(projectStyle.color).toBe(projectStyle.purple);
   // rows sit under that header, so Main uses its branch while a custom linked name stays exact
   await expect(launcher.locator('.launcher-row-label')).toHaveText(['Scratch', 'main', '🥔 Dave']);
@@ -194,7 +195,7 @@ const chooseFromRow = async (page: import('@playwright/test').Page, row: string,
   await page.locator('.new-agent-tab').click();
   const launcher = page.getByRole('group', { name: 'Agent launcher' });
   const rowLocator = launcher.locator('.launcher-row, .launcher-project-worktree-controls').filter({ hasText: row }).first();
-  await rowLocator.getByRole('button', { name: 'More ways to open' }).click();
+  await rowLocator.getByRole('button', { name: 'More workspace actions' }).click();
   const menu = page.locator('.launch-menu');
   await check?.(menu, rowLocator);
   await menu.getByRole('menuitem', { name: new RegExp(`^${entry}`, 'u') }).click();
@@ -203,10 +204,10 @@ const chooseFromRow = async (page: import('@playwright/test').Page, row: string,
 
 test('Terminal from + opens an idle Worktree with a new shell, focused, and never a second one', async ({ page }) => {
   const { created } = await mountWorkspaces(page);
-  // the row keeps Launch as its default; the dropdown lists the kinds, then Terminal and Empty workspace
+  // the row keeps direct Launch while the dropdown lists only workspace actions
   await chooseFromRow(page, 'Feature', 'Terminal', async (menu, row) => {
-    await expect(row.getByRole('button', { name: 'Launch Codex' })).toBeVisible();
-    await expect(menu.getByRole('menuitem')).toHaveText([/Codex/u, /^Terminal/u, /^Empty workspace/u]);
+    await expect(row.getByRole('button', { name: 'Launch Feature' })).toBeVisible();
+    await expect(menu.getByRole('menuitem')).toHaveText([/^Terminal/u, /^Empty workspace/u]);
     await expect(menu.getByRole('menuitem', { name: /^Terminal/u })).toContainText('Open the Workspace with a new shell');
   });
   // the Place's tab opens with the new shell as a focused Terminal panel
@@ -234,7 +235,7 @@ test('Terminal from + at a Worktree with an Agent opens its minimized shell with
   // a row with a running Agent keeps Open as its default, beside the same dropdown
   await chooseFromRow(page, 'Feature', 'Terminal', async (menu, row) => {
     await expect(row.getByRole('button', { name: 'Open Feature' })).toBeVisible();
-    await expect(menu.getByRole('menuitem')).toHaveText([/Codex/u, /^Terminal/u, /^Empty workspace/u]);
+    await expect(menu.getByRole('menuitem')).toHaveText([/^Terminal/u, /^Empty workspace/u]);
   });
   await expect(page.getByRole('tab', { name: /^Feature —/u })).toHaveAttribute('aria-selected', 'true');
   const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
@@ -257,7 +258,7 @@ test('Empty workspace opens a panel-less Workspace that closes when left, unless
   const empty = page.getByRole('region', { name: 'Empty workspace' });
   await expect(empty).toContainText('Feature');
   await expect(empty).toContainText('/repo/feature');
-  await expect(empty.getByRole('button', { name: 'Launch Codex' })).toBeVisible();
+  await expect(empty.getByRole('button', { name: 'Launch Feature' })).toBeVisible();
   await expect(empty.getByRole('button', { name: 'Open a terminal' })).toBeVisible();
   await expect(empty.getByRole('button', { name: 'Browser' })).toBeVisible();
   await expect(empty.getByRole('button', { name: 'Code', exact: true })).toBeVisible();

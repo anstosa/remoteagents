@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { mockAccountSocket } from './account-fixture';
+import { mockAccountSocket, openCodexAccounts } from './account-fixture';
 
 type Spend = { status: 'available'; todayUsd: number; weekUsd: number; asOf: number } | { status: 'unconfigured' | 'unavailable' };
 type Account = {
@@ -37,7 +37,7 @@ async function setupAccountSettings(page: Page, initialAccounts: Account[], rena
     // restore one controlling browser
     if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'account-settings-csrf', active: true, deviceName: 'Test device', server: { name: 'Test server', url: 'https://agents.example.com', remotes: [] } } });
     // expose configured Codex without live agents
-    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } }, agents: [], projects: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } }, agents: [], projects: [], scratchLaunch: { kind: 'codex', origin: 'default' }, cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
     // authorize the inert dashboard socket
     if (path === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     // avoid unrelated update indicators
@@ -70,13 +70,6 @@ async function setupAccountSettings(page: Page, initialAccounts: Account[], rena
   return state;
 }
 
-// open the isolated global settings surface
-async function openSettings(page: Page) {
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Global settings' }).click();
-  return page.getByRole('dialog', { name: 'Settings', exact: true });
-}
-
 test('shows API-key spend and persists trimmed account and API-key names', async ({ page }) => {
   const pageErrors: string[] = [];
   // collect uncaught browser failures
@@ -92,7 +85,7 @@ test('shows API-key spend and persists trimmed account and API-key names', async
     { id: 'unknown-key', label: 'Unknown billing API', active: false, authMode: 'apikey' },
     { id: 'failed-key', label: 'Unavailable API', active: false, authMode: 'apikey', spend: { status: 'unavailable' } },
   ]);
-  let settings = await openSettings(page);
+  let settings = await openCodexAccounts(page);
   const chatgpt = settings.getByRole('radio').filter({ hasText: 'personal@example.com' });
   const paid = settings.getByRole('radio').filter({ hasText: 'Production API' });
   const zero = settings.getByRole('radio').filter({ hasText: 'Zero API' });
@@ -158,16 +151,17 @@ test('shows API-key spend and persists trimmed account and API-key names', async
   ]);
   await page.screenshot({ path: '/tmp/remoteagents-account-settings-desktop.png' });
 
-  await settings.getByRole('button', { name: 'Back to console' }).click();
-  await page.getByRole('button', { name: 'Global settings' }).click();
-  settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await page.keyboard.press('Escape');
+  await expect(settings).toHaveCount(0);
+  settings = await openCodexAccounts(page, false);
   await expect(settings.getByRole('radio').filter({ hasText: 'Family Workspace' })).toContainText('personal@example.com');
   await expect(settings.getByRole('radio').filter({ hasText: `${longKeyName} (API Key)` })).toContainText('$80.10');
-  expect(state.accountQueries).toBe(2);
+  await expect.poll(() => state.accountQueries).toBe(2);
 
   await page.setViewportSize({ width: 320, height: 640 });
+  await expect(page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Launch agent' })).toBeVisible();
   const mobileLongName = settings.getByText(`${longKeyName} (API Key)`, { exact: true });
-  await mobileLongName.scrollIntoViewIfNeeded();
+  await mobileLongName.evaluate(element => element.scrollIntoView({ block: 'nearest' }));
   await expect(mobileLongName).toBeInViewport();
   const horizontalMetrics = await page.evaluate(() => ({ viewport: window.innerWidth, document: document.documentElement.scrollWidth, body: document.body.scrollWidth }));
   expect(horizontalMetrics.document).toBeLessThanOrEqual(horizontalMetrics.viewport);
@@ -183,7 +177,7 @@ test('keeps rename drafts through cancel, HTTP failure, network failure, and ret
   const state = await setupAccountSettings(page, [
     { id: 'retry-key', label: 'Retry API', active: true, authMode: 'apikey', spend: { status: 'available', todayUsd: 1.25, weekUsd: 4.5, asOf: Math.floor(Date.now() / 1_000) }, error: 'Retained provider warning' },
   ], ['http', 'network']);
-  const settings = await openSettings(page);
+  const settings = await openCodexAccounts(page);
 
   await settings.getByRole('button', { name: 'Rename Retry API', exact: true }).click();
   let rename = page.getByRole('dialog', { name: 'Rename API key', exact: true });
@@ -226,7 +220,7 @@ test('keeps rename drafts through cancel, HTTP failure, network failure, and ret
 test('rejects a malformed API-key spend contract instead of showing zero dollars', async ({ page }) => {
   const malformed = { id: 'malformed-key', label: 'Malformed API', active: true, authMode: 'apikey' as const, spend: { status: 'available', todayUsd: 0, asOf: 1_800_000_000 } };
   await setupAccountSettings(page, [malformed as unknown as Account]);
-  const settings = await openSettings(page);
+  const settings = await openCodexAccounts(page);
   await expect(settings.getByRole('status')).toHaveText('Unable to load ChatGPT accounts.');
   await expect(settings.getByRole('radiogroup', { name: 'ChatGPT accounts' }).getByRole('radio')).toHaveCount(0);
   await expect(settings).not.toContainText('$0.00');
@@ -240,7 +234,7 @@ test('stops labeling yesterday totals as today and requeries after UTC rollover'
   const state = await setupAccountSettings(page, [
     { id: 'rollover-key', label: 'Rollover API', active: true, authMode: 'apikey', spend: { status: 'available', todayUsd: 7, weekUsd: 21, asOf: spendAsOf } },
   ]);
-  const settings = await openSettings(page);
+  const settings = await openCodexAccounts(page);
   const row = settings.getByRole('radio').filter({ hasText: 'Rollover API' });
   await expect(row.getByText('$7.00', { exact: true })).toBeVisible();
   expect(state.accountQueries).toBe(1);
@@ -257,7 +251,7 @@ test('keeps all ChatGPT account actions on one row at desktop and mobile widths'
   await setupAccountSettings(page, [
     { id: 'action-account', label: 'Action account', email: 'actions@example.com', active: true, planType: 'pro', primary: { usedPercent: 100 }, resetCount: 1, error: 'Account query failed' },
   ]);
-  const settings = await openSettings(page);
+  const settings = await openCodexAccounts(page);
   const actions = settings.getByRole('group', { name: 'Actions for Action account', exact: true });
   const rename = actions.getByRole('button', { name: 'Rename Action account', exact: true });
   const reset = actions.getByRole('button', { name: 'Use reset for Action account', exact: true });
@@ -282,7 +276,8 @@ test('keeps all ChatGPT account actions on one row at desktop and mobile widths'
   await page.screenshot({ path: '/tmp/remoteagents-account-actions-desktop.png' });
 
   await page.setViewportSize({ width: 320, height: 640 });
-  await actions.scrollIntoViewIfNeeded();
+  await expect(page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Launch agent' })).toBeVisible();
+  await actions.evaluate(element => element.scrollIntoView({ block: 'nearest' }));
   await expect(actions).toBeInViewport();
   const mobileRename = await rename.boundingBox();
   const mobileReset = await reset.boundingBox();

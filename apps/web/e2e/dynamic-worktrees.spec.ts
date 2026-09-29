@@ -41,7 +41,7 @@ test('dynamic worktrees defaults on and compacts single-worktree projects when d
   const settings = page.getByRole('dialog', { name: 'Settings' });
   const dynamicWorktrees = settings.getByRole('switch', { name: 'Dynamic worktrees' });
   await expect(dynamicWorktrees).toBeChecked();
-  await settings.getByRole('button', { name: 'Back to console' }).click();
+  await settings.getByRole('button', { name: 'Close settings' }).click();
 
   await page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: 'Launch agent', exact: true }).click();
   let launcher = page.getByRole('group', { name: 'Agent launcher' });
@@ -54,7 +54,7 @@ test('dynamic worktrees defaults on and compacts single-worktree projects when d
   await page.getByRole('button', { name: 'Global settings' }).click();
   await dynamicWorktrees.uncheck();
   await expect(dynamicWorktrees).not.toBeChecked();
-  await settings.getByRole('button', { name: 'Back to console' }).click();
+  await settings.getByRole('button', { name: 'Close settings' }).click();
 
   await page.getByRole('button', { name: 'Launch agent', exact: true }).click();
   launcher = page.getByRole('group', { name: 'Agent launcher' });
@@ -96,7 +96,7 @@ test('a stale single-worktree project stays contained when compacted', async ({ 
   await page.getByRole('button', { name: 'Global settings' }).click();
   const settings = page.getByRole('dialog', { name: 'Settings' });
   await settings.getByRole('switch', { name: 'Dynamic worktrees' }).uncheck();
-  await settings.getByRole('button', { name: 'Back to console' }).click();
+  await settings.getByRole('button', { name: 'Close settings' }).click();
   await page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: 'Launch agent', exact: true }).click();
 
   const soloProject = page.getByRole('group', { name: 'Agent launcher' }).getByRole('group', { name: 'Solo', exact: true });

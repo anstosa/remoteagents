@@ -92,13 +92,11 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   await settings.click();
   const settingsPage = page.getByRole('dialog', { name: 'Settings' });
   const clientCard = settingsPage.getByRole('group', { name: 'Client' });
-  const serverCard = settingsPage.getByRole('group', { name: 'Server' });
   await expect(clientCard).toContainText('Test device');
-  await expect(serverCard).toContainText('Framework');
-  await expect(serverCard).toContainText('framework.santosa.dev');
   await expect(settingsPage.getByRole('button', { name: 'Rename Client' })).toBeVisible();
-  await expect(settingsPage.getByRole('button', { name: 'Rename Server' })).toBeVisible();
-  await expect(settingsPage.getByRole('button', { name: '+ Add account' })).toBeVisible();
+  await expect(settingsPage.getByRole('group', { name: 'Server' })).toHaveCount(0);
+  await expect(settingsPage.getByRole('button', { name: 'Rename Server' })).toHaveCount(0);
+  await expect(settingsPage.getByRole('button', { name: '+ Add account' })).toHaveCount(0);
   await expect(settingsPage.getByRole('button', { name: 'Update Server' })).toHaveCount(0);
   await settingsPage.getByRole('button', { name: 'Rename Client' }).click();
   await expect(settingsPage).toBeVisible();
@@ -109,13 +107,20 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   await expect(renameDialog).toHaveCount(0);
   expect(renamedClient).toEqual({ deviceName: 'Office Mac' });
   await expect(settingsPage.getByRole('group', { name: 'Client' })).toContainText('Office Mac');
-  await settingsPage.getByRole('button', { name: 'Rename Server' }).click();
+  await settingsPage.getByRole('button', { name: 'Close settings' }).click();
+  const serverSelector = page.getByRole('button', { name: /^Switch server/u });
+  await expect(serverSelector).toHaveAccessibleName(/update available/u);
+  await serverSelector.click();
+  const serverDetails = page.getByRole('group', { name: 'Current server details' });
+  await expect(serverDetails).toContainText('Framework');
+  await expect(serverDetails).toContainText('framework.santosa.dev');
+  await expect(serverDetails.getByRole('button', { name: 'View upstream update' })).toBeVisible();
+  await serverDetails.getByRole('button', { name: 'Rename Server' }).click();
   const serverRenameDialog = page.getByRole('dialog', { name: 'Rename Server' });
   await serverRenameDialog.getByLabel('Server name').fill('Garage Server');
   await serverRenameDialog.getByRole('button', { name: 'Save' }).click();
   await expect(serverRenameDialog).toHaveCount(0);
   expect(renamedServer).toEqual({ name: 'Garage Server' });
-  await settingsPage.getByRole('button', { name: 'Back to console' }).click();
   const callTrigger = page.locator('.tab-row-lead').getByRole('button', { name: 'Call Davo' });
   // the server selector leads the row, then Call and settings
   await expect(page.locator('.tab-row-lead > :first-child')).toHaveClass(/server-selector/u);
@@ -143,10 +148,12 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
     const chip = element.querySelector('.voice-context-open li:last-child');
     return {
       dialogContained: dialog !== null && dialog.scrollWidth <= dialog.clientWidth,
-      chipContained: card !== null && chip !== null && chip.getBoundingClientRect().right <= card.getBoundingClientRect().right + 1
+      chipContained: card !== null && chip !== null && chip.getBoundingClientRect().right <= card.getBoundingClientRect().right + 1,
+      // require the context chip to grow rather than truncate its long label
+      chipExpanded: chip !== null && chip.scrollWidth <= chip.clientWidth && chip.scrollHeight <= chip.clientHeight && getComputedStyle(chip).whiteSpace === 'normal' && chip.clientHeight > parseFloat(getComputedStyle(chip).fontSize) * 2
     };
   });
-  expect(mobileContextMetrics).toEqual({ dialogContained: true, chipContained: true });
+  expect(mobileContextMetrics).toEqual({ dialogContained: true, chipContained: true, chipExpanded: true });
   await page.setViewportSize({ width: 1280, height: 720 });
   await expect(page.locator('.voice-dialog').getByRole('alert')).toHaveText('Davo is not configured on this server.');
   // clear a stale history filter when retrying in place
@@ -158,11 +165,12 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   expect(realtimeHeaders['x-csrf-token']).toBe('voice-csrf');
   expect(realtimeBody).toMatchObject({ worktreeId: 'cora', agentId: 'agent-cora', voiceSessionId: expect.any(String) });
   await settings.click();
-  await expect(settingsPage.getByRole('group', { name: 'Server' })).toContainText('Garage Server');
+  await expect(settingsPage.getByRole('group', { name: 'Server' })).toHaveCount(0);
   await expect(settingsPage.getByRole('button', { name: 'Update Server' })).toHaveCount(0);
-  await settingsPage.getByRole('button', { name: 'Back to console' }).click();
-  await settings.click();
-  await settingsPage.getByRole('button', { name: 'View upstream update' }).click();
+  await settingsPage.getByRole('button', { name: 'Close settings' }).click();
+  await serverSelector.click();
+  await expect(serverDetails).toContainText('Garage Server');
+  await serverDetails.getByRole('button', { name: 'View upstream update' }).click();
   const updateDialog = page.getByRole('dialog', { name: 'Review update' });
   await updateDialog.getByRole('button', { name: 'Update', exact: true }).click();
   await expect(updateDialog).toContainText('Pulling the reviewed revision, rebuilding, and restarting…');

@@ -1,7 +1,7 @@
-import { expect, test } from '@playwright/test';
-import { mockAccountSocket } from './account-fixture';
+import { expect, test, type Page } from '@playwright/test';
+import { mockAccountSocket, openCodexAccounts } from './account-fixture';
 
-test('queries, repairs, switches, and adds ChatGPT accounts from global settings', async ({ page }) => {
+test('queries, repairs, switches, and adds ChatGPT accounts from the Codex launcher', async ({ page }) => {
   let activeAccount = 'account-1';
   let accountQueries = 0;
   let addComplete = false;
@@ -32,7 +32,7 @@ test('queries, repairs, switches, and adds ChatGPT accounts from global settings
     // restore one controlled console
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'account-csrf', active: true, deviceName: 'Test device', server: { name: 'Framework', url: 'https://framework.santosa.dev', remotes: [] } } });
     // return one idle worktree agent
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } }, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false }], projects: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } }, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false }], projects: [], scratchLaunch: { kind: 'codex', origin: 'default' }, cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
     if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/saved-prompts') return route.fulfill({ json: { prompts: [] } });
@@ -79,12 +79,9 @@ test('queries, repairs, switches, and adds ChatGPT accounts from global settings
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
-  await page.goto('/');
-  const settings = page.getByRole('button', { name: 'Global settings' });
-  await settings.click();
-  const settingsPage = page.getByRole('dialog', { name: 'Settings' });
-  const personal = settingsPage.getByRole('radio', { name: /personal@example\.com/u });
-  const work = settingsPage.getByRole('radio', { name: /work@example\.com/u });
+  const accountsMenu = await openCodexAccounts(page);
+  const personal = accountsMenu.getByRole('radio', { name: /personal@example\.com/u });
+  const work = accountsMenu.getByRole('radio', { name: /work@example\.com/u });
   await expect(personal).toHaveAttribute('aria-checked', 'true');
   // display saved names alongside provider identity
   await expect(personal).toContainText('Personal (Pro)');
@@ -102,15 +99,15 @@ test('queries, repairs, switches, and adds ChatGPT accounts from global settings
   await expect.poll(async () => await countdown.textContent(), { timeout: 2_500 }).not.toBe(initialCountdown);
   expect(accountQueries).toBe(1);
 
-  const useReset = settingsPage.getByRole('button', { name: 'Use reset for Personal' });
+  const useReset = accountsMenu.getByRole('button', { name: 'Use reset for Personal' });
   await useReset.click();
   await expect(personal.getByRole('progressbar', { name: '5h ChatGPT limit consumed' })).toHaveAttribute('value', '0');
   await expect(personal).toContainText('1 reset available');
   await expect(useReset).toHaveCount(0);
-  await expect(settingsPage.getByRole('status')).toContainText('Used one reset for Personal.');
+  await expect(accountsMenu.getByRole('status')).toContainText('Used one reset for Personal.');
   expect(resetCsrf).toBe('account-csrf');
 
-  const relogin = settingsPage.getByRole('button', { name: 'Re-login to Work' });
+  const relogin = accountsMenu.getByRole('button', { name: 'Re-login to Work' });
   await relogin.click();
   const repairDialog = page.getByRole('dialog', { name: 'Re-login to ChatGPT' });
   await expect(repairDialog.getByLabel('API key', { exact: true })).toHaveCount(0);
@@ -124,28 +121,28 @@ test('queries, repairs, switches, and adds ChatGPT accounts from global settings
   // release provider completion after exercising the device code
   repairComplete = true;
   await expect(repairDialog).toHaveCount(0, { timeout: 5_000 });
-  await expect(settingsPage).toBeVisible();
-  await expect(settingsPage.getByRole('status')).toContainText('Re-login complete for Work.');
+  await expect(accountsMenu).toBeVisible();
+  await expect(accountsMenu.getByRole('status')).toContainText('Re-login complete for Work.');
   await expect(personal).toHaveAttribute('aria-checked', 'true');
   await expect(work).toHaveAttribute('aria-checked', 'false');
   expect(loginBodies[0]).toEqual({ repairAccountId: 'account-2' });
 
   await work.click();
   await expect(work).toHaveAttribute('aria-checked', 'true');
-  await expect(settingsPage.getByRole('status')).toContainText('Restarted 1 idle worktree.');
+  await expect(accountsMenu.getByRole('status')).toContainText('Restarted 1 idle worktree.');
   expect(switchBody).toEqual({ id: 'account-2' });
   expect(switchCsrf).toBe('account-csrf');
 
-  await settingsPage.getByRole('button', { name: '+ Add account' }).click();
+  await accountsMenu.getByRole('button', { name: '+ Add account' }).click();
   const dialog = page.getByRole('dialog', { name: 'Add ChatGPT account' });
   await expect(dialog.getByRole('link', { name: /Open activation page/u })).toHaveAttribute('href', 'https://auth.openai.com/device');
   await expect(dialog.getByRole('button', { name: 'ABCD-EFGH' })).toBeVisible();
   // release provider completion after the code is visible
   addComplete = true;
   await expect(dialog).toHaveCount(0, { timeout: 5_000 });
-  await expect(settingsPage).toBeVisible();
-  await expect(settingsPage.getByRole('status')).toContainText('new@example.com added.');
-  const added = settingsPage.getByRole('radio', { name: /new@example.com/u });
+  await expect(accountsMenu).toBeVisible();
+  await expect(accountsMenu.getByRole('status')).toContainText('new@example.com added.');
+  const added = accountsMenu.getByRole('radio', { name: /new@example.com/u });
   await expect(added).toBeVisible();
   await expect(added).toHaveAttribute('aria-checked', 'false');
   await expect(work).toHaveAttribute('aria-checked', 'true');
@@ -165,7 +162,7 @@ test('cancels a device login that starts after its dialog closes', async ({ page
     // restore one controlled console
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'account-csrf', active: true, deviceName: 'Test device', server: { name: 'Framework', url: 'https://framework.santosa.dev', remotes: [] } } });
     // return one idle worktree agent
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } }, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false }], projects: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } }, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false }], projects: [], scratchLaunch: { kind: 'codex', origin: 'default' }, cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
     // authorize the dashboard socket
     if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     // authorize the log socket
@@ -197,9 +194,8 @@ test('cancels a device login that starts after its dialog closes', async ({ page
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Global settings' }).click();
-  await page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: '+ Add account' }).click();
+  const accountsMenu = await openCodexAccounts(page);
+  await accountsMenu.getByRole('button', { name: '+ Add account' }).click();
   const dialog = page.getByRole('dialog', { name: 'Add ChatGPT account' });
   await expect(dialog).toContainText('Starting secure ChatGPT login…');
   await dialog.getByRole('button', { name: 'Close account login' }).click();

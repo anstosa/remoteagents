@@ -3,7 +3,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 // the "+" launcher toggle in the tab bar
 const launcherToggle = (page: Page): Locator => page.locator('.new-agent-tab');
 // the launch button in a launcher row identified by its worktree label (the split-button primary)
-const launcherRowButton = (page: Page, name: string): Locator => page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: name }).getByRole('button', { name: 'Launch agent' });
+const launcherRowButton = (page: Page, name: string): Locator => page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: name }).getByRole('button', { name: `Launch ${name}` });
 
 test('keeps a queued prompt pending only on its originating agent tab', async ({ page }) => {
   let finishQueue!: () => void;

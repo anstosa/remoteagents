@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 // stub a controlled console whose dashboard carries the given adapter capabilities
-async function openSettings(page: import('@playwright/test').Page, adapters: unknown, options: { defaultAgent?: string; davo?: { enabled: boolean; available: boolean; name: string; context: string }; onDefaultAgent?: (kind: string) => void; onDavo?: (settings: { enabled: boolean; name: string; context: string }) => void; agentUpdates?: Array<{ kind: string; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string }>; onAgentUpdate?: (kind: string) => { kind: string; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string }; open?: boolean } = {}) {
+async function openSettings(page: import('@playwright/test').Page, adapters: unknown, options: { defaultAgent?: string; davo?: { enabled: boolean; available: boolean; name: string; context: string }; onDefaultAgent?: (kind: string) => void; onDavo?: (settings: { enabled: boolean; name: string; context: string }) => void; agentUpdates?: Array<{ kind: string; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string }>; onAgentUpdate?: (kind: string) => { kind: string; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string }; emptyWorkspace?: boolean; open?: boolean } = {}) {
   const davo = options.davo ?? { enabled: false, available: true, name: 'Davo', context: 'Existing Davo persona.' };
   let agentUpdates = options.agentUpdates ?? [];
   await page.addInitScript(() => {
@@ -45,7 +45,8 @@ async function openSettings(page: import('@playwright/test').Page, adapters: unk
       options.onDavo?.(payload);
       return route.fulfill({ json: { davo: { ...payload, available: davo.available } } });
     }
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters, scratchLaunch: { kind: 'codex', origin: 'default' }, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false }], projects: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    // provide an agentless worktree for the two full-size launch controls
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters, scratchLaunch: { kind: 'codex', origin: 'default' }, agents: options.emptyWorkspace ? [] : [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false }], projects: options.emptyWorkspace ? [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: true, order: 1, launch: { kind: 'codex', origin: 'worktree' } }] }] : [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
     if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/saved-prompts') return route.fulfill({ json: { prompts: [] } });
@@ -64,21 +65,48 @@ async function openSettings(page: import('@playwright/test').Page, adapters: unk
   return page.getByRole('dialog', { name: 'Settings' });
 }
 
-// open the shared agent chooser from the global launcher
+// open the shared agent chooser from the persistent toolbar
 async function openAgentMenu(page: import('@playwright/test').Page) {
-  await page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: /^Launch agent/u }).click();
-  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Choose agent' }).first().click();
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: /^Choose agent/u }).click();
   return page.getByRole('menu', { name: 'Choose agent' });
 }
 
-test('hides agents in settings while keeping Codex accounts', async ({ page }) => {
+test('moves Codex accounts from settings into the launcher submenu', async ({ page }) => {
   const settingsPage = await openSettings(page, {
     codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
     claude: { program: '/opt/claude', launchable: false, unavailableReason: '/opt/claude is not an executable file', stateSource: 'reported', turnCapture: false, inlineQuestions: false, commands: true, sandbox: false }
   }, { defaultAgent: 'codex' });
   await expect(settingsPage.getByRole('radiogroup', { name: 'Agents' })).toHaveCount(0);
-  await expect(settingsPage.getByRole('heading', { name: 'Accounts' })).toBeVisible();
-  await expect(settingsPage.getByRole('button', { name: '+ Add account' })).toBeVisible();
+  await expect(settingsPage.getByRole('heading', { name: 'Accounts' })).toHaveCount(0);
+  await settingsPage.getByRole('button', { name: 'Close settings' }).click();
+  const menu = await openAgentMenu(page);
+  await expect(menu.getByRole('menuitem', { name: 'Codex accounts' })).toBeVisible();
+  await menu.getByRole('menuitem', { name: 'Codex accounts' }).click();
+  const accounts = menu.getByRole('group', { name: 'Codex accounts' });
+  await expect(accounts.getByRole('heading', { name: 'Accounts' })).toBeVisible();
+  await expect(accounts.getByRole('button', { name: '+ Add account' })).toBeVisible();
+  await accounts.getByRole('button', { name: /Back to agents/u }).click();
+  await expect(menu.getByRole('group', { name: 'Codex agent' }).getByRole('menuitem').first()).toBeVisible();
+});
+
+test('keeps Codex accounts in the far-left toolbar, not the empty card or + flyout', async ({ page }) => {
+  await openSettings(page, {
+    codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false }
+  }, { defaultAgent: 'codex', emptyWorkspace: true, open: false });
+  const toolbar = page.getByRole('region', { name: 'Workspace toolbar' });
+  await expect(page.getByRole('region', { name: 'Empty workspace' }).getByRole('button', { name: 'Choose agent' })).toHaveCount(0);
+  // the persistent Launch control leads every other static action
+  await expect(toolbar.locator('.workspace-toolbar-actions > :first-child')).toHaveClass(/launch-split/u);
+  const menu = await openAgentMenu(page);
+  const codex = menu.getByRole('group', { name: 'Codex agent' });
+  await expect(codex.locator(':scope > button')).toHaveText([/Codex/u, /Accounts/u, '★']);
+  await codex.getByRole('menuitem', { name: 'Codex accounts' }).click();
+  await expect(menu.getByRole('group', { name: 'Codex accounts' }).getByRole('heading', { name: 'Accounts' })).toBeVisible();
+  await toolbar.getByRole('button', { name: 'Choose agent' }).click();
+  await page.getByRole('button', { name: 'Launch agent', exact: true }).click();
+  const plus = page.getByRole('group', { name: 'Agent launcher' });
+  await expect(plus.locator('.launch-kind-mark, .launch-agent-default, .launch-agent-accounts, .launch-agent-update')).toHaveCount(0);
+  await expect(plus.getByRole('button', { name: 'Choose agent' })).toHaveCount(0);
 });
 
 test('changes the default agent from the launch menu', async ({ page }) => {
@@ -107,24 +135,57 @@ test('shows agent versions and updates in launch menu with indicator on launch b
     ],
     onAgentUpdate: kind => ({ kind, currentVersion: '0.153.2', latestVersion: '0.153.2', updateAvailable: false })
   });
-  const launch = page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: /^Launch agent/u });
+  const launch = page.getByRole('region', { name: 'Workspace toolbar' }).locator('.launch-split');
+  const plus = page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: 'Launch agent', exact: true });
   const settings = page.getByRole('button', { name: 'Global settings' });
-  await expect(launch.locator('.new-agent-update-dot')).toBeVisible();
-  await expect(launch).toHaveAccessibleName('Launch agent — update available');
+  await expect(launch.locator('.launch-update-dot')).toBeVisible();
+  await expect(launch.getByRole('button', { name: 'Choose agent — update available' })).toBeVisible();
+  // the pulse keeps a hard outline and a standard corner status dot
+  const attention = await launch.evaluate(element => {
+    const dot = element.querySelector<HTMLElement>('.launch-update-dot')!;
+    const frame = element.getBoundingClientRect();
+    const marker = dot.getBoundingClientRect();
+    return { outline: getComputedStyle(element).outlineWidth, size: marker.width, height: marker.height, top: marker.top - frame.top, right: frame.right - marker.right };
+  });
+  expect(attention.outline).toBe('1px');
+  expect(attention.size).toBe(6);
+  expect(attention.height).toBe(6);
+  expect(attention.top).toBeCloseTo(4);
+  expect(attention.right).toBeCloseTo(4);
+  await expect(plus.locator('.new-agent-update-dot')).toHaveCount(0);
+  await expect(plus).not.toHaveClass(/updates-available/u);
   await expect(settings.locator('.server-switcher-settings-update-dot')).toHaveCount(0);
   await expect.poll(() => launch.evaluate(element => element.getAnimations().length)).toBeGreaterThan(0);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await expect.poll(() => launch.evaluate(element => element.getAnimations().length)).toBe(0);
-  await expect(launch.locator('.new-agent-update-dot')).toBeVisible();
+  await expect(launch.locator('.launch-update-dot')).toBeVisible();
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   const menu = await openAgentMenu(page);
-  await expect(menu.getByRole('group', { name: 'Codex agent' }).getByText('v0.152.1 → v0.153.2', { exact: true })).toBeVisible();
+  const codexLine = menu.getByRole('group', { name: 'Codex agent' });
+  await expect(codexLine.getByText('v0.152.1 → v0.153.2', { exact: true })).toBeVisible();
+  await expect(codexLine.locator(':scope > button')).toHaveText([/Codex/u, /Accounts/u, 'Update', '☆']);
+  // hover treatment fades across the launch action and its controls together
+  const idleBackground = await codexLine.evaluate(element => getComputedStyle(element).backgroundColor);
+  await codexLine.getByRole('menuitem', { name: /^Codex ·/u }).hover();
+  await expect.poll(() => codexLine.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(idleBackground);
+  await page.waitForTimeout(200);
+  const hoverBackground = await codexLine.evaluate(element => getComputedStyle(element).backgroundColor);
+  await codexLine.getByRole('menuitem', { name: 'Codex accounts' }).hover();
+  await expect(codexLine).toHaveCSS('background-color', hoverBackground);
+  await codexLine.getByRole('menuitem', { name: 'Update Codex to 0.153.2' }).hover();
+  await expect(codexLine).toHaveCSS('background-color', hoverBackground);
+  await codexLine.getByRole('menuitemradio', { name: 'Make Codex default' }).hover();
+  await expect(codexLine).toHaveCSS('background-color', hoverBackground);
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(75);
+  await expect(codexLine).toHaveCSS('background-color', idleBackground);
+  await expect(codexLine).toHaveCSS('transition-property', 'background-color');
   await expect(menu.getByRole('group', { name: 'OMX agent' }).getByText('v0.21.3', { exact: true })).toBeVisible();
   await menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' }).click();
   await expect(menu.getByRole('group', { name: 'Codex agent' }).getByText('v0.153.2', { exact: true })).toBeVisible();
   await expect(menu.getByRole('menuitem', { name: /Update Codex/u })).toHaveCount(0);
-  await expect(launch.locator('.new-agent-update-dot')).toHaveCount(0);
-  await expect(launch).toHaveAccessibleName('Launch agent');
+  await expect(launch.locator('.launch-update-dot')).toHaveCount(0);
+  await expect(launch.getByRole('button', { name: 'Choose agent', exact: true })).toBeVisible();
 });
 
 test('keeps version errors visible while changing the default agent', async ({ page }) => {
@@ -170,11 +231,18 @@ test('enables Davo and saves a configurable name and context', async ({ page }) 
   await enabled.check();
   await expect(switchTrack).not.toHaveCSS('background-color', offBackground);
   await expect(settingsPage.getByLabel('Davo name')).toHaveValue('Davo');
-  await expect(settingsPage.getByLabel('Davo context')).toHaveValue('Existing Davo persona.');
+  const context = settingsPage.getByLabel('Davo context');
+  await expect(context).toHaveValue('Existing Davo persona.');
+  // grow and shrink the voice prompt without an inner scrollbar
+  await context.fill(Array.from({ length: 16 }, (_, index) => `Context line ${index + 1}`).join('\n'));
+  await expect.poll(() => context.evaluate(element => ({ fits: element.clientHeight >= element.scrollHeight, height: element.clientHeight }))).toMatchObject({ fits: true });
+  const expandedHeight = await context.evaluate(element => element.clientHeight);
+  await context.fill('Speak plainly and keep the tone dry.');
+  await expect.poll(() => context.evaluate(element => element.clientHeight)).toBeLessThan(expandedHeight);
   await settingsPage.getByLabel('Davo name').fill('Riley');
   await expect(settingsPage.getByRole('heading', { name: 'Riley' })).toBeVisible();
   await expect(settingsPage.getByRole('switch', { name: 'Enable Riley' })).toBeChecked();
-  await settingsPage.getByLabel('Davo context').fill('Speak plainly and keep the tone dry.');
+  await expect(context).toHaveValue('Speak plainly and keep the tone dry.');
   await settingsPage.getByRole('button', { name: 'Save' }).click();
 
   await expect.poll(() => updates).toEqual([
@@ -183,7 +251,7 @@ test('enables Davo and saves a configurable name and context', async ({ page }) 
   ]);
   await expect(settingsPage.getByText('Saved.')).toBeVisible();
   await expect(settingsPage).toBeVisible();
-  await settingsPage.getByRole('button', { name: 'Back to console' }).click();
+  await settingsPage.getByRole('button', { name: 'Close settings' }).click();
   await expect(page.getByRole('button', { name: 'Call Riley' }).first()).toBeVisible();
 });
 
@@ -191,46 +259,107 @@ test('hides agent and Codex account settings on an observe-only console', async 
   const settingsPage = await openSettings(page, {});
   await expect(settingsPage.getByRole('radiogroup', { name: 'Agents' })).toHaveCount(0);
   await expect(settingsPage.getByRole('button', { name: '+ Add account' })).toHaveCount(0);
-  // client and server settings remain available
+  // client settings remain while server administration lives in its selector
   await expect(settingsPage.getByRole('group', { name: 'Client' })).toBeVisible();
-  await expect(settingsPage.getByRole('group', { name: 'Server' })).toBeVisible();
+  await expect(settingsPage.getByRole('group', { name: 'Server' })).toHaveCount(0);
 });
 
-test('opens settings as a full-screen page from a gear and returns focus to the console', async ({ page }) => {
+test('shows settings above the static controls on a phone', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 812 });
   const settingsPage = await openSettings(page, {});
   const trigger = page.getByRole('button', { name: 'Global settings' });
+  const content = page.locator('.log-shell').first();
+  const tabs = page.getByRole('tablist', { name: 'Agents and worktrees' });
+  const toolbar = page.locator('.workspace-toolbar').first();
   await expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
   await expect(trigger.locator('svg')).toHaveCount(1);
   await expect(trigger).toHaveText('');
   await expect(page.getByRole('menu', { name: 'Global settings' })).toHaveCount(0);
   const bounds = await settingsPage.boundingBox();
-  expect(bounds).not.toBeNull();
-  // require measurable viewport coverage
-  if (bounds === null) throw new Error('Settings page has no layout bounds');
-  expect(Math.abs(bounds.x)).toBeLessThanOrEqual(1);
-  expect(Math.abs(bounds.y)).toBeLessThanOrEqual(1);
+  const contentBounds = await content.boundingBox();
+  const tabsBounds = await tabs.boundingBox();
+  const toolbarBounds = await toolbar.boundingBox();
+  // require the settings slide to fill only the flexible content row
+  if (bounds === null || contentBounds === null || tabsBounds === null || toolbarBounds === null) throw new Error('Settings split has no layout bounds');
+  expect(Math.abs(bounds.x - contentBounds.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(bounds.y - contentBounds.y)).toBeLessThanOrEqual(1);
   expect(Math.abs(bounds.width - 428)).toBeLessThanOrEqual(1);
-  expect(Math.abs(bounds.height - 812)).toBeLessThanOrEqual(1);
+  expect(Math.abs(bounds.height - contentBounds.height)).toBeLessThanOrEqual(1);
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(tabsBounds.y + 1);
+  expect(tabsBounds.y + tabsBounds.height).toBeLessThanOrEqual(toolbarBounds.y + 1);
+  await expect(settingsPage).not.toHaveAttribute('aria-modal', 'true');
+  await expect(tabs).toBeVisible();
+  await expect(toolbar).toBeVisible();
   const clientBounds = await settingsPage.getByRole('group', { name: 'Client' }).boundingBox();
-  const serverBounds = await settingsPage.getByRole('group', { name: 'Server' }).boundingBox();
   const terminalBounds = await settingsPage.getByRole('group', { name: 'Terminal font' }).boundingBox();
+  const themeBounds = await settingsPage.getByRole('group', { name: 'Theme' }).boundingBox();
   // retain visible breathing room between flat settings
-  if (clientBounds === null || serverBounds === null || terminalBounds === null) throw new Error('Settings have no layout bounds');
-  const clientServerGap = serverBounds.y - (clientBounds.y + clientBounds.height);
-  const serverTerminalGap = terminalBounds.y - (serverBounds.y + serverBounds.height);
-  expect(clientServerGap).toBeGreaterThanOrEqual(12);
-  expect(serverTerminalGap).toBeGreaterThanOrEqual(12);
-  expect(Math.abs(clientServerGap - serverTerminalGap)).toBeLessThanOrEqual(4);
-  const back = settingsPage.getByRole('button', { name: 'Back to console' });
+  if (clientBounds === null || terminalBounds === null || themeBounds === null) throw new Error('Settings have no layout bounds');
+  const clientTerminalGap = terminalBounds.y - (clientBounds.y + clientBounds.height);
+  const terminalThemeGap = themeBounds.y - (terminalBounds.y + terminalBounds.height);
+  expect(clientTerminalGap).toBeGreaterThanOrEqual(12);
+  expect(terminalThemeGap).toBeGreaterThanOrEqual(12);
+  expect(Math.abs(clientTerminalGap - terminalThemeGap)).toBeLessThanOrEqual(4);
+  const back = settingsPage.getByRole('button', { name: 'Close settings' });
   await back.focus();
-  await page.keyboard.press('Shift+Tab');
-  await expect(settingsPage.getByRole('switch', { name: 'Enable Davo' })).toBeFocused();
-  await page.keyboard.press('Tab');
-  await expect(back).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(settingsPage).toHaveCount(0);
   await expect(trigger).toBeFocused();
+  // a toolbar action leaves the settings slide for its own panel
+  await trigger.click();
+  await toolbar.locator('.terminal-picker-toggle').click();
+  await expect(settingsPage).toHaveCount(0);
+});
+
+test('opens settings as the right-hand content split on desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const settingsPage = await openSettings(page, {});
+  // reuse the floating title and action pills from other workspace splits
+  await expect(settingsPage.locator('.panel-header .panel-header-pill')).toHaveCount(2);
+  const titlePill = settingsPage.locator('.panel-header-title');
+  await expect(titlePill.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  // keep text equally inset from both title-pill edges
+  const titleInset = await titlePill.evaluate(element => {
+    const style = getComputedStyle(element);
+    return { left: parseFloat(style.paddingLeft), right: parseFloat(style.paddingRight) };
+  });
+  expect(titleInset.right).toBeGreaterThan(0);
+  expect(titleInset.right).toBe(titleInset.left);
+  const consoleView = page.locator('main.console');
+  // check content panes and static controls at wide and near-minimum split widths
+  for (const width of [1280, 800]) {
+    await page.setViewportSize({ width, height: 800 });
+    const settingsBounds = await settingsPage.boundingBox();
+    const consoleBounds = await consoleView.boundingBox();
+    const logBounds = await consoleView.locator('.log').first().boundingBox();
+    const tabsBounds = await consoleView.locator('nav.tabs').first().boundingBox();
+    const toolbarBounds = await consoleView.locator('.workspace-toolbar').first().boundingBox();
+    const terminalBounds = await consoleView.locator('.workspace-toolbar-actions .terminal-picker-toggle').first().boundingBox();
+    // require every split surface to have measurable bounds
+    if (settingsBounds === null || consoleBounds === null || logBounds === null || tabsBounds === null || toolbarBounds === null || terminalBounds === null) throw new Error('Split panes have no layout bounds');
+    expect(consoleBounds.x).toBe(0);
+    expect(consoleBounds.width).toBe(width);
+    expect(settingsBounds.width).toBeGreaterThanOrEqual(384);
+    expect(settingsBounds.width).toBeLessThanOrEqual(448);
+    expect(logBounds.x).toBe(0);
+    expect(Math.abs(settingsBounds.x - logBounds.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(settingsBounds.x + settingsBounds.width - width)).toBeLessThanOrEqual(1);
+    expect(settingsBounds.y + settingsBounds.height).toBeLessThanOrEqual(tabsBounds.y + 1);
+    expect(tabsBounds.x).toBe(0);
+    expect(tabsBounds.width).toBe(width);
+    expect(tabsBounds.y + tabsBounds.height).toBeLessThanOrEqual(toolbarBounds.y + 1);
+    expect(toolbarBounds.x).toBeGreaterThanOrEqual(0);
+    expect(toolbarBounds.x + toolbarBounds.width).toBeLessThanOrEqual(width + 1);
+    expect(terminalBounds.x).toBeGreaterThanOrEqual(0);
+    expect(terminalBounds.x + terminalBounds.width).toBeLessThanOrEqual(width + 1);
+  }
+  await expect(settingsPage).not.toHaveAttribute('aria-modal', 'true');
+  await expect(consoleView.getByRole('tabpanel')).toBeVisible();
+  // leave the settings pane without a modal focus trap
+  await page.getByRole('button', { name: 'Global settings' }).focus();
+  await expect(page.getByRole('button', { name: 'Global settings' })).toBeFocused();
+  await settingsPage.getByRole('button', { name: 'Close settings' }).click();
+  await expect(consoleView.locator('.log').first()).toHaveCSS('width', '800px');
 });
 
 // keep long-running codex and omx updates attached to one queued job
