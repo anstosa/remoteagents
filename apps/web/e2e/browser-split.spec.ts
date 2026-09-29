@@ -408,6 +408,71 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   await expect(note).toBeVisible();
 });
 
+// verify browser-only geometry without a leading phantom divider track
+test('fills an agentless workspace when the browser is its only panel', async ({ page }, testInfo) => {
+  test.setTimeout(75_000);
+  const worktreeId = 'browser-only';
+  await page.setViewportSize({ width: 1400, height: 850 });
+  // serve the embedded project preview
+  await page.route('https://project.example.com/**', route => route.fulfill({
+    contentType: 'text/html',
+    body: '<meta name="viewport" content="width=device-width, initial-scale=1"><main>Browser-only preview</main>'
+  }));
+  // serve one inactive project workspace
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    // serve the authenticated browser client
+    if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // serve the browser-only workspace fixture
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'project', label: 'Project', available: true, worktrees: [{ id: worktreeId, projectId: 'project', label: 'Browser only', path: '/worktrees/browser-only', available: true, pinned: true, order: 0, projectUrl: 'https://project.example.com' }] }] } });
+    // serve empty workspace notes
+    if (path === `/api/worktrees/${worktreeId}/notes`) return route.fulfill({ json: { notes: [] } });
+    // serve empty workspace panes
+    if (path === `/api/worktrees/${worktreeId}/panes`) return route.fulfill({ json: { panes: [] } });
+    // serve an unavailable push key
+    if (path === '/api/push/public-key') return route.fulfill({ json: {} });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto(`/#worktree=${worktreeId}`);
+  await page.getByRole('region', { name: 'Empty workspace' }).getByRole('button', { name: 'Browser', exact: true }).click();
+  const split = page.locator('.log-split');
+  const browser = page.getByRole('dialog', { name: 'Browser' });
+  await expect(browser).toBeVisible();
+  await expect(split.locator(':scope > .split-resizer')).toHaveCount(0);
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('Browser-only preview')).toBeVisible();
+  const [desktopSplit, desktopBrowser, desktopFrame] = await Promise.all([split.boundingBox(), browser.boundingBox(), browser.locator('iframe').boundingBox()]);
+  // fail clearly when a desktop surface has no measurable bounds
+  if (desktopSplit === null || desktopBrowser === null || desktopFrame === null) throw new Error('Browser-only desktop bounds are unavailable');
+  expect(desktopBrowser.x).toBeCloseTo(desktopSplit.x, 0);
+  expect(desktopBrowser.width).toBeCloseTo(desktopSplit.width, 0);
+  expect(desktopBrowser.height).toBeCloseTo(desktopSplit.height, 0);
+  expect(Math.abs(desktopFrame.width - desktopBrowser.width)).toBeLessThanOrEqual(2);
+  const desktopScreenshot = testInfo.outputPath('browser-only-desktop.png');
+  await page.screenshot({ path: desktopScreenshot });
+  await testInfo.attach('browser-only-desktop', { path: desktopScreenshot, contentType: 'image/png' });
+
+  // click once before the narrower header folds and renames this action
+  await browser.getByRole('button', { name: 'Use mobile viewport and user agent', exact: true }).click();
+  await expect(browser).toHaveClass(/\bmobile\b/u);
+  const [mobileSplit, mobileBrowser, mobileFrame] = await Promise.all([split.boundingBox(), browser.boundingBox(), browser.locator('iframe').boundingBox()]);
+  // fail clearly when a mobile preview surface has no measurable bounds
+  if (mobileSplit === null || mobileBrowser === null || mobileFrame === null) throw new Error('Browser-only mobile bounds are unavailable');
+  expect(mobileBrowser.width).toBeCloseTo(390, 0);
+  expect(mobileBrowser.height).toBeCloseTo(mobileSplit.height, 0);
+  expect(mobileFrame.width).toBeGreaterThanOrEqual(388);
+  expect(mobileFrame.width).toBeLessThanOrEqual(390);
+  const mobileScreenshot = testInfo.outputPath('browser-only-mobile-preview.png');
+  await page.screenshot({ path: mobileScreenshot });
+  await testInfo.attach('browser-only-mobile-preview', { path: mobileScreenshot, contentType: 'image/png' });
+
+  // restore the open mobile preview after remounting the workspace
+  await page.reload();
+  await expect(browser).toBeVisible();
+  await expect(browser).toHaveClass(/\bmobile\b/u);
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('Browser-only preview')).toBeVisible();
+});
+
 test.describe('phone browser split', () => {
   test.use({
     hasTouch: true,
@@ -545,10 +610,10 @@ test.describe('phone browser split', () => {
     await expect(browser).toBeInViewport({ ratio: 0.99 });
     await expect(output).not.toBeInViewport();
 
-    // a reload reopens the browser beside the agent, which leads the carousel
+    // a reload restores the last viewed browser split
     await page.reload();
-    await expect(output).toBeInViewport({ ratio: 0.99 });
-    await expect(browser).not.toBeInViewport();
+    await expect(browser).toBeInViewport({ ratio: 0.99 });
+    await expect(output).not.toBeInViewport();
     await expect(splitTrigger).toBeVisible();
   });
 });

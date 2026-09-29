@@ -4613,8 +4613,8 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
     '--agent-split': `${sizes.agent ?? 1}fr`, '--note-split': `${sizes.note ?? 1}fr`, '--browser-split': `${sizes.browser ?? 1}fr`,
     // keep the browser's removable divider inside its column group
     '--split-cols': columns.map((column, index) => {
-      // let mobile preview replace both tracks with one fixed-width column
-      if (column.key === 'browser') return 'var(--browser-split-cols, .45rem minmax(var(--split-pane-min-width), var(--browser-split)))';
+      // omit a leading divider while keeping mobile preview's fixed-width override
+      if (column.key === 'browser') return `var(--browser-split-cols, ${index === 0 ? '' : '.45rem '}minmax(var(--split-pane-min-width), var(--browser-split)))`;
       // retain dividers between the remaining resizable panels
       return `${index === 0 ? '' : '.45rem '}minmax(var(--split-pane-min-width), ${sizes[column.key] ?? 1}fr)`;
     }).join(' ')
