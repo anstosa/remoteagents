@@ -163,6 +163,19 @@ test('a starting launch shows the agent panel with its notice and the composer h
   const prompt = panel.getByRole('region', { name: 'Prompt composer' }).getByRole('textbox', { name: 'Prompt' });
   await prompt.fill('Run the tests');
   await expect(prompt).toHaveValue('Run the tests');
+  // keep the preparing output's split edge above its usable draft composer
+  const borderPlacement = await panel.evaluate(element => {
+    const output = element.querySelector<HTMLElement>('.agent-output');
+    const composer = element.querySelector<HTMLElement>('.agent-composer');
+    // require both rows in the pending panel
+    if (output === null || composer === null) throw new Error('pending Agent rows are missing');
+    return {
+      outputBorder: getComputedStyle(output).borderBottomWidth,
+      panelBorder: getComputedStyle(element).borderBottomWidth,
+      gap: composer.getBoundingClientRect().top - output.getBoundingClientRect().bottom
+    };
+  });
+  expect(borderPlacement).toEqual({ outputBorder: '1px', panelBorder: '0px', gap: 0 });
   // a starting panel has no discard: the draft stays until the Agent takes it
   await expect(panel.getByRole('button', { name: 'Discard draft' })).toHaveCount(0);
 });

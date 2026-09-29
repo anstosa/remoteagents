@@ -1521,14 +1521,13 @@ test('on a phone a visible Terminal shows in-split keys and the agent dot restor
   await expect(column.getByLabel('Terminal keys')).toBeVisible();
   await expect(workspaceToolbar.getByRole('button', { name: 'Open a terminal' })).toBeVisible();
   await expect(workspaceToolbar.getByRole('group', { name: 'Panels' })).toBeVisible();
-  // use one separator color for static, Agent, and Terminal control areas
-  const separators = await page.evaluate(() => ({
-    static: getComputedStyle(document.querySelector<HTMLElement>('.log')!).borderBottomColor,
-    agent: getComputedStyle(document.querySelector<HTMLElement>('.agent-composer')!).borderTopColor,
-    terminal: getComputedStyle(document.querySelector<HTMLElement>('.terminal-pane > .mobile-terminal-keys')!).borderTopColor
+  // keep every footer junction free of a divider
+  const dividers = await page.evaluate(() => ({
+    static: getComputedStyle(document.querySelector<HTMLElement>('.log')!).borderBottomWidth,
+    agent: getComputedStyle(document.querySelector<HTMLElement>('.agent-composer')!).borderTopWidth,
+    terminal: getComputedStyle(document.querySelector<HTMLElement>('.terminal-pane > .mobile-terminal-keys')!).borderTopWidth
   }));
-  expect(separators.static).toBe(separators.agent);
-  expect(separators.terminal).toBe(separators.agent);
+  expect(dividers).toEqual({ static: '0px', agent: '0px', terminal: '0px' });
 
   // switching back to the agent panel brings the Agent's composer back and hides the keys;
   // the dots still offer the way back to the Terminal
@@ -1538,6 +1537,189 @@ test('on a phone a visible Terminal shows in-split keys and the agent dot restor
   await expect(dots.locator('.terminal-dot')).toBeVisible();
   await expect(composer).toBeInViewport();
   await expect(escKey).toBeHidden();
+});
+
+// keep every bottom control row on the static workspace surface
+test('bottom controls share the static workspace surface without extra row gaps', async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  // read both the css layers and the visible control-to-control gaps
+  const readSurface = (controlContainerSelector: string, controlSelector: string) => page.evaluate(({ controlContainerSelector, controlSelector }) => {
+    // require one rendered surface element
+    const required = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      // fail with the missing selector rather than a null dereference
+      if (element === null) throw new Error(`missing bottom surface: ${selector}`);
+      return element;
+    };
+    // retain the properties that can paint a distinct footer layer
+    const paint = (element: HTMLElement) => {
+      const style = getComputedStyle(element);
+      return {
+        backgroundImage: style.backgroundImage,
+        backdropFilter: style.backdropFilter,
+        boxShadow: style.boxShadow,
+        borderTopWidth: style.borderTopWidth,
+        borderBottomWidth: style.borderBottomWidth
+      };
+    };
+    // find the first ancestor that visibly paints behind a row
+    const effectiveSurface = (element: HTMLElement) => {
+      let current: HTMLElement | null = element;
+      // stop at the nearest visible color or image layer
+      while (current !== null) {
+        const style = getComputedStyle(current);
+        const transparent = style.backgroundColor === 'rgba(0, 0, 0, 0)' || style.backgroundColor === 'transparent';
+        // retain the layer that determines the rendered footer tone
+        if (!transparent || style.backgroundImage !== 'none') return { color: style.backgroundColor, image: style.backgroundImage };
+        current = current.parentElement;
+      }
+      throw new Error('bottom surface has no painted ancestor');
+    };
+    // collapse all visible controls into one vertical span
+    const visibleSpan = (elements: Element[]) => {
+      const boxes = elements.map(element => element.getBoundingClientRect()).filter(box => box.width > 0 && box.height > 0);
+      // require visible controls in every tested mode
+      if (boxes.length === 0) throw new Error('bottom surface has no visible controls');
+      return { top: Math.min(...boxes.map(box => box.top)), bottom: Math.max(...boxes.map(box => box.bottom)) };
+    };
+    const controls = required(controlContainerSelector);
+    const tabs = required('.tabs');
+    const toolbar = required('.workspace-toolbar');
+    const tabControl = required('.tabs button[role="tab"].active');
+    const crustProbe = document.createElement('span');
+    crustProbe.style.backgroundColor = 'var(--crust)';
+    document.body.append(crustProbe);
+    const themeSurfaceColor = getComputedStyle(crustProbe).backgroundColor;
+    crustProbe.remove();
+    const controlSpan = visibleSpan([...controls.querySelectorAll(controlSelector)]);
+    const tabSpan = visibleSpan([tabControl]);
+    const toolbarSpan = visibleSpan([...toolbar.querySelectorAll('button')]);
+    return {
+      controls: paint(controls),
+      tabs: paint(tabs),
+      toolbar: paint(toolbar),
+      effectiveControls: effectiveSurface(controls),
+      effectiveTabs: effectiveSurface(tabs),
+      effectiveToolbar: effectiveSurface(toolbar),
+      themeSurfaceColor,
+      controlToTabsGap: tabs.getBoundingClientRect().top - controls.getBoundingClientRect().bottom,
+      controlToTabButtonGap: tabSpan.top - controlSpan.bottom,
+      tabToToolbarButtonGap: toolbarSpan.top - tabSpan.bottom
+    };
+  }, { controlContainerSelector, controlSelector });
+  const samples: { name: string; surface: Awaited<ReturnType<typeof readSurface>> }[] = [];
+  // capture each rendered state before evaluating the shared contract
+  const capture = async (name: string, controlContainerSelector: string, controlSelector: string) => {
+    samples.push({ name, surface: await readSurface(controlContainerSelector, controlSelector) });
+    await page.screenshot({ path: testInfo.outputPath(`${name}.png`), fullPage: true });
+  };
+
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await capture('bottom-surface-dark-desktop-prompt', '.agent-composer', 'textarea, button');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await capture('bottom-surface-dark-phone-prompt', '.agent-composer', 'textarea, button');
+
+  const output = page.locator('.log-output');
+  await output.locator('.xterm-screen').click();
+  await expect(output).toHaveClass(/input-active/u);
+  await capture('bottom-surface-dark-phone-agent-keys', '.log-output > .mobile-terminal-keys', 'button');
+
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
+  await expect(terminal).toBeInViewport({ ratio: 0.99 });
+  await capture('bottom-surface-dark-phone-terminal-keys', '.terminal-pane[data-panel-key="%5"] > .mobile-terminal-keys', 'button');
+
+  // switch the live theme so the same transparency contract covers latte
+  await page.evaluate(() => {
+    localStorage.setItem('rac.color-theme', 'latte');
+    window.dispatchEvent(new StorageEvent('storage', { key: 'rac.color-theme', newValue: 'latte' }));
+  });
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('latte');
+  await capture('bottom-surface-light-phone-terminal-keys', '.terminal-pane[data-panel-key="%5"] > .mobile-terminal-keys', 'button');
+  await chooseSplit(page, 'Agent output');
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
+  await capture('bottom-surface-light-phone-prompt', '.agent-composer', 'textarea, button');
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await capture('bottom-surface-light-desktop-prompt', '.agent-composer', 'textarea, button');
+  await testInfo.attach('bottom-surface-measurements.json', { body: JSON.stringify(samples, null, 2), contentType: 'application/json' });
+
+  // measure one hidden-row footer against the viewport edge
+  const readHiddenFooter = (selector: string) => page.evaluate(target => {
+    const buttons = [...document.querySelectorAll<HTMLElement>(`${target} button`)].map(element => element.getBoundingClientRect()).filter(rect => rect.width > 0 && rect.height > 0);
+    // require visible controls before measuring their gutter
+    if (buttons.length === 0) throw new Error(`hidden footer has no visible buttons: ${target}`);
+    return {
+      tabs: getComputedStyle(document.querySelector<HTMLElement>('.tabs')!).display,
+      toolbar: getComputedStyle(document.querySelector<HTMLElement>('.workspace-toolbar')!).display,
+      buttonCount: buttons.length,
+      rowCount: new Set(buttons.map(rect => Math.round(rect.top))).size,
+      bottomGap: innerHeight - Math.max(...buttons.map(rect => rect.bottom)),
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: innerWidth
+    };
+  }, selector);
+  // keep the helper keys inside the viewport when the software keyboard hides both lower rows
+  await page.setViewportSize({ width: 390, height: 844 });
+  await output.locator('.xterm-screen').click();
+  await expect(output).toHaveClass(/input-active/u);
+  await page.evaluate(() => document.documentElement.classList.add('software-keyboard-open'));
+  const keyboardLayout = await readHiddenFooter('.log-output > .mobile-terminal-keys');
+  await page.screenshot({ path: testInfo.outputPath('bottom-surface-light-phone-keyboard-open.png'), fullPage: true });
+  await page.evaluate(() => document.documentElement.classList.remove('software-keyboard-open'));
+
+  // keep the same gutter when expansion hides the tab and toolbar rows
+  await chooseSplit(page, 'Terminal build');
+  await terminal.getByRole('button', { name: 'Expand terminal build', exact: true }).click();
+  await expect(terminal).toHaveClass(/\bexpanded\b/u);
+  const expandedLayout = await readHiddenFooter('.terminal-pane[data-panel-key="%5"] > .mobile-terminal-keys');
+  await page.screenshot({ path: testInfo.outputPath('bottom-surface-light-phone-terminal-expanded.png'), fullPage: true });
+
+  expect(keyboardLayout.tabs).toBe('none');
+  expect(keyboardLayout.toolbar).toBe('none');
+  expect(keyboardLayout.buttonCount).toBe(13);
+  expect(keyboardLayout.rowCount).toBe(2);
+  expect.soft(keyboardLayout.bottomGap).toBeCloseTo(6, 0);
+  expect(keyboardLayout.documentWidth).toBeLessThanOrEqual(keyboardLayout.viewportWidth);
+  expect(expandedLayout.tabs).toBe('none');
+  expect(expandedLayout.toolbar).toBe('none');
+  expect(expandedLayout.buttonCount).toBe(13);
+  expect(expandedLayout.rowCount).toBe(2);
+  expect.soft(expandedLayout.bottomGap).toBeCloseTo(6, 0);
+  expect(expandedLayout.documentWidth).toBeLessThanOrEqual(expandedLayout.viewportWidth);
+
+  // every footer row must resolve to the static toolbar's approved crust tone
+  for (const { name, surface } of samples) {
+    expect(surface.effectiveToolbar.color, name).toBe(surface.themeSurfaceColor);
+    expect(surface.effectiveToolbar.image, name).toBe('none');
+    expect(surface.effectiveControls.color, name).toBe(surface.themeSurfaceColor);
+    expect(surface.effectiveControls.image, name).toBe('none');
+    expect(surface.effectiveTabs.color, name).toBe(surface.themeSurfaceColor);
+    expect(surface.effectiveTabs.image, name).toBe('none');
+    expect(surface.toolbar.backgroundImage, name).toBe('none');
+    expect(surface.toolbar.backdropFilter, name).toBe('none');
+    expect(surface.toolbar.boxShadow, name).toBe('none');
+    expect(surface.toolbar.borderTopWidth, name).toBe('0px');
+    expect(surface.toolbar.borderBottomWidth, name).toBe('0px');
+    expect(surface.controls.backgroundImage, name).toBe('none');
+    expect(surface.controls.backdropFilter, name).toBe('none');
+    expect(surface.controls.boxShadow, name).toBe('none');
+    expect(surface.tabs.backgroundImage, name).toBe('none');
+    expect(surface.tabs.backdropFilter, name).toBe('none');
+    expect(surface.tabs.boxShadow, name).toBe('none');
+    expect(surface.controls.borderTopWidth, name).toBe('0px');
+    expect(surface.tabs.borderTopWidth, name).toBe('0px');
+    expect(surface.tabs.borderBottomWidth, name).toBe('0px');
+    expect(surface.controlToTabsGap, name).toBe(0);
+    expect(surface.controlToTabButtonGap, name).toBeCloseTo(6, 0);
+    expect(surface.tabToToolbarButtonGap, name).toBeCloseTo(6, 0);
+  }
 });
 
 test('on a phone the helper keys drive the visible Terminal, and the Agent pane on the agent panel', async ({ page }) => {

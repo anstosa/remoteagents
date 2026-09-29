@@ -382,6 +382,48 @@ test('prepares and hands off a directory prompt before dashboard discovery', asy
   await verifyPendingSessionHandoff(page, 'directory');
 });
 
+// keep a pending scratch session's direct prompt footer above the software keyboard edge
+test('a pending scratch session keeps the mobile keyboard gutter', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const harness = await mountPendingSession(page, 'scratch');
+  await openAgentLauncher(page);
+  await page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' }).click();
+  await expect.poll(harness.launchRequests).toBe(1);
+
+  const pendingPanel = page.locator('.log > .log-output');
+  await expect(pendingPanel).toBeVisible();
+  await expect(page.locator('.log > .log-split')).toHaveCount(0);
+  await expect(pendingPanel.getByRole('region', { name: 'Prompt composer' })).toBeVisible();
+  // keep the direct pending output border above its composer
+  const borderPlacement = await pendingPanel.evaluate(element => {
+    const output = element.querySelector<HTMLElement>('.agent-output');
+    const composer = element.querySelector<HTMLElement>('.agent-composer');
+    // require both pending rows
+    if (output === null || composer === null) throw new Error('pending session rows are missing');
+    return {
+      outputBorder: getComputedStyle(output).borderBottomWidth,
+      panelBorder: getComputedStyle(element).borderBottomWidth,
+      gap: composer.getBoundingClientRect().top - output.getBoundingClientRect().bottom
+    };
+  });
+  expect(borderPlacement).toEqual({ outputBorder: '1px', panelBorder: '0px', gap: 0 });
+  await page.evaluate(() => document.documentElement.classList.add('software-keyboard-open'));
+  const layout = await page.evaluate(() => {
+    const controls = [...document.querySelectorAll<HTMLElement>('.log > .log-output .agent-composer textarea, .log > .log-output .agent-composer button')].map(element => element.getBoundingClientRect()).filter(rect => rect.width > 0 && rect.height > 0);
+    // require the pending composer controls
+    if (controls.length === 0) throw new Error('pending session prompt controls are missing');
+    return {
+      tabs: getComputedStyle(document.querySelector<HTMLElement>('.tabs')!).display,
+      toolbar: getComputedStyle(document.querySelector<HTMLElement>('.workspace-toolbar')!).display,
+      bottomGap: innerHeight - Math.max(...controls.map(rect => rect.bottom)),
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: innerWidth
+    };
+  });
+  await page.screenshot({ path: testInfo.outputPath('pending-scratch-keyboard-gutter.png'), fullPage: true });
+  expect(layout).toEqual({ tabs: 'none', toolbar: 'none', bottomGap: 6, documentWidth: 390, viewportWidth: 390 });
+});
+
 // verify late scratch discovery
 test('keeps one returned scratch launch pending beyond the discovery timeout', async ({ page }) => {
   await page.clock.install();

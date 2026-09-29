@@ -37,6 +37,21 @@ const dots = (page: Page) => toolbar(page).getByRole('group', { name: 'Panels' }
 const carousel = (page: Page) => page.locator('.log-split');
 const agentPanel = (page: Page) => page.locator('.log-output');
 const terminalPanel = (page: Page) => page.locator('.terminal-pane[data-panel-key="%5"]');
+// require one surface-0 border on a split's content edge
+const expectBottomBorder = async (target: Locator, label: string) => {
+  const border = await target.evaluate(element => {
+    const probe = document.createElement('span');
+    probe.style.borderBottom = '1px solid var(--surface-0)';
+    document.body.append(probe);
+    const expectedColor = getComputedStyle(probe).borderBottomColor;
+    probe.remove();
+    const computed = getComputedStyle(element);
+    return { width: computed.borderBottomWidth, style: computed.borderBottomStyle, color: computed.borderBottomColor, expectedColor };
+  });
+  expect(border.width, label).toBe('1px');
+  expect(border.style, label).toBe('solid');
+  expect(border.color, label).toBe(border.expectedColor);
+};
 
 // the carousel sits on a panel boundary: one panel fills the screen
 const expectSnapped = (page: Page) => expect.poll(() => carousel(page).evaluate(element => element.scrollLeft % element.clientWidth)).toBe(0);
@@ -390,6 +405,61 @@ test('Browser and Code move into the ⋮, and a panel opened from the toolbar sc
   await expect(dots(page).locator('.panel-dot')).toHaveCount(4);
 });
 
+// keep each split edge visible while input footers sit below terminal content
+test('every split keeps its bottom border above any input footer', async ({ page }, testInfo) => {
+  await openTerminal(page);
+  await chooseSplit(page, 'Agent output');
+  await toolbar(page).getByRole('button', { name: 'Notes (1)' }).click();
+  await page.getByRole('button', { name: 'Phone checklist…', exact: true }).click();
+  await toolbar(page).getByRole('button', { name: 'More options' }).click();
+  await page.getByRole('button', { name: 'Browser', exact: true }).click();
+  await toolbar(page).getByRole('button', { name: 'More options' }).click();
+  await page.getByRole('button', { name: 'Code', exact: true }).click();
+
+  const agent = agentPanel(page);
+  const terminal = terminalPanel(page);
+  const note = page.getByRole('dialog', { name: 'Note' });
+  const browser = page.getByRole('dialog', { name: 'Browser' });
+  const code = page.getByRole('region', { name: 'Code changes' });
+  // keep the content border directly above, never below, an input footer
+  const expectBorderAbove = async (panel: Locator, content: Locator, footer: Locator, label: string) => {
+    await expectBottomBorder(content, label);
+    const placement = await Promise.all([panel, content, footer].map(locator => locator.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, borderBottom: getComputedStyle(element).borderBottomWidth };
+    })));
+    expect(placement[0].borderBottom, label).toBe('0px');
+    expect(placement[2].borderBottom, label).toBe('0px');
+    expect(Math.abs(placement[1].bottom - placement[2].top), label).toBeLessThanOrEqual(1);
+  };
+
+  // desktop panels expose the same content edge without mobile key rows
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.screenshot({ path: testInfo.outputPath('split-bottom-borders-desktop.png'), fullPage: true });
+  const prompt = agent.locator('.agent-composer');
+  await expect(prompt).toBeVisible();
+  await expectBorderAbove(agent, agent.locator('.agent-output'), prompt, 'desktop Agent prompt');
+  await expect(terminal.getByLabel('Terminal keys')).toBeHidden();
+  await expectBottomBorder(terminal.locator('.terminal-canvas'), 'desktop Terminal');
+  await expectBottomBorder(note, 'desktop Note');
+  await expectBottomBorder(browser, 'desktop Browser');
+  await expectBottomBorder(code, 'desktop Code');
+
+  // phone agent prompt and input modes keep the separator above their alternate footers
+  await page.setViewportSize({ width: 428, height: 880 });
+  await chooseSplit(page, 'Agent output');
+  await expectBorderAbove(agent, agent.locator('.agent-output'), prompt, 'phone Agent prompt');
+  await agent.locator('.xterm-accessibility-tree').tap();
+  const agentKeys = agent.getByLabel('Terminal keys');
+  await expect(agentKeys).toBeVisible();
+  await expectBorderAbove(agent, agent.locator('.agent-output'), agentKeys, 'phone Agent keys');
+  await chooseSplit(page, 'Terminal build');
+  const terminalKeys = terminal.getByLabel('Terminal keys');
+  await expect(terminalKeys).toBeVisible();
+  await expectBorderAbove(terminal, terminal.locator('.terminal-canvas'), terminalKeys, 'phone Terminal keys');
+  await page.screenshot({ path: testInfo.outputPath('split-bottom-borders-phone.png'), fullPage: true });
+});
+
 test('expand hides the tab row and toolbar for every panel kind, and restore brings them back', async ({ page }) => {
   await openTerminal(page);
   // with the Terminal in view the toolbar is its helper keys (and the dots); back to the agent
@@ -402,15 +472,15 @@ test('expand hides the tab row and toolbar for every panel kind, and restore bri
   await page.getByRole('button', { name: 'Code', exact: true }).click();
 
   const tabs = page.getByRole('tablist', { name: 'Agents and worktrees' });
-  const panels: [title: string, panel: Locator, label: string][] = [
-    ['Agent output', agentPanel(page), 'agent'],
-    ['Terminal build', terminalPanel(page), 'terminal build'],
-    ['Note', page.getByRole('dialog', { name: 'Note' }), 'note'],
-    ['Project browser', page.getByRole('dialog', { name: 'Browser' }), 'browser'],
-    ['Code changes', page.getByRole('region', { name: 'Code changes' }), 'code']
+  const panels: [title: string, panel: Locator, content: Locator, label: string][] = [
+    ['Agent output', agentPanel(page), agentPanel(page).locator('.agent-output'), 'agent'],
+    ['Terminal build', terminalPanel(page), terminalPanel(page).locator('.terminal-canvas'), 'terminal build'],
+    ['Note', page.getByRole('dialog', { name: 'Note' }), page.getByRole('dialog', { name: 'Note' }), 'note'],
+    ['Project browser', page.getByRole('dialog', { name: 'Browser' }), page.getByRole('dialog', { name: 'Browser' }), 'browser'],
+    ['Code changes', page.getByRole('region', { name: 'Code changes' }), page.getByRole('region', { name: 'Code changes' }), 'code']
   ];
   // check expansion for every titled split
-  for (const [title, panel, label] of panels) {
+  for (const [title, panel, content, label] of panels) {
     await chooseSplit(page, title);
     await expect(panel).toBeInViewport({ ratio: 0.99 });
     const bottom = await panel.evaluate(element => element.getBoundingClientRect().bottom);
@@ -422,6 +492,7 @@ test('expand hides the tab row and toolbar for every panel kind, and restore bri
       await expect(toolbar(page).getByRole('button', { name: 'Open a terminal' })).toBeHidden();
       await expect(dots(page)).toBeHidden();
     } else await expect(toolbar(page)).toBeHidden();
+    await expectBottomBorder(content, `expanded ${label}`);
     // the panel grows into the freed space
     await expect.poll(() => panel.evaluate(element => element.getBoundingClientRect().bottom)).toBeGreaterThan(bottom + 40);
     await panel.getByRole('button', { name: `Restore ${label}` }).click();
