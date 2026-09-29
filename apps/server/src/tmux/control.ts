@@ -263,36 +263,40 @@ export class TmuxControlClient implements PaneClient {
   }
 
   /**
-   * Reconstruct a pane's current screen as a byte seed for the Pane stream, capturing on
+   * reconstruct a pane's current screen as a byte seed for the pane stream, capturing on
    * the control connection so tmux orders the reply exactly against pending `%output`.
-   * A full-screen program (alternate screen) is painted with each row placed absolutely
+   * a full-screen program (alternate screen) is painted with each row placed absolutely
    * (`CSI row;1H`, no newline, so a full-width line can never wrap and scroll a row off)
-   * with `-N` to keep trailing cells, and the cursor restored from `#{cursor_x/y}`. The
-   * normal buffer is the history to `depth`, joined with CRLF, cleared first and followed
-   * by the cursor position. Reply lines are byte-preserving (latin1); the ASCII control prefixes stay ASCII, so latin1
-   * reproduces the exact bytes a spawned capture would print.
+   * with `-N` to keep trailing cells, and the cursor restored from `#{cursor_x/y}`. mouse
+   * reporting and coordinate modes are restored for either buffer so a fresh browser can
+   * send wheel input to the live program. the normal buffer is the history to `depth`, joined
+   * with CRLF, cleared first and followed by the modes and cursor position. reply lines are
+   * byte-preserving (latin1); the ASCII control prefixes stay ASCII, so latin1 reproduces the
+   * exact bytes a spawned capture would print.
    */
   async seed(pane: string, depth: number): Promise<Buffer> {
     if (!paneId.test(pane) || !Number.isInteger(depth) || depth < 1 || depth > maxCaptureDepth) return Buffer.alloc(0);
     await this.ready.catch(() => undefined);
     if (this.disposed) return Buffer.alloc(0);
-    const meta = await this.command(`display-message -p -t ${pane} '#{alternate_on} #{cursor_x} #{cursor_y}'`).catch(() => undefined);
+    const meta = await this.command(`display-message -p -t ${pane} '#{alternate_on} #{cursor_x} #{cursor_y} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_utf8_flag} #{mouse_sgr_flag}'`).catch(() => undefined);
     if (meta?.ok !== true) return Buffer.alloc(0);
-    const [alt, cursorX, cursorY] = (meta.lines[0] ?? '').trim().split(' ');
+    const [alt, cursorX, cursorY, mouseStandard, mouseButton, mouseAll, mouseUtf8, mouseSgr] = (meta.lines[0] ?? '').trim().split(' ');
     // restore the live cursor after either screen capture
     const x = Number(cursorX);
     const y = Number(cursorY);
     const cursor = Number.isInteger(x) && Number.isInteger(y) ? `\x1b[${y + 1};${x + 1}H` : '';
+    // restore only the reporting and encoding modes tmux currently has enabled
+    const mouseModes = `${mouseStandard === '1' ? '\x1b[?1000h' : ''}${mouseButton === '1' ? '\x1b[?1002h' : ''}${mouseAll === '1' ? '\x1b[?1003h' : ''}${mouseUtf8 === '1' ? '\x1b[?1005h' : ''}${mouseSgr === '1' ? '\x1b[?1006h' : ''}`;
     if (alt === '1') {
       const capture = await this.command(`capture-pane -e -p -N -t ${pane}`).catch(() => undefined);
       if (capture?.ok !== true) return Buffer.alloc(0);
       let out = '\x1b[?1049h\x1b[H\x1b[2J';
       capture.lines.forEach((line, index) => { out += `\x1b[${index + 1};1H${line}`; });
-      return Buffer.from(out + cursor, 'latin1');
+      return Buffer.from(out + mouseModes + cursor, 'latin1');
     }
     const capture = await this.command(`capture-pane -e -p -J -t ${pane} -S -${depth}`).catch(() => undefined);
     if (capture?.ok !== true) return Buffer.alloc(0);
-    return Buffer.from(`\x1b[H\x1b[2J${capture.lines.join('\r\n')}${cursor}`, 'latin1');
+    return Buffer.from(`\x1b[H\x1b[2J${capture.lines.join('\r\n')}${mouseModes}${cursor}`, 'latin1');
   }
 
   private async continuePane(pane: string): Promise<void> {

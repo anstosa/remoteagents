@@ -475,7 +475,8 @@ test('a large paste is split into multiple input frames within the byte cap', as
   expect(await drive<number>(page, 'inputFrameCount')).toBe(before + 2);
 });
 
-test('a touch drag scrolls the browser scrollback and defers in the alternate screen', async ({ browser, baseURL }) => {
+// cover local history and application-owned alternate screens
+test('touch scrolling stays local in history and reaches alternate-screen programs', async ({ browser, baseURL }) => {
   const context = await browser.newContext({ baseURL: baseURL ?? undefined, ...MOBILE });
   const page = await context.newPage();
   try {
@@ -487,19 +488,41 @@ test('a touch drag scrolls the browser scrollback and defers in the alternate sc
     await expect.poll(() => drive(page, 'baseY')).toBeGreaterThan(0);
     const base = await drive<number>(page, 'baseY');
     expect(await drive<number>(page, 'viewportY')).toBe(base); // pinned to the bottom
+    const beforeHistoryInput = await drive<string>(page, 'inputData');
     const owned = await drive<boolean>(page, 'touchDrag', 120); // finger down → history
     expect(owned).toBe(true);
     expect(await drive<number>(page, 'viewportY')).toBeLessThan(base);
+    expect(await drive<string>(page, 'inputData')).toBe(beforeHistoryInput);
     // A scroll drag never becomes a click, so it must not focus the terminal — a scroll
     // must not summon the soft keyboard.
+    expect(await drive(page, 'activeIsTerminalTextarea')).toBe(false);
+    const beforeSideways = await drive<number>(page, 'viewportY');
+    expect(await drive<boolean>(page, 'touchGesture', 120, 10)).toBe(false);
+    expect(await drive<number>(page, 'viewportY')).toBe(beforeSideways);
     expect(await drive(page, 'activeIsTerminalTextarea')).toBe(false);
 
     await drive(page, 'pushBytes', '\x1b[?1049h'); // enter the alternate screen
     await expect.poll(() => drive(page, 'alternateScreen')).toBe(true);
-    const beforeAlt = await drive<number>(page, 'viewportY');
-    const ownedInAlt = await drive<boolean>(page, 'touchDrag', 120);
-    expect(ownedInAlt).toBe(false); // left to the program
-    expect(await drive<number>(page, 'viewportY')).toBe(beforeAlt);
+    const beforeAltUp = await drive<string>(page, 'inputData');
+    expect(await drive<boolean>(page, 'touchDrag', 120)).toBe(true);
+    const altUp = (await drive<string>(page, 'inputData')).slice(beforeAltUp.length);
+    expect(altUp).toMatch(/^(?:\x1b\[A)+$/u);
+    expect(await drive(page, 'activeIsTerminalTextarea')).toBe(false);
+    const beforeAltDown = await drive<string>(page, 'inputData');
+    expect(await drive<boolean>(page, 'touchDrag', -120)).toBe(true);
+    const altDown = (await drive<string>(page, 'inputData')).slice(beforeAltDown.length);
+    expect(altDown).toMatch(/^(?:\x1b\[B)+$/u);
+
+    await drive(page, 'pushBytes', '\x1b[?1003h\x1b[?1006h');
+    await expect.poll(() => drive(page, 'mouseTrackingMode')).toBe('any');
+    const beforeMouseUp = await drive<string>(page, 'inputData');
+    expect(await drive<boolean>(page, 'touchDrag', 120)).toBe(true);
+    const mouseUp = (await drive<string>(page, 'inputData')).slice(beforeMouseUp.length);
+    expect(mouseUp).toMatch(/\x1b\[<64;\d+;\d+M/u);
+    const beforeMouseDown = await drive<string>(page, 'inputData');
+    expect(await drive<boolean>(page, 'touchDrag', -120)).toBe(true);
+    const mouseDown = (await drive<string>(page, 'inputData')).slice(beforeMouseDown.length);
+    expect(mouseDown).toMatch(/\x1b\[<65;\d+;\d+M/u);
   } finally {
     await context.close();
   }

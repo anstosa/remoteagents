@@ -3,9 +3,9 @@ import type { Terminal as XTerm } from '@xterm/xterm';
 // xterm.js 6.0 has no touch history scrolling of its own, so the console owns it: a
 // one-finger drag over a pane with scrollback moves the browser's scrollback. The
 // listeners are capture-phase and non-passive so they run before xterm and can
-// swallow the gesture. In the alternate screen (which has no scrollback) or while the
-// program is tracking the mouse, the drag is left for xterm to forward to the
-// program, exactly as a real terminal behaves. A drag that sets off sideways is left to
+// swallow the gesture. In the alternate screen or while the program tracks the mouse,
+// translate vertical drags into wheel events for xterm to encode for the program.
+// xterm does not forward touch events itself. A drag that sets off sideways is left to
 // the browser too, so it swipes the phone's panel carousel. The wheel stays native
 // (xterm handles it with `scrollOnUserInput` off).
 
@@ -13,11 +13,15 @@ const FALLBACK_CELL_HEIGHT = 17;
 // how far a finger travels before the drag's direction is decided
 const DIRECTION_SLOP = 8;
 
+// route vertical touch gestures to local history or the running program
 export const attachTerminalTouchScroll = (element: HTMLElement, terminal: XTerm): (() => void) => {
+  const terminalElement = terminal.element;
+  // require xterm's wheel target before installing gesture listeners
+  if (terminalElement === undefined) throw new Error('open the terminal before attaching touch scrolling');
   let gesture: { id: number; startX: number; startY: number; lastY: number; remainder: number; vertical: boolean } | undefined;
 
-  // Leave the gesture to the program when there is nothing local to scroll.
-  const deferToProgram = () =>
+  // let xterm encode scrolling for applications that own their viewport
+  const scrollsProgram = () =>
     terminal.buffer.active.type === 'alternate' || terminal.modes.mouseTrackingMode !== 'none';
 
   const cellHeight = () => {
@@ -26,14 +30,18 @@ export const attachTerminalTouchScroll = (element: HTMLElement, terminal: XTerm)
     return measured > 0 ? measured : FALLBACK_CELL_HEIGHT;
   };
 
+  // track one finger in both normal and full-screen programs
   const start = (event: TouchEvent) => {
-    if (event.touches.length !== 1 || deferToProgram()) { gesture = undefined; return; }
+    // leave multi-finger gestures to the browser
+    if (event.touches.length !== 1) { gesture = undefined; return; }
     const touch = event.touches[0]!;
     gesture = { id: touch.identifier, startX: touch.clientX, startY: touch.clientY, lastY: touch.clientY, remainder: 0, vertical: false };
   };
 
+  // consume only direction-locked vertical drags
   const move = (event: TouchEvent) => {
-    if (gesture === undefined || deferToProgram()) return;
+    // ignore untracked or sideways gestures
+    if (gesture === undefined) return;
     const touch = Array.from(event.touches).find(candidate => candidate.identifier === gesture!.id);
     if (touch === undefined) return;
     if (!gesture.vertical) {
@@ -49,9 +57,25 @@ export const attachTerminalTouchScroll = (element: HTMLElement, terminal: XTerm)
     gesture.remainder += touch.clientY - gesture.lastY;
     gesture.lastY = touch.clientY;
     const lines = Math.trunc(gesture.remainder / cellHeight());
+    // accumulate partial rows without over-scrolling
     if (lines !== 0) {
       gesture.remainder -= lines * cellHeight();
-      terminal.scrollLines(-lines);
+      // preserve xterm's mouse encoding and alternate-screen arrow fallback
+      if (scrollsProgram()) {
+        // xterm emits one application scroll report per wheel event
+        for (let line = 0; line < Math.abs(lines); line += 1) {
+          terminalElement.dispatchEvent(new WheelEvent('wheel', {
+            bubbles: true,
+            cancelable: true,
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+            deltaMode: WheelEvent.DOM_DELTA_LINE,
+            deltaY: -Math.sign(lines)
+          }));
+        }
+      } else {
+        terminal.scrollLines(-lines);
+      }
     }
     event.preventDefault();
     event.stopPropagation();

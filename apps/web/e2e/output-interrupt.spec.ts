@@ -23,6 +23,26 @@ const routeApi = async (page: import('@playwright/test').Page) => {
   });
 };
 
+// dispatch a real one-finger vertical drag through Chromium
+const dragTouch = async (page: import('@playwright/test').Page, target: import('@playwright/test').Locator, deltaY: number) => {
+  const bounds = await target.boundingBox();
+  // require a rendered touch target
+  if (bounds === null) throw new Error('agent output has no touch bounds');
+  const session = await page.context().newCDPSession(page);
+  const x = bounds.x + bounds.width / 2;
+  const y = bounds.y + bounds.height / 2;
+  try {
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    // move gradually so Chromium recognizes a drag
+    for (let step = 1; step <= 12; step += 1) {
+      await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y + deltaY * step / 12 }] });
+    }
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  } finally {
+    await session.detach();
+  }
+};
+
 test('focusing the pane marks it input-active and forwards typed control keys', async ({ page }) => {
   await installPaneMock(page);
   await routeApi(page);
@@ -121,6 +141,64 @@ test('the mobile terminal keys drive the pane, including the Ctrl latch', async 
   await page.getByRole('button', { name: 'Esc', exact: true }).click();
   await page.getByRole('button', { name: 'Ctrl+C', exact: true }).click();
   await expect.poll(() => paneInputText(page, 'agent-1')).toBe('\x03\x1b\x03');
+});
+
+// compare working desktop wheel input with the phone touch path
+test('desktop wheel reaches a mouse-reporting Agent output', async ({ page }) => {
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', '\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[2J\x1b[Hmouse reporting');
+  await expect(page.getByLabel('Live log').locator('.xterm-rows')).toContainText('mouse reporting');
+
+  const host = page.locator('.log-output .streamed-terminal-host');
+  const bounds = await host.boundingBox();
+  // require a rendered wheel target
+  if (bounds === null) throw new Error('agent output has no wheel bounds');
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.wheel(0, -120);
+  await expect.poll(() => paneInputText(page, 'agent-1')).toMatch(/\x1b\[<64;\d+;\d+M/u);
+});
+
+// use a touch-capable phone context
+test.describe('phone Agent output scrolling', () => {
+  test.use({
+    hasTouch: true,
+    isMobile: true,
+    userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36',
+    viewport: { width: 390, height: 844 }
+  });
+
+  // forward both touch directions without stealing focus
+  test('touch drag reaches a mouse-reporting Agent output', async ({ page }, testInfo) => {
+    await installPaneMock(page);
+    await routeApi(page);
+    await page.goto('/');
+    await seedPaneSize(page, 'agent-1', 80, 24);
+    await pushBytes(page, 'agent-1', '\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[2J\x1b[Hmouse reporting');
+    await expect(page.getByLabel('Live log').locator('.xterm-rows')).toContainText('mouse reporting');
+
+    const output = page.locator('.log-output');
+    const host = output.locator('.streamed-terminal-host');
+    const textarea = output.locator('.xterm-helper-textarea');
+    await expect(textarea).not.toBeFocused();
+    await dragTouch(page, host, 120);
+    const afterUp = await paneInputText(page, 'agent-1');
+    await testInfo.attach('touch-up-input.txt', { body: JSON.stringify(afterUp), contentType: 'text/plain' });
+    await page.screenshot({ path: testInfo.outputPath('agent-output-touch-scroll.png'), fullPage: true });
+    expect(afterUp).toMatch(/\x1b\[<64;\d+;\d+M/u);
+    await expect(textarea).not.toBeFocused();
+
+    await textarea.focus();
+    const beforeDown = await paneInputText(page, 'agent-1');
+    await dragTouch(page, host, -120);
+    const afterDown = (await paneInputText(page, 'agent-1')).slice(beforeDown.length);
+    await testInfo.attach('touch-down-input.txt', { body: JSON.stringify(afterDown), contentType: 'text/plain' });
+    expect(afterDown).toMatch(/\x1b\[<65;\d+;\d+M/u);
+    await expect(textarea).toBeFocused();
+  });
 });
 
 // exercise the native phone controls and xterm input path
@@ -243,9 +321,16 @@ for (const touch of [false, true]) {
         const outputPanel = log.locator('.log-output');
         const focusTarget = inputActive ? log.locator('.xterm-helper-textarea') : page.getByRole('textbox', { name: 'Prompt', exact: true });
         await focusTarget.focus();
-        // wheel over the scrollbar to avoid letterboxing and mobile text-selection overlays
-        await log.locator('.xterm-scrollable-element > .scrollbar.vertical').hover();
-        await page.mouse.wheel(0, -800);
+        // use the device's actual scroll gesture
+        if (touch) {
+          await dragTouch(page, log.locator('.streamed-terminal-host'), 120);
+        } else {
+          const hostBounds = await log.locator('.streamed-terminal-host').boundingBox();
+          // require a rendered wheel target
+          if (hostBounds === null) throw new Error('agent output has no wheel bounds');
+          await page.mouse.move(hostBounds.x + hostBounds.width / 2, hostBounds.y + hostBounds.height / 2);
+          await page.mouse.wheel(0, -800);
+        }
         const jump = page.getByRole('button', { name: 'Jump to latest', exact: true });
         await expect(jump).toBeVisible();
         await expect(focusTarget).toBeFocused();

@@ -87,6 +87,8 @@ export const rows = () => terminal().rows;
 export const viewportY = () => terminal().buffer.active.viewportY;
 export const baseY = () => terminal().buffer.active.baseY;
 export const alternateScreen = () => terminal().buffer.active.type === 'alternate';
+// report the active terminal mouse mode
+export const mouseTrackingMode = () => terminal().modes.mouseTrackingMode;
 export const terminalMounted = () => host?.querySelector('.xterm') !== null;
 
 export const screenText = (): string => {
@@ -144,20 +146,21 @@ const dispatchTouch = (type: string, touches: Touch[], changed: Touch[]): boolea
   return host!.dispatchEvent(event);
 };
 
-// Drag one finger vertically by `deltaY` pixels; returns whether the console owned the
-// gesture (the touchmove was consumed). A positive delta drags the finger down, which
-// scrolls the buffer up into history.
-export const touchDrag = (deltaY: number): boolean => {
+// drag one finger by the requested offsets
+export const touchGesture = (deltaX: number, deltaY: number): boolean => {
   const box = host!.getBoundingClientRect();
   const startX = box.left + box.width / 2;
   const startY = box.top + box.height / 2;
   const start = makeTouch(startX, startY);
-  const moved = makeTouch(startX, startY + deltaY);
+  const moved = makeTouch(startX + deltaX, startY + deltaY);
   dispatchTouch('touchstart', [start], [start]);
   const notPrevented = dispatchTouch('touchmove', [moved], [moved]);
   dispatchTouch('touchend', [], [moved]);
   return !notPrevented;
 };
+
+// drag vertically; positive reveals older history
+export const touchDrag = (deltaY: number): boolean => touchGesture(0, deltaY);
 
 // A touch that starts and ends without a click, as a scroll gesture or a browser-suppressed
 // tap does. iOS only raises the soft keyboard for a focus made from the synthesized click, so

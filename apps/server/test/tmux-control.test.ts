@@ -359,6 +359,40 @@ describe.skipIf(!tmuxSocketsWork)('tmux control client (real tmux)', () => {
     }
   });
 
+  // preserve the live input protocol when a seed rebuilds xterm's parser state
+  it('restores active mouse modes without inventing disabled modes', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    try {
+      await client.ready;
+      const mouseModes = '#{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_utf8_flag} #{mouse_sgr_flag}';
+      const initial = (await client.seed(pane, 100)).toString('latin1');
+      expect(initial).not.toMatch(/\x1b\[\?100[02356]h/u);
+
+      // exercise the normal-buffer protocol and legacy coordinate encoding
+      expect(await client.sendInput(pane, Buffer.from('\x1b[?1000h\x1b[?1005h\n'))).toBe(true);
+      await expect.poll(async () => (await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, mouseModes])).stdout.trim()).toBe('1 0 0 1 0');
+      const standard = (await client.seed(pane, 100)).toString('latin1');
+      expect(standard).toContain('\x1b[?1000h');
+      expect(standard).toContain('\x1b[?1005h');
+      expect(standard).not.toMatch(/\x1b\[\?100[236]h/u);
+
+      // switch protocols rather than carrying stale reporting flags forward
+      expect(await client.sendInput(pane, Buffer.from('\x1b[?1000l\x1b[?1005l\x1b[?1002h\n'))).toBe(true);
+      await expect.poll(async () => (await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, mouseModes])).stdout.trim()).toBe('0 1 0 0 0');
+      const button = (await client.seed(pane, 100)).toString('latin1');
+      expect(button).toContain('\x1b[?1002h');
+      expect(button).not.toMatch(/\x1b\[\?100[0356]h/u);
+
+      // disabling the final protocol must not create phantom reporting
+      expect(await client.sendInput(pane, Buffer.from('\x1b[?1002l\n'))).toBe(true);
+      await expect.poll(async () => (await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, mouseModes])).stdout.trim()).toBe('0 0 0 0 0');
+      expect((await client.seed(pane, 100)).toString('latin1')).not.toMatch(/\x1b\[\?100[02356]h/u);
+    } finally {
+      client.dispose();
+    }
+  });
+
   // verify cursor restoration without confusing tty echo with program output
   it('paints an alternate-screen seed with absolute positioning and the cursor restored', async () => {
     const { ref, socket, pane } = await fixtureSession();
@@ -368,15 +402,17 @@ describe.skipIf(!tmuxSocketsWork)('tmux control client (real tmux)', () => {
       let bytes = 0;
       client.subscribe(pane, { onOutput: chunk => { bytes += chunk.length; }, onReseed: () => {}, onResize: () => {}, onExit: () => {} });
       // submit the line so cat emits real escapes rather than only the tty's visible echo
-      expect(await client.sendInput(pane, Buffer.from('\x1b[?1049hALT SCREEN\n'))).toBe(true);
+      expect(await client.sendInput(pane, Buffer.from('\x1b[?1049h\x1b[?1003h\x1b[?1006hALT SCREEN\n'))).toBe(true);
       await eventually(() => bytes > 0);
-      // wait for tmux to parse the alternate-screen switch
-      await expect.poll(async () => (await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, '#{alternate_on}'])).stdout.trim()).toBe('1');
+      // wait for tmux to parse the screen, reporting protocol and coordinate encoding
+      await expect.poll(async () => (await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, '#{alternate_on} #{mouse_all_flag} #{mouse_sgr_flag}'])).stdout.trim()).toBe('1 1 1');
       const seed = (await client.seed(pane, 100)).toString('latin1');
       // enters the alt screen, clears, paints row one absolutely and restores the cursor
       expect(seed.startsWith('\x1b[?1049h\x1b[H\x1b[2J')).toBe(true);
       expect(seed).toContain('\x1b[1;1H');
       expect(seed).toContain('ALT SCREEN');
+      expect(seed).toContain('\x1b[?1003h');
+      expect(seed).toContain('\x1b[?1006h');
       expect(seed).toMatch(/\x1b\[\d+;\d+H$/u);
     } finally {
       client.dispose();
