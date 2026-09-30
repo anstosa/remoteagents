@@ -372,8 +372,8 @@ describe('/ws/pane derive (Codex)', () => {
 
   // open native follow-up chrome before the existing question frame enters answer mode
   it.each(['codex', 'omx'])('opens a queued %s question once and frames its choices', async kind => {
-    const banner = '• Queued follow-up inputs\n  ? 1 question\n    shift + ← to answer\n\n› Ask Codex to do anything\n  gpt-6-astra · /repo · main';
-    const expanded = '• Queued follow-up inputs\n\nWhich approach?\n\n› 1. Small\n  2. Other\n\nenter submit   ctrl + ] skip   alt + ↓ main prompt';
+    const banner = '• Queued follow-up inputs\n  ? 1 question\n    shift+← to answer\n\n› Ask Codex to do anything\n  gpt-6-astra · /repo · main';
+    const expanded = '• Queued follow-up inputs\n\nWhich approach?\n\n› 1. Small\n  2. Other\n\nenter submit   ctrl+] skip   alt+↓ main prompt';
     const stream = fakePaneStream();
     stream.setCapture(banner);
     const sendKeys = vi.fn(async () => true);

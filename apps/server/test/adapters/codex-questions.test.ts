@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { parseChoiceQuestion, queuedCodexQuestion } from '../../src/adapters/codex-questions.js';
 import { codexSubmission, parseCodexQuestion } from '../../src/adapters/codex-tui.js';
 
@@ -12,9 +13,15 @@ const menu = (selected: number) => [
 
 // match only Codex's collapsed native question entry point
 describe('queued Codex questions', () => {
+  // retain exact current-cli footer captures, including narrow wrapped editor hints
+  const currentCaptures = JSON.parse(readFileSync(new URL('../fixtures/codex/queued-questions.json', import.meta.url), 'utf8')) as Array<{ name: string; lines: string[]; queued: { key?: string } }>;
+  // exercise the real renderer rather than only hand-authored shortcut samples
+  it.each(currentCaptures)('recognizes $name', ({ lines, queued }) => {
+    expect(queuedCodexQuestion(lines.join('\n'))).toEqual(queued);
+  });
   const banner = '• Queued follow-up inputs\n  ? 2 questions · 15s\n    alt + ↑ to answer';
   // honor the shortcut actually advertised by the current keymap
-  it.each([['alt + ↑', 'M-Up'], ['⌥ + ↑', 'M-Up'], ['shift + ←', 'S-Left']])('opens with %s', (hint, key) => {
+  it.each([['alt + ↑', 'M-Up'], ['⌥ + ↑', 'M-Up'], ['shift + ←', 'S-Left'], ['alt+↑', 'M-Up'], ['⌥+↑', 'M-Up'], ['shift+←', 'S-Left']])('opens with %s', (hint, key) => {
     const capture = banner.replace('alt + ↑', hint) + '\n\n› Ask Codex to do anything\n  gpt-6-astra xhigh · /repo · main';
     expect(queuedCodexQuestion(capture)).toEqual({ key });
   });

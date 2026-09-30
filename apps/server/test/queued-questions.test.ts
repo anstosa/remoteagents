@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PromptService } from '../src/prompts/service.js';
+import { inlineQuestionId } from '../src/adapters/inline-questions.js';
+import { omxAdapter } from '../src/adapters/omx.js';
 
 const banner = '• Queued follow-up inputs\n  ? 1 question\n    alt + ↑ to answer\n\n› Ask Codex to do anything\n  gpt-6-astra · /repo · main';
 const socket = { fingerprint: 'socket', path: '/tmp/queued-question-test', device: 1, inode: 1 };
@@ -10,12 +12,65 @@ function fixture() {
   const target = vi.fn(async () => ({ agent, socket }));
   const capture = vi.fn(async (): Promise<string | undefined> => banner);
   const sendKeys = vi.fn(async () => true);
-  const service = new PromptService({ target, worktreesNow: () => [] } as never, { capture, sendKeys } as never);
+  const pastePrompt = vi.fn(async () => true);
+  const service = new PromptService({ target, worktreesNow: () => [] } as never, { capture, sendKeys, pastePrompt } as never);
   return { target, capture, sendKeys, service };
 }
 
 // opening the editor must never submit a default answer or interrupt agent work
 describe('native queued question activation', () => {
+  // a quick follow-up may arrive before the derive observes an empty question queue
+  it.each([0, 'Use the smaller change.'])('rearms after answering with %s without an empty-footer frame', async answer => {
+    const { service, capture, sendKeys } = fixture();
+    await expect(service.openQueuedQuestion(agent.id, banner, () => true)).resolves.toBe(true);
+    const expanded = '• Queued follow-up inputs\nWhich approach?\n› 1. Small\n  2. Other\nenter submit   ctrl + ] skip   shift + → main prompt';
+    capture.mockResolvedValue(expanded);
+    await service.openQueuedQuestion(agent.id, expanded, () => true);
+    await expect(service.answerQuestion(agent.id, inlineQuestionId('Which approach?', ['Small', 'Other']), answer)).resolves.toBe(true);
+    capture.mockResolvedValue(banner);
+    await expect(service.openQueuedQuestion(agent.id, banner, () => true)).resolves.toBe(true);
+    expect(sendKeys.mock.calls).toEqual([[socket, '%1', ['M-Up']], [socket, '%1', ['Enter']], [socket, '%1', ['M-Up']]]);
+  });
+
+  // a refused answer must not reopen the question after a deliberate manual collapse
+  it.each([0, 'Use the smaller change.'])('retains suppression after a failed answer with %s', async answer => {
+    const { service, capture, sendKeys } = fixture();
+    await service.openQueuedQuestion(agent.id, banner, () => true);
+    capture.mockResolvedValue('• Queued follow-up inputs\nWhich approach?\n› 1. Small\n  2. Other\nenter submit   ctrl + ] skip   shift + → main prompt');
+    sendKeys.mockResolvedValueOnce(false);
+    await expect(service.answerQuestion(agent.id, inlineQuestionId('Which approach?', ['Small', 'Other']), answer)).resolves.toBe(false);
+    capture.mockResolvedValue(banner);
+    await expect(service.openQueuedQuestion(agent.id, banner, () => true)).resolves.toBe(false);
+    expect(sendKeys).toHaveBeenCalledTimes(2);
+  });
+
+  // answering an unrelated menu does not reopen a deliberately collapsed question
+  it('retains suppression after selecting an unrelated parsed menu', async () => {
+    const { service, capture, sendKeys } = fixture();
+    await service.openQueuedQuestion(agent.id, banner, () => true);
+    capture.mockResolvedValue('Which model?\n› 1. Small\n  2. Large\nPress enter to confirm or esc to go back');
+    await expect(service.answerQuestion(agent.id, inlineQuestionId('Which model?', ['Small', 'Large']), 0)).resolves.toBe(true);
+    capture.mockResolvedValue(banner);
+    await expect(service.openQueuedQuestion(agent.id, banner, () => true)).resolves.toBe(false);
+    expect(sendKeys).toHaveBeenCalledTimes(2);
+  });
+
+  // structured omx questions have independent ownership from the native queued editor
+  it('retains suppression after answering a structured OMX question', async () => {
+    const sendKeys = vi.fn(async () => true);
+    const service = new PromptService(
+      { target: async () => ({ agent: { ...agent, kind: 'omx' }, socket }), worktreesNow: () => [] } as never,
+      { capture: async () => banner, sendKeys } as never,
+      undefined, undefined, undefined,
+      // expose an independent question on the adapter's structured channel
+      () => ({ ...omxAdapter, questions: { ...omxAdapter.questions, pending: async () => ({ id: 'structured-question', text: 'Which plan?', choices: ['Small', 'Broad'], source: 'structured', targetPaneId: '%2' }) } })
+    );
+    await service.openQueuedQuestion(agent.id, banner, () => true);
+    await expect(service.answerQuestion(agent.id, 'structured-question', 0)).resolves.toBe(true);
+    await expect(service.openQueuedQuestion(agent.id, banner, () => true)).resolves.toBe(false);
+    expect(sendKeys).toHaveBeenCalledTimes(2);
+  });
+
   // suppress repeats across viewers until the collapsed footer disappears
   it('opens once, preserves manual collapse, and rearms after completion', async () => {
     const { service, sendKeys } = fixture();

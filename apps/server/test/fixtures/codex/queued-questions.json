@@ -1,0 +1,72 @@
+[
+  {
+    "name": "codex 0.159.2 hold 100x35",
+    "lines": [
+      "\u001b[2m• \u001b[0mQueued follow-up inputs",
+      "\u001b[2m  ? \u001b[0;1m1 question\u001b[0m",
+      "    \u001b[1mshift+←\u001b[0;2m to answer\u001b[0m",
+      "",
+      "",
+      "\u001b[1m›\u001b[0m \u001b[2mAsk Codex to do anything\u001b[0m",
+      "",
+      "  GPT-5.5 default · /repo/work · Reproduce async question",
+      "  \u001b[1m?\u001b[0m for shortcuts"
+    ],
+    "queued": {
+      "key": "S-Left"
+    }
+  },
+  {
+    "name": "codex 0.159.2 hold 44x28",
+    "lines": [
+      "\u001b[2m• \u001b[0mQueued follow-up inputs",
+      "\u001b[2m  ? \u001b[0;1m1 question\u001b[0;2m · 19s\u001b[0m",
+      "    \u001b[1mshift+←\u001b[0;2m to answer\u001b[0m",
+      "",
+      "",
+      "\u001b[1m›\u001b[0m \u001b[2mAsk Codex to do anything\u001b[0m",
+      "",
+      "  GPT-5.5 default · /repo/work",
+      "  \u001b[1m?\u001b[0m for shortcuts"
+    ],
+    "queued": {
+      "key": "S-Left"
+    }
+  },
+  {
+    "name": "codex 0.159.2 expanded 100x35",
+    "lines": [
+      "\u001b[2m• \u001b[0mQueued follow-up inputs",
+      "",
+      "",
+      "  \u001b[1mProceed with the exact follow-up reproduction?                                                  \u001b[0m",
+      "",
+      "  \u001b[1;7m› 1. Yes (Recommended)                                                                          \u001b[0m",
+      "    2. No",
+      "    3. Other",
+      "",
+      "  \u001b[1menter\u001b[0m submit   \u001b[1mctrl+]\u001b[0m skip   \u001b[1mshift+→\u001b[0m main prompt",
+      ""
+    ],
+    "queued": {}
+  },
+  {
+    "name": "codex 0.159.2 expanded 44x28",
+    "lines": [
+      "\u001b[2m• \u001b[0mQueued follow-up inputs",
+      "",
+      "",
+      "  \u001b[1mProceed with the exact follow-up        \u001b[0m",
+      "  \u001b[1mreproduction?                           \u001b[0m",
+      "",
+      "  \u001b[1;7m› 1. Yes (Recommended)                  \u001b[0m",
+      "    2. No",
+      "    3. Other",
+      "",
+      "  \u001b[1menter\u001b[0m submit   \u001b[1mctrl+]\u001b[0m skip",
+      "  \u001b[1mshift+→\u001b[0m main prompt",
+      ""
+    ],
+    "queued": {}
+  }
+]

@@ -31,7 +31,8 @@ function fixture(capture = asyncCapture, kind = 'codex') {
 describe('text question answers', () => {
   // paste safely into the async custom-answer editor and submit rather than tab-queue
   it.each(['codex', 'omx'])('sends a %s text answer immediately without touching the prompt queue', async kind => {
-    const { service, tmux, queued } = fixture(asyncCapture, kind);
+    // current codex renders compact modifier chords
+    const { service, tmux, queued } = fixture(asyncCapture.replace(/ \+ /gu, '+'), kind);
     await expect(service.answerQuestion(agent.id, questionId, 'Use the smaller change.\nKeep the tests.')).resolves.toBe(true);
     expect(tmux.pastePrompt).toHaveBeenCalledWith(socket, '%1', expect.stringMatching(/^rac-/u), 'Use the smaller change.\nKeep the tests.');
     expect(tmux.sendKeys.mock.calls).toEqual([[socket, '%1', ['Enter']]]);

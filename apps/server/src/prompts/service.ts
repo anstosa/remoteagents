@@ -1002,6 +1002,8 @@ export class PromptService {
       }
       // refuse stale answers and out-of-range choices
       if (question === undefined || question.id !== questionId || (!textAnswer && answer >= question.choices.length)) return false;
+      // only native queued-editor answers may release that editor's suppression
+      const queuedQuestion = capture === undefined ? undefined : adapter.questions.queued?.(capture);
       const targetPane = question.targetPaneId ?? first.agent.paneId;
       // verify the target and manual-input generation before each delivery stage
       const stillCurrent = async () => {
@@ -1013,7 +1015,12 @@ export class PromptService {
       // refuse replacement panes or intervening operator input
       if (!await stillCurrent()) return false;
       // preserve cursor-aware numbered selection
-      if (!textAnswer) return await this.tmux.sendKeys(first.socket, targetPane, adapter.submission.selectOption(question.rows?.[answer] ?? answer, question.selectedIndex));
+      if (!textAnswer) {
+        const sent = await this.tmux.sendKeys(first.socket, targetPane, adapter.submission.selectOption(question.rows?.[answer] ?? answer, question.selectedIndex));
+        // rearm the next follow-up without requiring an observed empty queue
+        if (sent && queuedQuestion !== undefined && queuedQuestion.key === undefined) this.openedQueuedQuestions.delete(agentId);
+        return sent;
+      }
       const keys = capture === undefined ? undefined : adapter.questions.textEntry?.(question, capture);
       // unsupported menus must not receive a normal prompt or an implicit default
       if (keys === undefined) return false;
@@ -1026,7 +1033,10 @@ export class PromptService {
       if (!await this.tmux.pastePrompt(first.socket, targetPane, buffer, adapter.questions.textAnswer?.(answer) ?? answer)) return false;
       // never submit into a replacement pane after a slow paste
       if (!await stillCurrent()) return false;
-      return await this.tmux.sendKeys(first.socket, targetPane, ['Enter']);
+      const sent = await this.tmux.sendKeys(first.socket, targetPane, ['Enter']);
+      // text answers release the same follow-up suppression as numbered choices
+      if (sent && queuedQuestion !== undefined && queuedQuestion.key === undefined) this.openedQueuedQuestions.delete(agentId);
+      return sent;
     } finally { release(); }
   }
 
