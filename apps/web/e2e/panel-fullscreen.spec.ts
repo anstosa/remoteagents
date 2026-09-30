@@ -106,3 +106,92 @@ test('opens the Code view full screen for a Worktree with no running agent', asy
   await expect(codePanel(page)).toBeVisible();
   await expect(agentOutput(page)).toHaveCount(0);
 });
+
+// a wide desktop keeps each open workspace panel in one full-height horizontal row, including
+// compositions where Note or Browser sits between the Agent and Code panels.
+test('keeps Agent, a companion panel, and Code full-height on desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 2048, height: 1100 });
+  await installPaneMock(page);
+  const responses: Record<string, unknown> = {
+    '/api/auth/session': { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' },
+    '/api/dashboard': {
+      generation: 1,
+      agents: [{
+        id: 'agent-1',
+        worktreeId: 'cora',
+        worktreeLabel: 'Cora',
+        sessionId: 'socket:$1',
+        home: '/worktrees/cora',
+        branch: 'feature/desktop-split',
+        projectUrl: 'https://project.example.com',
+        gitStatus: { files: 1, staged: 0, unstaged: 1, untracked: 0, conflicted: 0, changes: [{ code: ' M', path: 'src/app.ts', additions: 1, deletions: 1 }] },
+        title: 'Ready'
+      }],
+      projects: []
+    },
+    '/api/agents/agent-1/tickets': { ticket: 'log-ticket' },
+    '/api/push/public-key': {},
+    '/api/agents/agent-1/saved-prompts': { prompts: [] },
+    '/api/agents/agent-1/prompt-history': { prompts: [] },
+    '/api/agents/agent-1/queued-prompts': { prompts: [] },
+    '/api/agents/agent-1/message-files': { files: [] },
+    '/api/worktrees/cora/notes': { notes: [{ id: 'note-identifier-001', title: 'Remote Agents Summary', text: 'Desktop layout regression' }] },
+    '/api/worktrees/cora/comparison': patchOf([trackedFile('src/app.ts')])
+  };
+  // serve the real workspace UI from a compact fixed API fixture
+  await page.route('**/api/**', async route => {
+    const response = responses[new URL(route.request().url()).pathname];
+    // return every endpoint used by this workspace composition
+    if (response !== undefined) return route.fulfill({ json: response });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  // keep the embedded project preview local and deterministic
+  await page.route('https://project.example.com/**', route => route.fulfill({ contentType: 'text/html', body: '<main>Project preview</main>' }));
+
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1');
+  await pushBytes(page, 'agent-1', 'Ready\n');
+  await page.getByRole('button', { name: 'Notes (1)' }).click();
+  await page.locator('.notes-menu .note-choice').click();
+  await page.getByRole('button', { name: 'Code', exact: true }).click();
+
+  const split = page.locator('.log-split');
+  const agent = agentOutput(page);
+  const note = page.getByRole('dialog', { name: 'Note' });
+  const code = codePanel(page);
+  // compare rendered panel geometry, not implementation-only class names
+  const expectHorizontalFullHeight = async (panels: ReturnType<Page['locator']>[]) => {
+    const splitBox = await split.boundingBox();
+    expect(splitBox).not.toBeNull();
+    const panelBoxes = await Promise.all(panels.map(panel => panel.boundingBox()));
+    // require each panel to occupy the split from top to bottom
+    for (const panelBox of panelBoxes) {
+      expect(panelBox).not.toBeNull();
+      expect(Math.abs(panelBox!.y - splitBox!.y)).toBeLessThanOrEqual(1);
+      expect(Math.abs(panelBox!.height - splitBox!.height)).toBeLessThanOrEqual(1);
+    }
+    // require successive panels to occupy horizontal columns without wrapping below
+    for (let index = 1; index < panelBoxes.length; index += 1) {
+      const previous = panelBoxes[index - 1]!;
+      const current = panelBoxes[index]!;
+      expect(previous.x + previous.width).toBeLessThanOrEqual(current.x + 1);
+    }
+  };
+
+  await expect(note).toBeVisible();
+  await expect(code).toBeVisible();
+  await expectHorizontalFullHeight([agent, note, code]);
+
+  // replace Note with Browser to cover the sibling selector that produces the same regression
+  await note.getByRole('button', { name: 'Close note' }).click();
+  await page.getByRole('button', { name: 'Browser', exact: true }).click();
+  const browser = page.getByRole('dialog', { name: 'Browser' });
+  await expect(browser).toBeVisible();
+  await expectHorizontalFullHeight([agent, browser, code]);
+
+  // cover the four-panel selector while Browser stays open
+  await page.getByRole('button', { name: 'Notes (1)' }).click();
+  await page.locator('.notes-menu .note-choice').click();
+  await expect(note).toBeVisible();
+  await expectHorizontalFullHeight([agent, note, browser, code]);
+});
