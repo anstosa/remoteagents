@@ -76,6 +76,12 @@ const clearNativeSelection = (page: Page) => page.evaluate(() => {
   document.dispatchEvent(new Event('selectionchange'));
 });
 
+// measure one rendered terminal cell for exact mouse gestures
+const terminalCellWidth = (container: Locator) => container.locator('.xterm-char-measure-element').first().evaluate(element => {
+  const bounds = element.getBoundingClientRect();
+  return bounds.width / (element.textContent?.length ?? 1);
+});
+
 // select complete owned rows across visual wrapping boundaries
 const selectNativeRows = (page: Page, firstText: string, lastText: string) => page.locator('.terminal-selection-surface').evaluate((surface, text) => {
   const rows = [...surface.querySelectorAll<HTMLElement>('.terminal-selection-row')];
@@ -136,15 +142,21 @@ test('flashes a copied desktop selection green then restores its highlight', asy
   await routeSelectionApi(page);
   await page.goto('/');
   await seedPaneSize(page, 'agent-1', 80, 24);
-  await pushBytes(page, 'agent-1', `${'\r\n'.repeat(8)}Copy feedback selection`);
-  const row = page.locator('.log-canvas .xterm-rows > div', { hasText: 'Copy feedback selection' });
+  const rawSelection = '01Copy feedback selection';
+  const copiedSelection = rawSelection.slice(2);
+  await pushBytes(page, 'agent-1', `${'\r\n'.repeat(8)}${rawSelection}`);
+  const row = page.locator('.log-canvas .xterm-rows > div', { hasText: rawSelection });
   await expect(row).toBeVisible();
-  const bounds = await row.boundingBox();
-  expect(bounds).not.toBeNull();
-  const selectedY = bounds!.y + bounds!.height / 2;
-  await page.mouse.move(bounds!.x + 1, selectedY);
+  const [bounds, cellWidth] = await Promise.all([
+    row.boundingBox(),
+    terminalCellWidth(page.locator('.log-canvas'))
+  ]);
+  // require rendered geometry before dragging exact terminal cells
+  if (bounds === null) throw new Error('desktop copy row has no rendered bounds');
+  const selectedY = bounds.y + bounds.height / 2;
+  await page.mouse.move(bounds.x + cellWidth * 0.25, selectedY);
   await page.mouse.down();
-  await page.mouse.move(bounds!.x + 90, selectedY, { steps: 4 });
+  await page.mouse.move(bounds.x + cellWidth * (rawSelection.length - 0.25), selectedY, { steps: 4 });
   await page.mouse.up();
 
   const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
@@ -166,10 +178,12 @@ test('flashes a copied desktop selection green then restores its highlight', asy
     }
     await expect(highlight).toHaveCSS('background-color', 'rgb(166, 227, 161)');
     // wait for clipboard completion independently of the visible flash
-    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe('');
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(copiedSelection);
     await expect(highlight).toHaveCSS('background-color', 'rgb(203, 166, 247)');
     await expect(toolbar).toBeVisible();
   }
+  await toolbar.getByRole('button', { name: 'Add to prompt' }).click();
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue(rawSelection);
 });
 
 // keep native selection intact through copy feedback and follow-up actions
@@ -216,15 +230,16 @@ test('a native output selection creates and appends notes, copies, and guards th
 
   await page.goto('/');
   await seedPaneSize(page, 'agent-1', 80, 24);
-  await pushBytes(page, 'agent-1', 'Prefix text before Selectable output text\r\n');
+  const outputLine = '01Prefix text before Selectable output text';
+  await pushBytes(page, 'agent-1', `${outputLine}\r\n`);
   expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
 
   // select one word from the phone's owned native projection,
   // exactly as a native long-press would leave the browser range
-  const selectableRow = page.locator('.log-canvas .terminal-selection-row', { hasText: 'Prefix text before Selectable output text' });
-  await expect(selectableRow).toHaveText('Prefix text before Selectable output text');
+  const selectableRow = page.locator('.log-canvas .terminal-selection-row', { hasText: outputLine });
+  await expect(selectableRow).toHaveText(outputLine);
   // restore the same word after note and prompt actions
-  const selectWord = () => selectNativeRange(selectableRow, 'Prefix text before '.length, 'Prefix text before Selectable'.length);
+  const selectWord = () => selectNativeRange(selectableRow, '01Prefix text before '.length, '01Prefix text before Selectable'.length);
   await selectWord();
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Selectable');
 
@@ -239,6 +254,11 @@ test('a native output selection creates and appends notes, copies, and guards th
   await expect(toolbar.getByRole('button', { name: 'Add to prompt' })).toBeVisible();
   await expect(toolbar.getByRole('button', { name: 'Copy' })).toBeVisible();
 
+  // full-row mobile copy removes only the terminal margin columns
+  await selectNativeRange(selectableRow, 0, outputLine.length);
+  await toolbar.getByRole('button', { name: 'Copy' }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(outputLine.slice(2));
+  await selectWord();
   await toolbar.getByRole('button', { name: 'Copy' }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Selectable');
   await expect(page.locator('.log')).toHaveClass(/selection-copied/u);
@@ -278,6 +298,10 @@ test('a native output selection creates and appends notes, copies, and guards th
   await guardedPrompt.press('Control+Shift+c');
   await expect(guardedPrompt).toHaveValue('Drafty');
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('prompt-shortcut-guard');
+  // ordinary composer copy keeps its complete selected text
+  await guardedPrompt.selectText();
+  await guardedPrompt.press('Control+c');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Drafty');
   await guardedPrompt.blur();
 
   // With the composer unfocused, yank and Ctrl+Shift+C copy the output selection and flash.
@@ -305,9 +329,10 @@ test('native wrapped output copies and appends exact logical text', async ({ con
   await routeSelectionApi(page);
   await page.goto('/');
   await seedPaneSize(page, 'agent-1', 80, 24);
-  const softLine = `soft-wrap-${'0123456789'.repeat(10)}`;
-  const hardLine = 'hard-break-tail';
-  const expected = `${softLine}\n${hardLine}`;
+  const softLine = `01soft-wrap-${'0123456789'.repeat(10)}`;
+  const hardLine = '01hard-break-tail';
+  const rawExpected = `${softLine}\n${hardLine}`;
+  const copiedExpected = `${softLine.slice(2, 80)}${softLine.slice(82)}\n${hardLine.slice(2)}`;
   await pushBytes(page, 'agent-1', `\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[2J\x1b[H${softLine}\r\n${hardLine}`);
 
   const rows = page.locator('.log-canvas .terminal-selection-row');
@@ -321,20 +346,101 @@ test('native wrapped output copies and appends exact logical text', async ({ con
   // exercise the browser-native copy shortcut
   await page.evaluate(() => navigator.clipboard.writeText(''));
   await page.keyboard.press('Control+c');
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expected);
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(copiedExpected);
   const shortcutClipboard = await page.evaluate(() => navigator.clipboard.readText());
 
   // exercise toolbar copy independently
   await page.evaluate(() => navigator.clipboard.writeText(''));
   await toolbar.getByRole('button', { name: 'Copy' }).click();
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expected);
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(copiedExpected);
   const toolbarClipboard = await page.evaluate(() => navigator.clipboard.readText());
   await toolbar.getByRole('button', { name: 'Add to prompt' }).click();
-  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue(expected);
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue(rawExpected);
   await testInfo.attach('wrapped-native-copy.json', {
-    body: JSON.stringify({ expected, rawSelectedText, shortcutClipboard, toolbarClipboard }),
+    body: JSON.stringify({ rawExpected, copiedExpected, rawSelectedText, shortcutClipboard, toolbarClipboard }),
     contentType: 'application/json'
   });
+});
+
+// respect terminal cell columns for native unicode and partial selections
+test('native Windows copy removes only selected margin cells', async ({ context, page }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.addInitScript(() => Object.defineProperty(navigator, 'platform', { get: () => 'Win32' }));
+  await installPaneMock(page);
+  await routeSelectionApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  const wideLine = '界Wide margin content';
+  const combiningLine = 'e\u0301xCombining margin content';
+  const partialLine = '01Partial selection content';
+  await pushBytes(page, 'agent-1', `\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[2J\x1b[H${wideLine}\r\n${combiningLine}\r\n${partialLine}`);
+
+  const expectedUnicodeCopy = 'Wide margin content\nCombining margin content';
+  await selectNativeRows(page, wideLine, combiningLine);
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  await page.keyboard.press('Control+c');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedUnicodeCopy);
+
+  // exercise the native copy event used by the browser context menu
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  const nativeCopyHandled = await page.evaluate(() => document.execCommand('copy'));
+  expect(nativeCopyHandled).toBe(true);
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedUnicodeCopy);
+
+  const partialRow = page.locator('.log-canvas .terminal-selection-row', { hasText: partialLine });
+  await selectNativeRange(partialRow, 1, partialLine.length);
+  const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
+  await toolbar.getByRole('button', { name: 'Copy' }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(partialLine.slice(2));
+  await toolbar.getByRole('button', { name: 'Add to prompt' }).click();
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue(partialLine.slice(1));
+
+  // keep selections beginning after the two margin columns unchanged
+  await selectNativeRange(partialRow, 2, partialLine.length);
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  await page.keyboard.press('y');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(partialLine.slice(2));
+
+  // empty transformed text must replace rather than fall back to raw margins
+  await selectNativeRange(partialRow, 0, 2);
+  await page.evaluate(() => navigator.clipboard.writeText('sentinel'));
+  const emptyCopyHandled = await page.evaluate(() => document.execCommand('copy'));
+  expect(emptyCopyHandled).toBe(true);
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('');
+});
+
+// keep rectangular xterm selections aligned to each physical row
+test('desktop column selection removes each selected margin', async ({ context, page }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await installPaneMock(page);
+  await routeSelectionApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  const firstLine = '01alpha-tail';
+  const secondLine = '01beta-tail';
+  await pushBytes(page, 'agent-1', `${'\r\n'.repeat(8)}${firstLine}\r\n${secondLine}`);
+  const firstRow = page.locator('.log-canvas .xterm-rows > div', { hasText: firstLine });
+  const secondRow = page.locator('.log-canvas .xterm-rows > div', { hasText: secondLine });
+  const [firstBounds, secondBounds, cellWidth] = await Promise.all([
+    firstRow.boundingBox(),
+    secondRow.boundingBox(),
+    terminalCellWidth(page.locator('.log-canvas'))
+  ]);
+  // require both rendered rows before the alt-drag
+  if (firstBounds === null || secondBounds === null) throw new Error('column selection rows have no rendered bounds');
+  await page.keyboard.down('Alt');
+  await page.mouse.move(firstBounds.x + cellWidth * 0.25, firstBounds.y + firstBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(secondBounds.x + cellWidth * 6.75, secondBounds.y + secondBounds.height / 2, { steps: 6 });
+  await page.mouse.up();
+  await page.keyboard.up('Alt');
+
+  const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
+  await expect(toolbar).toBeVisible();
+  await toolbar.getByRole('button', { name: 'Copy' }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('alpha\nbeta-');
+  await toolbar.getByRole('button', { name: 'Add to prompt' }).click();
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue('01alpha\n01beta-');
 });
 
 // exercise platform-specific xterm selection notification paths
@@ -452,10 +558,7 @@ test('ordinary Windows drag selects mouse-reporting Agent output before live rep
       const rect = range.getBoundingClientRect();
       return { x: rect.x, width: rect.width };
     }),
-    output.locator('.xterm-char-measure-element').first().evaluate(element => {
-      const rect = element.getBoundingClientRect();
-      return rect.width / (element.textContent?.length ?? 1);
-    })
+    terminalCellWidth(output)
   ]);
   expect(Math.abs(nativeTextBounds.x - renderedBounds.x)).toBeLessThanOrEqual(1);
   expect(Math.abs(nativeTextBounds.width - cellWidth * selectableText.length)).toBeLessThanOrEqual(2);
@@ -708,10 +811,7 @@ test('plain click opens a custom-label OSC 8 link in mouse-reporting Agent outpu
   await expect(row).toBeVisible();
   const [bounds, cellWidth] = await Promise.all([
     row.boundingBox(),
-    page.locator('.log-canvas .xterm-char-measure-element').first().evaluate(element => {
-      const rect = element.getBoundingClientRect();
-      return rect.width / (element.textContent?.length ?? 1);
-    })
+    terminalCellWidth(page.locator('.log-canvas'))
   ]);
   // require visible link geometry for the real click
   if (bounds === null) throw new Error('OSC 8 output has no row bounds');
@@ -980,7 +1080,7 @@ test('freezes coarse-pointer output while a native selection is active', async (
   await pushBytes(page, 'agent-1', 'Freeze native selected output');
   expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
 
-  const selectedRow = page.locator('.log-canvas .terminal-selection-row', { hasText: 'Freeze native selected output' });
+  const selectedRow = page.locator('.log-canvas .xterm-accessibility-tree [role="listitem"]', { hasText: 'Freeze native selected output' });
   await expect(selectedRow).toHaveText('Freeze native selected output');
   await selectNativeRange(selectedRow, 0, 'Freeze'.length);
 
@@ -988,8 +1088,14 @@ test('freezes coarse-pointer output while a native selection is active', async (
   await expect(page.locator('.log-output')).toHaveClass(/selection-active/u);
   await expect(toolbar).toBeVisible();
   await toolbar.getByRole('button', { name: 'Copy' }).click();
-  // read the native selection before output arrives
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Freeze');
+  // read the cropped native selection before output arrives
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('eeze');
+  // exercise native copy from xterm's accessibility row
+  await page.evaluate(() => navigator.clipboard.writeText('sentinel'));
+  const nativeCopyHandled = await page.evaluate(() => document.execCommand('copy'));
+  expect(nativeCopyHandled).toBe(true);
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('eeze');
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Freeze');
   const acknowledgedBeforePause = await paneAckTotal(page, 'agent-1');
 
   await pushBytes(page, 'agent-1', '\r\x1b[2Kbuffered first');
@@ -1000,8 +1106,8 @@ test('freezes coarse-pointer output while a native selection is active', async (
   await expect(selectedRow).toHaveText('Freeze native selected output');
   // read the live browser selection after output arrives
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Freeze');
-  // read the copy action after output arrives
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Freeze');
+  // read the cropped copy action after output arrives
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('eeze');
 
   // clear the browser range without relying on xterm's inside-row collapse
   await clearNativeSelection(page);

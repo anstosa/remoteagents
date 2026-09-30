@@ -5515,6 +5515,8 @@ function Log({ id, embedded = false, onQuestion, onMetadata, header, composer, n
       // show selection mode from drag start rather than waiting for mouseup
       onSelectionModeChange: setSelectionActive,
       copyText,
+      // remove the agent gutter only when writing to the clipboard
+      copyLeadingColumns: 2,
       flashElement: canvas.current!.closest<HTMLElement>('.log') ?? canvas.current!,
       copyFlashMs: selectionCopyFlashMs
     });

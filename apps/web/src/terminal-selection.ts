@@ -8,6 +8,8 @@ type TerminalSelectionOptions = {
   onSelection: (selection: TerminalSelection | undefined) => void;
   onSelectionModeChange?: (active: boolean) => void;
   copyText: (value: string) => Promise<void>;
+  // omit a terminal gutter only from clipboard copies
+  copyLeadingColumns?: number;
   flashElement: HTMLElement;
   copyFlashMs: number;
 };
@@ -27,32 +29,93 @@ const eventTargetElement = (target: EventTarget | null): Element | null => {
 };
 
 // preserve logical lines when a native range crosses terminal soft wraps
-const projectedSelectionText = (selection: Selection | null): string | undefined => {
+const projectedSelectionText = (selection: Selection | null, terminal: StreamedTerminalHandle['terminal'], leadingColumns = 0): string | undefined => {
   // let other browser selections retain their ordinary clipboard behavior
   if (selection === null || selection.rangeCount === 0) return undefined;
   const range = selection.getRangeAt(0);
-  const firstRow = eventTargetElement(range.startContainer)?.closest<HTMLElement>('.terminal-selection-row');
-  const lastRow = eventTargetElement(range.endContainer)?.closest<HTMLElement>('.terminal-selection-row');
+  const rowSelector = leadingColumns > 0 ? '.terminal-selection-row, .xterm-accessibility-tree > [role="listitem"]' : '.terminal-selection-row';
+  const firstRow = eventTargetElement(range.startContainer)?.closest<HTMLElement>(rowSelector);
+  const lastRow = eventTargetElement(range.endContainer)?.closest<HTMLElement>(rowSelector);
   // retain the existing behavior for ranges spanning other panes or surrounding ui
-  if (firstRow == null || lastRow == null || firstRow.parentElement !== lastRow.parentElement) return undefined;
+  if (firstRow == null || lastRow == null || firstRow.parentElement === null || firstRow.parentElement !== lastRow.parentElement) return undefined;
   let text = '';
   let row: Element | null = firstRow;
+  let bufferRow = terminal.buffer.active.viewportY + Array.from(firstRow.parentElement.children).indexOf(firstRow);
+  // accessibility rows publish their absolute buffer position for scrollback selections
+  if (firstRow.hasAttribute('aria-posinset')) bufferRow = Number(firstRow.getAttribute('aria-posinset')) - 1;
   // serialize only selected characters and explicit hard line breaks
   while (row !== null) {
+    const line = terminal.buffer.active.getLine(bufferRow);
     const part = document.createRange();
     part.selectNodeContents(row);
     // trim the first physical row to the selection's starting character
     if (row === firstRow) part.setStart(range.startContainer, range.startOffset);
     // trim the last physical row to the selection's ending character
     if (row === lastRow) part.setEnd(range.endContainer, range.endOffset);
+    const wrapped = row.hasAttribute('data-wrapped') ? row.getAttribute('data-wrapped') === 'true' : line?.isWrapped === true;
     // wrapped continuations belong to the previous logical line
-    if (row !== firstRow && row.getAttribute('data-wrapped') !== 'true') text += '\n';
-    text += part.toString();
+    if (row !== firstRow && !wrapped) text += '\n';
+    let selected = part.toString();
+    // intersect the selected characters with the physical row's retained columns
+    if (leadingColumns > 0) {
+      const prefix = document.createRange();
+      prefix.selectNodeContents(row);
+      prefix.setEnd(part.startContainer, part.startOffset);
+      const omittedLength = line?.translateToString(false, 0, leadingColumns).length ?? 0;
+      selected = selected.slice(Math.max(0, omittedLength - prefix.toString().length));
+    }
+    text += selected;
     // stop after the ordered range endpoint, including reverse mouse selections
     if (row === lastRow) return text;
     row = row.nextElementSibling;
+    bufferRow += 1;
   }
   return undefined;
+};
+
+// copy terminal cells without changing the selected range or splitting unicode glyphs
+const terminalSelectionText = (terminal: StreamedTerminalHandle['terminal'], leadingColumns: number, rectangularSelection: boolean | undefined): string => {
+  const selected = terminal.getSelection();
+  const position = terminal.getSelectionPosition();
+  // retain ordinary terminal copying and empty selections
+  if (leadingColumns === 0 || position === undefined) return selected;
+  const newline = selected.includes('\r\n') ? '\r\n' : '\n';
+  // serialize both forms because the public selection range does not expose rectangular mode
+  const readRange = (rectangular: boolean) => {
+    let original = '';
+    let copied = '';
+    // preserve physical-row boundaries before joining soft wraps
+    for (let row = position.start.y; row <= position.end.y; row += 1) {
+      const line = terminal.buffer.active.getLine(row);
+      // a lost buffer row cannot safely be reconstructed
+      if (line === undefined) return undefined;
+      let start = row === position.start.y ? position.start.x : 0;
+      let end = row === position.end.y ? position.end.x : line.length;
+      // rectangular rows share the same selected column interval
+      if (rectangular) {
+        start = Math.min(position.start.x, position.end.x);
+        end = Math.max(position.start.x, position.end.x);
+      }
+      // rectangular selections keep each row separate even through soft wraps
+      if (row !== position.start.y && (rectangular || !line.isWrapped)) {
+        original += newline;
+        copied += newline;
+      }
+      const text = line.translateToString(true, start, end);
+      const omittedLength = line.translateToString(false, start, Math.min(end, Math.max(start, leadingColumns))).length;
+      original += text;
+      copied += text.slice(omittedLength);
+    }
+    return { original: original.replace(/\u00a0/gu, ' '), copied: copied.replace(/\u00a0/gu, ' ') };
+  };
+  const linear = readRange(false);
+  const rectangular = readRange(true);
+  const expected = rectangularSelection ? rectangular : linear;
+  // prefer the observed gesture when both selection shapes contain identical text
+  if (rectangularSelection !== undefined && expected?.original === selected) return expected.copied;
+  // preserve ambiguous programmatic selections rather than removing unselected columns
+  if (linear?.original === selected) return rectangular?.original === selected && rectangular.copied !== linear.copied ? selected : linear.copied;
+  return rectangular?.original === selected ? rectangular.copied : selected;
 };
 
 // identify fields that own ordinary typing
@@ -88,6 +151,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
   let disposed = false;
   let nativeSelectionWasActive = false;
   let mouseSelectionGesture = false;
+  let rectangularSelection: boolean | undefined;
   let linkSelectionOrigin: { node: Node; offset: number; x: number; y: number } | undefined;
   let linkSelectionDragged = false;
   let copiedSelectionTimer: number | undefined;
@@ -157,7 +221,9 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
 
   // copy one selection and acknowledge successful writes
   const copy = async (value: string): Promise<void> => {
-    await options.copyText(value);
+    const leadingColumns = options.copyLeadingColumns ?? 0;
+    const text = leadingColumns > 0 && (nativeSelectionActive() || terminal.hasSelection()) ? selectedOutput(leadingColumns) : value;
+    await options.copyText(text);
     // suppress effects after disposal
     if (!disposed) flashCopiedSelection();
   };
@@ -203,7 +269,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
       const selection = window.getSelection();
       const range = selection !== null && selection.rangeCount > 0 ? selection.getRangeAt(0) : undefined;
       const bounds = range === undefined ? undefined : (Array.from(range.getClientRects()).at(-1) ?? range.getBoundingClientRect());
-      const text = projectedSelectionText(selection) ?? selection?.toString() ?? '';
+      const text = projectedSelectionText(selection, terminal) ?? selection?.toString() ?? '';
       options.onSelection(!text || bounds === undefined ? undefined : { text, ...toolbarPosition(bounds.bottom) });
       return;
     }
@@ -292,6 +358,11 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
 
   // let the browser select native text without xterm focusing or reporting the drag
   const preserveNativeMouseSelection = (event: MouseEvent) => {
+    const target = eventTargetElement(event.target);
+    // remember xterm's selection shape without depending on private selection services
+    if (event.button === 0 && linkSelectionOrigin === undefined && target?.closest('.xterm-screen') && !nativeMouseSurface(target) && !(event.shiftKey && terminal.hasSelection())) {
+      rectangularSelection = event.detail < 2 && event.altKey && !(navigator.platform.startsWith('Mac') && terminal.options.macOptionClickForcesSelection === true);
+    }
     // delay link activation until a click or text drag is known
     if (event.button === 0 && linkSelectionOrigin !== undefined) {
       event.preventDefault();
@@ -381,13 +452,13 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
   };
 
   // return the selected text owned by this pane
-  const selectedOutput = (): string => {
+  const selectedOutput = (leadingColumns = 0): string => {
     // prefer the browser's current range over an older terminal selection
     if (nativeSelectionActive()) {
       const selection = window.getSelection();
-      return projectedSelectionText(selection) ?? selection?.toString() ?? '';
+      return projectedSelectionText(selection, terminal, leadingColumns) ?? selection?.toString() ?? '';
     }
-    return terminal.hasSelection() ? terminal.getSelection() : '';
+    return terminal.hasSelection() ? terminalSelectionText(terminal, leadingColumns, rectangularSelection) : '';
   };
 
   // yank or copy the active output selection
@@ -417,12 +488,22 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     void copy(selected);
   };
 
-  // preserve logical terminal lines in browser-native copy and acknowledge it
+  // apply the same clipboard policy to native and xterm context-menu copies
   const nativeOutputCopied = (event: ClipboardEvent) => {
+    const target = eventTargetElement(event.target);
+    const localTarget = target !== null && container.contains(target);
     // leave other panes and ordinary page selections untouched
-    if (!paneIsVisible() || !nativeSelectionActive()) return;
-    const text = projectedSelectionText(window.getSelection());
-    // replace only owned projected text, including context-menu copy
+    if (!paneIsVisible() || targetsForeignOutput(target) || (isEditableTarget(target) && !localTarget)) return;
+    const leadingColumns = options.copyLeadingColumns ?? 0;
+    let text: string | undefined;
+    // normalize the owned browser range before the browser writes its clipboard
+    if (nativeSelectionActive()) text = projectedSelectionText(window.getSelection(), terminal, leadingColumns);
+    else {
+      // leave unmodified terminals and copies outside this pane to their existing handlers
+      if (leadingColumns === 0 || !localTarget || !terminal.hasSelection()) return;
+      text = terminalSelectionText(terminal, leadingColumns, rectangularSelection);
+    }
+    // retain successful empty crops when only the gutter was selected
     if (text !== undefined && event.clipboardData !== null) {
       event.clipboardData.setData('text/plain', text);
       event.preventDefault();
