@@ -1135,6 +1135,9 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
   .workspace-toolbar-actions .git-status-summary { position: relative; width: var(--standard-control-size); justify-content: center; overflow: visible; padding: 0; }
   .workspace-toolbar-actions .git-status-summary > :is(.git-branch, .git-status-separator, .git-worktree-state) { display: none; }
   .workspace-toolbar-actions .git-status-summary > .git-status-dot { position: absolute; top: .2rem; right: .2rem; display: block; }
+  /* overlay compact pr health from the bottom right without shifting the branch glyph */
+  .workspace-toolbar-actions .git-status-summary > .pull-request-issues { position: absolute; right: .2rem; bottom: .2rem; flex-direction: row-reverse; gap: .1rem; padding: 0; }
+  .workspace-toolbar-actions .git-status-summary > .pull-request-issues :is(.pull-request-issue, .pull-request-checks, svg) { width: .5rem; height: .5rem; }
   .git-status-summary.clean > .git-status-dot { color: var(--green); }
   .git-status-summary.dirty > .git-status-dot { color: var(--yellow); }
   .git-status-summary.conflicted > .git-status-dot { color: var(--red); }
@@ -1229,7 +1232,6 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .git-status-summary.status-open { --branch-pr-color: var(--green); }
 .git-status-summary.status-merged { --branch-pr-color: var(--mauve); }
 .git-status-summary.has-pull-request .git-branch { color: var(--branch-pr-color); }
-/* overlay pr health without resizing or shifting the branch glyph */
 .upstream-rebase-banner { display: grid; min-width: 0; min-height: 3rem; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .7rem; margin: .375rem .375rem 0; border: 1px solid color-mix(in srgb, var(--yellow) 58%, var(--surface-1)); border-radius: var(--control-radius); padding: .5rem .55rem .5rem .7rem; background: color-mix(in srgb, var(--mantle) 90%, var(--yellow)); color: var(--yellow); box-shadow: inset 0 1px color-mix(in srgb, var(--text) 4%, transparent); }
 .upstream-rebase-banner > svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .upstream-rebase-banner > span { display: grid; min-width: 0; gap: .1rem; }

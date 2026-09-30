@@ -158,6 +158,118 @@ test('keeps the current pull request in the Working footer and queues one active
   await expect.poll(() => historyRequests).toBeGreaterThanOrEqual(2);
 });
 
+// keep mobile pr health floating around a centered branch glyph
+test('floats compact branch indicators from the mobile bottom-right without changing desktop', async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
+  const singleWorktree = {
+    id: 'single', projectId: 'repo', label: 'Single', path: '/worktrees/single', main: false, detached: false, locked: false, available: true, pinned: true, order: 1,
+    branch: 'feature/single-indicator', gitStatus: { files: 0, staged: 0, unstaged: 0, untracked: 0, conflicted: 0 }, pullRequest: { number: 813, title: 'Single build state', status: 'draft', url: 'https://github.example.com/pull/813', checks: 'pending' }
+  };
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mountDashboard(page, {
+    dashboard: { generation: 1, agents: [activeAgent], projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [activeWorktree, singleWorktree] }] }
+  });
+
+  // measure one mobile branch shortcut without depending on css constants
+  const measureMobileShortcut = async (name: RegExp) => {
+    const branch = page.getByRole('button', { name });
+    await expect(branch).toBeVisible({ timeout: 15_000 });
+    const issues = branch.locator(':scope > .pull-request-issues');
+    const indicators = issues.getByRole('img');
+    const [buttonBox, iconBox, issuesBox, moreBox] = await Promise.all([
+      renderedBox(branch), renderedBox(branch.locator(':scope > .git-branch-icon')), renderedBox(issues), renderedBox(page.getByRole('button', { name: 'More options' }))
+    ]);
+    const indicatorBoxes = await Promise.all(Array.from({ length: await indicators.count() }, (_, index) => { /* measure each compact status */ return renderedBox(indicators.nth(index)); }));
+    const pageWidth = await page.evaluate(() => { /* measure page overflow */ return { inner: innerWidth, document: document.documentElement.scrollWidth }; });
+    return {
+      branch,
+      count: indicatorBoxes.length,
+      buttonBox,
+      iconBox,
+      issuesBox,
+      indicatorBoxes,
+      relativeLeft: issuesBox.x - buttonBox.x,
+      rightInset: buttonBox.x + buttonBox.width - issuesBox.x - issuesBox.width,
+      bottomInset: buttonBox.y + buttonBox.height - issuesBox.y - issuesBox.height,
+      overlapsIcon: issuesBox.x < iconBox.x + iconBox.width && issuesBox.x + issuesBox.width > iconBox.x && issuesBox.y < iconBox.y + iconBox.height && issuesBox.y + issuesBox.height > iconBox.y,
+      neighborGap: moreBox.x - buttonBox.x - buttonBox.width,
+      pageWidth
+    };
+  };
+  // keep card indicators alongside their main content at every breakpoint
+  const expectCardIndicatorsInline = async (card: Locator) => {
+    const [cardBox, mainBox, issuesBox] = await Promise.all([
+      renderedBox(card), renderedBox(card.locator(':scope > .pull-request-card-main')), renderedBox(card.locator(':scope > .pull-request-issues'))
+    ]);
+    expect(mainBox.x + mainBox.width).toBeLessThanOrEqual(issuesBox.x + 1);
+    expect(Math.abs(mainBox.y + mainBox.height / 2 - issuesBox.y - issuesBox.height / 2)).toBeLessThanOrEqual(1);
+    expect(issuesBox.x).toBeGreaterThanOrEqual(cardBox.x);
+    expect(issuesBox.x + issuesBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 1);
+    expect(issuesBox.y).toBeGreaterThanOrEqual(cardBox.y);
+    expect(issuesBox.y + issuesBox.height).toBeLessThanOrEqual(cardBox.y + cardBox.height + 1);
+  };
+  // switch through the phone workspace sheet
+  const switchWorkspace = async (label: RegExp) => {
+    await page.getByRole('tab', { selected: true }).click();
+    await page.getByRole('dialog', { name: 'Workspaces' }).getByRole('button', { name: label }).click();
+  };
+  // validate the compact strip at both supported phone widths
+  for (const width of [390, 428]) {
+    await page.setViewportSize({ width, height: 844 });
+    await switchWorkspace(/^Active\b/u);
+    const all = await measureMobileShortcut(/^Git status: feature\/current-pr-controls/u);
+    await expect(all.branch.locator(':scope > .pull-request-issues').getByRole('img')).toHaveCount(3);
+    await page.screenshot({ path: testInfo.outputPath(`mobile-branch-indicators-${width}.png`), fullPage: true });
+    await switchWorkspace(/^Single\b/u);
+    const single = await measureMobileShortcut(/^Git status: feature\/single-indicator/u);
+    expect(single.count).toBe(1);
+
+    expect(Math.abs(all.iconBox.x + all.iconBox.width / 2 - all.buttonBox.x - all.buttonBox.width / 2)).toBeLessThanOrEqual(1);
+    expect(Math.abs(single.iconBox.x + single.iconBox.width / 2 - single.buttonBox.x - single.buttonBox.width / 2)).toBeLessThanOrEqual(1);
+    expect(all.rightInset).toBeGreaterThanOrEqual(0);
+    expect(all.rightInset).toBeLessThanOrEqual(6);
+    expect(single.rightInset).toBeCloseTo(all.rightInset, 0);
+    expect(all.bottomInset).toBeGreaterThanOrEqual(0);
+    expect(all.bottomInset).toBeLessThanOrEqual(6);
+    expect(single.bottomInset).toBeCloseTo(all.bottomInset, 0);
+    expect(all.relativeLeft).toBeLessThan(single.relativeLeft);
+    expect(all.issuesBox.width).toBeGreaterThan(single.issuesBox.width);
+    expect([...all.indicatorBoxes, ...single.indicatorBoxes].every(box => { /* keep each status compact */ return box.width <= 10 && box.height <= 10; })).toBe(true);
+    expect(all.overlapsIcon).toBe(false);
+    expect(single.overlapsIcon).toBe(false);
+    expect(all.neighborGap).toBeGreaterThanOrEqual(0);
+    expect(single.neighborGap).toBeGreaterThanOrEqual(0);
+    expect(all.pageWidth.document).toBeLessThanOrEqual(all.pageWidth.inner);
+    expect(single.pageWidth.document).toBeLessThanOrEqual(single.pageWidth.inner);
+  }
+
+  await switchWorkspace(/^Active\b/u);
+  const mobileBranch = page.getByRole('button', { name: /^Git status: feature\/current-pr-controls/u });
+  await mobileBranch.click();
+  const mobilePanel = page.getByRole('region', { name: 'Changed files' });
+  const mobileCard = mobilePanel.locator('.git-status-panel-footer > .pull-request-card');
+  await expect(mobilePanel).toBeVisible();
+  await expect(mobileCard.locator(':scope > .pull-request-issues')).toBeVisible();
+  await expectCardIndicatorsInline(mobileCard);
+  await page.mouse.click(4, 4);
+
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await expect(mobileBranch.locator(':scope > .git-branch')).toBeVisible();
+  const [desktopIcon, desktopBranch, desktopState, desktopIssues] = await Promise.all([
+    renderedBox(mobileBranch.locator(':scope > .git-branch-icon')),
+    renderedBox(mobileBranch.locator(':scope > .git-branch')),
+    renderedBox(mobileBranch.locator(':scope > .git-worktree-state')),
+    renderedBox(mobileBranch.locator(':scope > .pull-request-issues'))
+  ]);
+  expect(desktopIcon.x + desktopIcon.width).toBeLessThanOrEqual(desktopBranch.x);
+  expect(desktopBranch.x + desktopBranch.width).toBeLessThanOrEqual(desktopState.x);
+  expect(desktopState.x + desktopState.width).toBeLessThanOrEqual(desktopIssues.x);
+  await mobileBranch.click();
+  const desktopPanel = page.getByRole('region', { name: 'Changed files' });
+  await expectCardIndicatorsInline(desktopPanel.locator('.git-status-panel-footer > .pull-request-card'));
+  await page.screenshot({ path: testInfo.outputPath('desktop-inline-branch-indicators.png'), fullPage: true });
+});
+
 // retain the prompt lock when the fixup control is remounted
 test('keeps fixup pending across popup and tab roundtrips', async ({ page }) => {
   test.setTimeout(120_000);
