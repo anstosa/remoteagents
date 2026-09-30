@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { instanceIconSvg } from '../../server/src/instance-icon.js';
+import { installPaneMock, pushBytes, seedPaneSize } from './pane-stream-mock.js';
 
 test('keeps the active tab, output, and prompt controls inside a narrow viewport', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 952 });
@@ -214,6 +216,86 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(Math.abs(grown.prompt.bottom - layout.prompt.bottom)).toBeLessThanOrEqual(1);
   expect(Math.abs(grown.send.bottom - layout.send.bottom)).toBeLessThanOrEqual(1);
   expect(Math.abs(grown.bar.top - layout.bar.top)).toBeLessThanOrEqual(1);
+});
+
+// keep desktop flyout affordances directional without covering button content
+test('desktop flyout triggers show edge carets and remain clickable', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  // serve the bundled server artwork instead of Vite's html fallback
+  await page.route('**/instance-icons/terminal.svg', route => route.fulfill({ contentType: 'image/svg+xml', body: instanceIconSvg('terminal') }));
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // keep the desktop session active
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // expose one agent with every toolbar section
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', branch: 'feature/carets', gitStatus: { files: 2, staged: 1, unstaged: 1, untracked: 0, conflicted: 0 }, displayLabel: '🥔 Cora', title: 'Ready', attention: 'finished', stack: { actions: ['start'], tunnel: false } }], projects: [] } });
+    // skip optional push setup
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // connect the visible agent output
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    // make prompt-history controls available
+    if (/^\/api\/agents\/agent-1\/(saved-prompts|prompt-history)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [{ id: 'saved-1', text: 'Saved prompt' }] } });
+    // keep git detail loading bounded
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', '\x1b[2J\x1b[HDesktop flyout caret fixture ready');
+
+  const tabs = page.locator('.tabs');
+  const toolbar = page.getByRole('region', { name: 'Workspace toolbar' });
+  const serverImage = tabs.locator('.server-selector img');
+  await expect.poll(() => serverImage.evaluate(image => image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0)).toBe(true);
+  await expect(page.locator('.log-canvas .xterm-rows > div', { hasText: 'Desktop flyout caret fixture ready' })).toBeVisible();
+  const triggers = [
+    { button: tabs.locator('.server-selector'), anchor: tabs.locator('.server-selector'), menu: page.locator('.server-menu'), side: 'above' },
+    { button: tabs.locator('.new-agent-tab'), anchor: tabs.locator('.launcher'), menu: page.locator('.launcher-menu'), side: 'above' },
+    { button: toolbar.locator('.terminal-picker-toggle'), anchor: toolbar.locator('.terminal-picker-wrap'), menu: page.locator('.terminal-picker'), side: 'above' },
+    { button: page.locator('.agent-panel .agent-power'), anchor: page.locator('.agent-panel .power-menu-wrap'), menu: page.locator('.agent-power-menu'), side: 'below' }
+  ] as const;
+  // exercise flyouts above and below through their real desktop triggers
+  for (const { button, anchor, menu, side } of triggers) {
+    await expect(button).toBeVisible();
+    const caret = button.locator(':scope > .flyout-caret');
+    await expect(caret).toBeVisible();
+    const [buttonBox, caretBox] = await Promise.all([button.boundingBox(), caret.boundingBox()]);
+    // require rendered geometry before comparing the control edges
+    if (buttonBox === null || caretBox === null) throw new Error('desktop flyout trigger has no bounds');
+    expect(await caret.evaluate(element => getComputedStyle(element).pointerEvents)).toBe('none');
+    expect(Math.abs(caretBox.x + caretBox.width / 2 - buttonBox.x - buttonBox.width / 2)).toBeLessThanOrEqual(1);
+    await button.click();
+    await expect(menu).toBeVisible();
+    await expect(anchor).toHaveAttribute('data-flyout-side', side);
+    const mask = await caret.evaluate(element => getComputedStyle(element).maskImage);
+    expect(mask).toContain(side === 'above' ? 'M1 2.8 5 .75 9 2.8' : 'M1 .75 5 2.8 9 .75');
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
+  }
+
+  const contentChecks = [
+    tabs.locator('.server-selector'),
+    toolbar.locator('.terminal-picker-toggle')
+  ];
+  await page.screenshot({ path: testInfo.outputPath('desktop-flyout-carets.png'), fullPage: true });
+  // keep the edge mark clear of each trigger's icon and label
+  for (const button of contentChecks) {
+    const caret = button.locator(':scope > .flyout-caret');
+    const content = button.locator(':scope > :is(svg, .toolbar-label, .server-selector-name, .server-selector-chevron):visible');
+    const caretBox = await caret.boundingBox();
+    // require the edge mark before checking its content separation
+    if (caretBox === null) throw new Error('desktop flyout caret has no bounds');
+    const contentGeometry = await content.evaluateAll((elements, box) => elements.map(element => {
+      const rect = element.getBoundingClientRect();
+      return { className: element.getAttribute('class') ?? element.tagName, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, overlaps: rect.left < box.x + box.width && rect.right > box.x && rect.top < box.y + box.height && rect.bottom > box.y };
+    }), caretBox);
+    expect(contentGeometry.filter(item => item.overlaps), JSON.stringify({ caretBox, contentGeometry })).toEqual([]);
+  }
+  const launchSplit = toolbar.locator('.launch-split');
+  await expect(launchSplit.locator('.launch-chevron')).toBeVisible();
+  await expect(launchSplit.locator('.launch-chevron .flyout-caret')).toHaveCount(0);
 });
 
 // the dashboard the phone Workspace dropdown tests: the current Workspace, two Agents elsewhere that
