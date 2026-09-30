@@ -20,6 +20,12 @@ export const attachTerminalTouchScroll = (element: HTMLElement, terminal: XTerm)
   if (terminalElement === undefined) throw new Error('open the terminal before attaching touch scrolling');
   let gesture: { id: number; startX: number; startY: number; lastY: number; remainder: number; vertical: boolean } | undefined;
 
+  // preserve both owned native text and xterm-rendered selections
+  const hasSelection = () => {
+    const selection = window.getSelection();
+    return terminal.hasSelection() || (selection !== null && !selection.isCollapsed && element.contains(selection.anchorNode));
+  };
+
   // let xterm encode scrolling for applications that own their viewport
   const scrollsProgram = () =>
     terminal.buffer.active.type === 'alternate' || terminal.modes.mouseTrackingMode !== 'none';
@@ -32,8 +38,8 @@ export const attachTerminalTouchScroll = (element: HTMLElement, terminal: XTerm)
 
   // track one finger in both normal and full-screen programs
   const start = (event: TouchEvent) => {
-    // leave multi-finger gestures to the browser
-    if (event.touches.length !== 1) { gesture = undefined; return; }
+    // leave selection handles and multi-finger gestures to the browser
+    if (event.touches.length !== 1 || hasSelection()) { gesture = undefined; return; }
     const touch = event.touches[0]!;
     gesture = { id: touch.identifier, startX: touch.clientX, startY: touch.clientY, lastY: touch.clientY, remainder: 0, vertical: false };
   };
@@ -42,6 +48,8 @@ export const attachTerminalTouchScroll = (element: HTMLElement, terminal: XTerm)
   const move = (event: TouchEvent) => {
     // ignore untracked or sideways gestures
     if (gesture === undefined) return;
+    // hand a long press back to the browser when it creates a selection
+    if (hasSelection()) { gesture = undefined; return; }
     const touch = Array.from(event.touches).find(candidate => candidate.identifier === gesture!.id);
     if (touch === undefined) return;
     if (!gesture.vertical) {

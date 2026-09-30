@@ -4,6 +4,7 @@ import '@xterm/xterm/css/xterm.css';
 import { installPaneStreamSafety } from './pane-safety.js';
 import { computeTerminalTheme, terminalFontFamily } from './terminal-theme.js';
 import { attachTerminalTouchScroll } from './terminal-touch-scroll.js';
+import { createTerminalSelectionSurface } from './terminal-selection-surface.js';
 import { readTerminalFontSize, subscribeTerminalFontSize } from './terminal-font-size.js';
 import { subscribeColorTheme } from './color-theme.js';
 import { createOutputLinkOverlays } from './output-links.js';
@@ -16,6 +17,8 @@ export interface StreamedTerminalOptions {
   // The scrollback depth the browser keeps and asks the seed to fill; defaults to a
   // few thousand lines, fewer on a phone.
   scrollback?: number;
+  // prefer ordinary text selection over application mouse gestures in agent output
+  preferNativeMouseSelection?: boolean;
   // Route a same-stack URL into the in-app browser; return true when it was handled.
   onOpenUrl?: (url: string) => boolean;
   // Open a workspace file mention in the internal preview.
@@ -88,6 +91,8 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     fontSize: readTerminalFontSize(),
     scrollback,
     scrollOnUserInput: false,
+    // keep option-drag selection available when a mac program tracks the mouse
+    macOptionClickForcesSelection: true,
     screenReaderMode: coarse,
     theme: computeTerminalTheme()
   });
@@ -104,6 +109,9 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     }
   };
   terminal.open(host);
+  // expose native text only where agent programs would otherwise capture dragging
+  container.classList.toggle('native-mouse-selection', options.preferNativeMouseSelection === true);
+  const selectionSurface = options.preferNativeMouseSelection ? createTerminalSelectionSurface(terminal) : undefined;
   // Mirror the font size onto the element as the font-size subscription does on change, so
   // the configured size is legible in the DOM from mount (not only after the first change).
   Object.assign(terminal.element!.style, { fontFamily: terminalFontFamily, fontSize: `${readTerminalFontSize()}px`, fontKerning: 'none', fontWeight: 'normal' });
@@ -417,6 +425,7 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     // ignore repeated selection notifications and calls after unmount
     if (disposed || outputPaused === paused) return;
     outputPaused = paused;
+    selectionSurface?.setPaused(paused);
     // a large live seed awaiting its parser gate cannot become an unbounded paused backlog
     if (paused && queuedByteCount + pendingByteCount > maxQueuedBytes) {
       clearQueuedOutput();
@@ -459,7 +468,13 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   // click (terminal-touch-scroll swallows the move), a long press is consumed before the
   // click (preserveOutputLongPressSelection), and suppressFocusUntil covers link taps and
   // long-press selection.
-  const focusOnClick = () => { if (performance.now() >= suppressFocusUntil) terminal.focus(); };
+  // keep the click ending a selection from replacing its range with the input caret
+  const focusOnClick = () => {
+    const selection = window.getSelection();
+    const nativeSelection = selection !== null && !selection.isCollapsed && container.contains(selection.anchorNode);
+    // ordinary taps still enter input mode when no selected text needs preserving
+    if (!nativeSelection && !terminal.hasSelection() && performance.now() >= suppressFocusUntil) terminal.focus();
+  };
   // keep the current input target and output mode when clicking or tapping jump
   const preserveJumpFocus = (event: PointerEvent) => event.preventDefault();
   // resume following without entering or leaving terminal input mode
@@ -520,13 +535,14 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
       unsubscribeFont();
       unsubscribeTheme();
       overlays.clear();
+      selectionSurface?.dispose();
       terminal.dispose();
       host.remove();
       cover.remove();
       status.remove();
       jump.remove();
       // Leave the caller's container as we found it, so a later re-mount starts clean.
-      container.classList.remove('streamed-terminal');
+      container.classList.remove('streamed-terminal', 'native-mouse-selection');
       container.style.background = '';
       delete container.dataset.cols;
       delete container.dataset.rows;

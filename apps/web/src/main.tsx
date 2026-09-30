@@ -5481,6 +5481,7 @@ function Log({ id, embedded = false, onQuestion, onMetadata, header, composer, n
     answeredQuestionActions.set(id, answeredQuestion);
     const handle = mountStreamedTerminal(canvas.current!, {
       connect: createAgentPaneConnector(id, request),
+      preferNativeMouseSelection: true,
       // Typed keys pass through the panel's sticky mobile modifiers before reaching the pane.
       transformInput: data => applyStickyModifiers(id, data),
       onOpenUrl: url => openOutputUrlRef.current?.(url) ?? false,
@@ -5510,10 +5511,9 @@ function Log({ id, embedded = false, onQuestion, onMetadata, header, composer, n
     // share selection freezing and copy feedback with terminal panels
     const selection = attachTerminalSelection(canvas.current!, handle, {
       // retain the agent's note and prompt selection actions
-      onSelection: selected => {
-        setSelectionActive(selected !== undefined);
-        setSelectionToolbar(selected);
-      },
+      onSelection: setSelectionToolbar,
+      // show selection mode from drag start rather than waiting for mouseup
+      onSelectionModeChange: setSelectionActive,
       copyText,
       flashElement: canvas.current!.closest<HTMLElement>('.log') ?? canvas.current!,
       copyFlashMs: selectionCopyFlashMs

@@ -475,6 +475,50 @@ test('a large paste is split into multiple input frames within the byte cap', as
   expect(await drive<number>(page, 'inputFrameCount')).toBe(before + 2);
 });
 
+// preserve application mouse gestures in shared Terminal mounts
+test('ordinary mouse drag reaches a mouse-reporting Terminal mount', async ({ page }) => {
+  await setup(page);
+  await drive(page, 'pushSize', 80, 24);
+  await drive(page, 'pushBytes', '\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[2J\x1b[Hmouse-reporting Terminal');
+  await expect.poll(() => drive(page, 'mouseTrackingMode')).toBe('any');
+  const screen = page.locator('#term .xterm-screen');
+  await expect(screen).toBeVisible();
+  const bounds = await screen.boundingBox();
+  // require the shared terminal's real mouse surface
+  if (bounds === null) throw new Error('shared terminal has no screen bounds');
+  const before = await drive<string>(page, 'inputData');
+  await page.mouse.move(bounds.x + 10, bounds.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + 120, bounds.y + 30, { steps: 4 });
+  await page.mouse.up();
+  const input = (await drive<string>(page, 'inputData')).slice(before.length);
+  expect(input).toMatch(/\x1b\[<\d+;\d+;\d+[Mm]/u);
+  await expect(page.locator('#term .xterm-selection > div')).toHaveCount(0);
+});
+
+// preserve xterm's Shift override in shared Terminal mounts
+test('Shift-drag selects mouse-reporting output in a Terminal mount', async ({ page }) => {
+  await setup(page);
+  await drive(page, 'pushSize', 80, 24);
+  await drive(page, 'pushBytes', '\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[2J\x1b[Hselectable mouse-reporting Terminal');
+  await expect.poll(() => drive(page, 'mouseTrackingMode')).toBe('any');
+  const row = page.locator('#term .xterm-rows > div', { hasText: 'selectable mouse-reporting Terminal' });
+  await expect(row).toBeVisible();
+  const bounds = await row.boundingBox();
+  // require visible terminal text for the real override gesture
+  if (bounds === null) throw new Error('shared terminal row has no bounds');
+  await page.keyboard.down('Shift');
+  try {
+    await page.mouse.move(bounds.x + 5, bounds.y + bounds.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(bounds.x + 150, bounds.y + bounds.height / 2, { steps: 6 });
+    await page.mouse.up();
+  } finally {
+    await page.keyboard.up('Shift');
+  }
+  await expect(page.locator('#term .xterm-selection > div').first()).toBeVisible();
+});
+
 // cover local history and application-owned alternate screens
 test('touch scrolling stays local in history and reaches alternate-screen programs', async ({ browser, baseURL }) => {
   const context = await browser.newContext({ baseURL: baseURL ?? undefined, ...MOBILE });
