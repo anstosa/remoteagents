@@ -6,15 +6,19 @@ import '@xterm/xterm/css/xterm.css';
 import { pollWhileVisible } from './client-scheduling.js';
 import { outputUrlMatchesHost } from './output-links.js';
 import { mountStreamedTerminal } from './streamed-terminal.js';
-import { attachTerminalSelection, type TerminalSelection } from './terminal-selection.js';
+import { attachTerminalSelection, type TerminalSelection, type TerminalSelectionController } from './terminal-selection.js';
 import { createAgentPaneConnector, createWorktreePaneConnector } from './pane-socket-client.js';
 import { FlyoutPortal } from './flyout-portal.js';
+import { ContextMenuHost, openContextMenu, type ContextMenuItem } from './context-menu.js';
+import { SelectionActionsContext, openSelectionContextMenu, preserveContextMenuPress, useSelectionActions, type ClipboardContents, type SelectionActions } from './selection-context-menu.js';
+import { ContextFlyoutEvents } from './context-flyouts.js';
+import { agentSplitHidden, setAgentSplitHidden, workspaceAlias, setWorkspaceAlias, useWorkspaceViewRevision, workspaceViews, pendingWorkspaceJumps, type WorkspaceSplit } from './workspace-view.js';
 import { PanelExpandContext, type PanelAction, type PanelExpansion, PanelHeader, PanelIcon, panelIcons, useExpansionScope, usePanelExpand, usePanelExpansion, usePhoneLayout } from './panel-header.js';
 import { type CarouselPanel, type PanelCarousel, PanelDots, usePanelCarousel, usePanelSwipe } from './panel-carousel.js';
 import { NoteMarkdown } from './note-markdown.js';
 import { ProjectOpen } from './project-open.js';
 import type { CodePanelReview } from './code-panel/code-panel.js';
-import { supportingChange, useCodePanel, type CodePanelController, type CodePanelMode } from './code-panel/comparison.js';
+import { savedCodeOpen, saveCodeOpen, supportingChange, useCodePanel, type CodePanelController, type CodePanelMode } from './code-panel/comparison.js';
 import { PullRequestCard, PullRequestFixup, PullRequestIndicators, type PullRequestSummary } from './pull-request-card.js';
 import { isStackOperationLog, type StackAction, type StackOperationLog } from './stack-operations.js';
 import { SyntaxHighlightedCode } from './syntax-highlight.js';
@@ -732,16 +736,20 @@ const dismissAgentNotifications = (agent: Pick<Agent, 'id' | 'worktreeId'>) => {
   void request(`/api/agents/${encodeURIComponent(agent.id)}/notifications/dismiss`, { method: 'POST' });
 };
 
+// finish only after a successful clipboard write
 const copyText = async (value: string) => {
+  // use the async clipboard when available
   if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
   const textarea = document.createElement('textarea');
   textarea.value = value;
   textarea.style.position = 'fixed';
   textarea.style.opacity = '0';
   document.body.append(textarea);
-  textarea.select();
-  document.execCommand('copy');
-  textarea.remove();
+  try {
+    textarea.select();
+    // never report a failed fallback as safe to delete from the source
+    if (!document.execCommand('copy')) throw new Error('Clipboard copy failed');
+  } finally { textarea.remove(); }
 };
 const selectionCopyFlashMs = 600;
 const voiceHoldDelayMs = 450;
@@ -1944,14 +1952,34 @@ function ServerSelector() {
   const rename = () => { setOpen(false); settingsSplit?.renameServer(); };
   // close the selector before opening the update review
   const showUpdate = () => { setOpen(false); settings?.openServerUpdate(); };
-  return <><button ref={anchorRef} type="button" className={`server-switcher-button server-selector${updateAvailable ? ' updates-available' : ''}`} aria-label={selectorLabel} aria-description={shownLabel} title={selectorLabel} aria-expanded={open} onClick={() => setOpen(value => !value)}><span className="flyout-caret" aria-hidden="true" /><img src={serverIconPath(server.icon)} alt="" /><span className="server-selector-name">{server.name}</span><svg className="server-selector-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg><i className={`server-switcher-attention ${shownAttention}`} aria-hidden="true" title={shownLabel} /></button>{open && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu server-menu" ref={flyoutRef} style={style} role="group" aria-label="Remote Agents servers"><div className="server-menu-details" role="group" aria-label="Current server details"><small>CURRENT SERVER</small><strong>{settings?.serverName ?? server.name}</strong><span>{serverHostLabel(settings?.serverUrl ?? server.url)}</span><span className="server-menu-revision" aria-label={revision === undefined ? 'Server revision unavailable' : `Server revision ${revision.sha.slice(0, 7)}, committed ${updateCommitDate(revision.committedAt)}`}>{revisionLabel}</span><span className={`server-menu-update-state${updateAvailable ? ' available' : ''}`}>{updateLabel}</span>{settings !== undefined && <div className="server-menu-actions"><button type="button" aria-label="Rename Server" onClick={rename}>Rename</button>{updateAvailable && <button type="button" className="server-menu-update" aria-label={settings.serverUpdateMinimized ? 'Reopen server update' : 'View upstream update'} onClick={showUpdate}>{settings.serverUpdateMinimized ? 'Reopen update' : 'View update'}</button>}</div>}</div><hr className="more-menu-divider" />{targets.map(target => <ServerTargetLink key={target.url} target={target} current={target.url === server.url} className="server-menu-item" onSelectCurrent={() => setOpen(false)} />)}</div></FlyoutPortal>}</>;
+  return <><button ref={anchorRef} type="button" className={`server-switcher-button server-selector${updateAvailable ? ' updates-available' : ''}`} aria-label={selectorLabel} aria-description={shownLabel} title={selectorLabel} data-context-flyout aria-expanded={open} onClick={() => setOpen(value => !value)}><span className="flyout-caret" aria-hidden="true" /><img src={serverIconPath(server.icon)} alt="" /><span className="server-selector-name">{server.name}</span><svg className="server-selector-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg><i className={`server-switcher-attention ${shownAttention}`} aria-hidden="true" title={shownLabel} /></button>{open && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu server-menu" ref={flyoutRef} style={style} role="group" aria-label="Remote Agents servers"><div className="server-menu-details" role="group" aria-label="Current server details"><small>CURRENT SERVER</small><strong>{settings?.serverName ?? server.name}</strong><span>{serverHostLabel(settings?.serverUrl ?? server.url)}</span><span className="server-menu-revision" aria-label={revision === undefined ? 'Server revision unavailable' : `Server revision ${revision.sha.slice(0, 7)}, committed ${updateCommitDate(revision.committedAt)}`}>{revisionLabel}</span><span className={`server-menu-update-state${updateAvailable ? ' available' : ''}`}>{updateLabel}</span>{settings !== undefined && <div className="server-menu-actions"><button type="button" aria-label="Rename Server" onClick={rename}>Rename</button>{updateAvailable && <button type="button" className="server-menu-update" aria-label={settings.serverUpdateMinimized ? 'Reopen server update' : 'View upstream update'} onClick={showUpdate}>{settings.serverUpdateMinimized ? 'Reopen update' : 'View update'}</button>}</div>}</div><hr className="more-menu-divider" />{targets.map(target => <ServerTargetLink key={target.url} target={target} current={target.url === server.url} className="server-menu-item" onSelectCurrent={() => setOpen(false)} />)}</div></FlyoutPortal>}</>;
 }
 
 // lead the tab row with the server selector and the always-visible Call button
 function TabRowLead() {
   const voice = useContext(VoiceTriggerContext);
+  const settings = useContext(ClientSettingsContext);
+  const [disabling, setDisabling] = useState(false);
+  const [disableError, setDisableError] = useState<string>();
+  // disable the assistant through the same persisted settings action
+  const disableDavo = async () => {
+    // serialize repeated menu requests
+    if (settings === undefined || disabling) return;
+    setDisabling(true);
+    setDisableError(undefined);
+    try {
+      const error = await settings.updateDavo({ ...settings.davo, enabled: false });
+      setDisableError(error);
+    } catch { setDisableError('Unable to disable Davo. Try again.'); }
+    finally { setDisabling(false); }
+  };
+  // keep right-click separate from starting a voice call
+  const voiceMenu = (event: React.MouseEvent<HTMLButtonElement>) => openContextMenu(event, {
+    label: 'Davo options',
+    items: [{ type: 'action', id: 'disable-davo', label: 'Disable Davo', disabled: disabling || settings === undefined, onSelect: disableDavo }]
+  });
   const voiceLabel = voice?.active ? voice.visible ? `Ongoing ${voice.name} call` : `Show ongoing ${voice.name} call` : `Call ${voice?.name ?? 'voice assistant'}`;
-  return <div className="tab-row-lead"><ServerSelector />{voice && <button type="button" className={`server-switcher-button server-switcher-voice${voice.active ? ' active' : ''}`} aria-label={voiceLabel} aria-pressed={voice.visible} onClick={voice.open}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.08 9.9a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92Z" /></svg><span>{voice.active ? 'Ongoing' : `Call ${voice.name}`}</span></button>}</div>;
+  return <div className="tab-row-lead"><ServerSelector />{voice && <button type="button" className={`server-switcher-button server-switcher-voice${voice.active ? ' active' : ''}`} aria-label={voiceLabel} aria-pressed={voice.visible} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={voiceMenu} onClick={voice.open}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.08 9.9a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92Z" /></svg><span>{voice.active ? 'Ongoing' : `Call ${voice.name}`}</span></button>}{disableError && <span role="alert">{disableError}</span>}</div>;
 }
 
 function Login({ done, initialError }: { done: (session: SessionInfo) => void; initialError?: string }) {
@@ -2116,12 +2144,12 @@ function AgentPowerMenu(props: AgentPowerMenuProps) {
   // a held menu closes rather than stranding an open flyout
   useEffect(() => { if (disabledReason !== undefined) setOpen(false); }, [disabledReason]);
   // Restart as… sits between Restart and Clear
-  const stateActions = <>{onRestart !== undefined && <button type="button" role="menuitem" onClick={() => choose(onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button>}{restartAs !== undefined && <button type="button" role="menuitem" aria-haspopup="menu" onClick={() => setView('restart-as')}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart as…</button>}<button type="button" role="menuitem" onClick={() => choose(props.onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button></>;
+  const stateActions = <>{onRestart !== undefined && <button type="button" role="menuitem" onClick={() => choose(onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button>}{restartAs !== undefined && <button type="button" role="menuitem" data-context-flyout aria-haspopup="menu" onClick={() => setView('restart-as')}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart as…</button>}<button type="button" role="menuitem" onClick={() => choose(props.onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button></>;
   const restartAsPage = restartAs === undefined ? null : <LaunchMenu verb="Restart" label={restartAs.label} resolution={restartAs.resolution} onLaunch={choice => choose(() => restartAs.onLaunch(choice))} />;
   // Turn off at the foot of the menu
   const footAction = <button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(props.onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button>;
   const menuLabel = 'Agent power options';
-  return <><span className="power-menu-wrap" ref={anchorRef} hidden={hidden}><button className={className} type="button" disabled={pending || disabledReason !== undefined || hidden} aria-label={menuLabel} aria-expanded={open && !hidden} aria-haspopup="menu" title={disabledReason ?? menuLabel} onClick={() => setOpen(current => !current)}><span className="flyout-caret" aria-hidden="true" />{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && !hidden && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label={menuLabel}>{view === 'restart-as' && restartAs !== undefined ? restartAsPage : <>{stateActions}{newTaskOption}{footAction}</>}</div></FlyoutPortal>}</>;
+  return <><span className="power-menu-wrap" ref={anchorRef} hidden={hidden}><button className={className} type="button" disabled={pending || disabledReason !== undefined || hidden} aria-label={menuLabel} data-context-flyout aria-expanded={open && !hidden} aria-haspopup="menu" title={disabledReason ?? menuLabel} onClick={() => setOpen(current => !current)}><span className="flyout-caret" aria-hidden="true" />{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && !hidden && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label={menuLabel}>{view === 'restart-as' && restartAs !== undefined ? restartAsPage : <>{stateActions}{newTaskOption}{footAction}</>}</div></FlyoutPortal>}</>;
 }
 
 // render reusable mobile terminal controls
@@ -2166,6 +2194,7 @@ function Prompt({ id, ready = true, history, onHistoryChanged, onPromptFocus, on
   const notesPlaceId = placeId ?? worktreeId;
   const notesViewId = notesPlaceId ?? `agent:${id}`;
   const [value, setValue] = usePromptDraft(id);
+  const selectionActions = useSelectionActions();
   const [commandToken, setCommandToken] = useState<CommandToken>();
   const [activeCommand, setActiveCommand] = useState(0);
   const [promptCommands, setPromptCommands] = useState<PromptCommand[]>([]);
@@ -2642,6 +2671,51 @@ function Prompt({ id, ready = true, history, onHistoryChanged, onPromptFocus, on
     setCommandToken(commandTokenAt(next, cursor));
     setActiveCommand(0);
   };
+  // open prompt clipboard and selection actions without changing its caret first
+  const openPromptContextMenu = (event: React.MouseEvent<HTMLTextAreaElement>) => {
+    const input = event.currentTarget;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    const snapshot = input.value;
+    const selectedText = input.value.slice(start, end);
+    // delete only after copying and only while the original draft is still current
+    const cut = async () => {
+      // protect an empty selection even if invoked outside the menu
+      if (!selectedText) return;
+      setAttachmentError(undefined);
+      try { await copyText(selectedText); }
+      catch {
+        setAttachmentError('Unable to cut text. Clipboard access was denied or unavailable.');
+        return;
+      }
+      // do not remove newer input or mutate a replaced composer after a delayed write
+      if (!input.isConnected || promptInput.current !== input || input.value !== snapshot) return;
+      input.focus();
+      input.setSelectionRange(start, end);
+      insertPromptText(input, '');
+    };
+    // insert against the snapshotted range after async clipboard access settles
+    const paste = (contents: ClipboardContents, includeFiles: boolean) => {
+      input.focus();
+      input.setSelectionRange(start, end);
+      // reuse the controlled editor's replacement and caret behavior
+      if (contents.text) insertPromptText(input, contents.text);
+      // ordinary paste retains image attachments while plain paste omits them
+      if (includeFiles && contents.files.length > 0) chooseAttachments(contents.files);
+    };
+    openSelectionContextMenu(event, {
+      label: 'Prompt actions',
+      selectedText,
+      selectAll: () => { input.focus(); input.setSelectionRange(0, input.value.length); },
+      cut,
+      copy: () => copyText(selectedText),
+      paste: contents => paste(contents, true),
+      pasteAcceptsFiles: true,
+      pasteDisabled: attachmentInputDisabled,
+      pastePlain: text => paste({ text, files: [] }, false),
+      selectionActions
+    });
+  };
   const updatePrompt = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const next = event.target.value;
     setValue(next);
@@ -2674,16 +2748,16 @@ function Prompt({ id, ready = true, history, onHistoryChanged, onPromptFocus, on
       input.setSelectionRange(input.value.length, input.value.length);
     });
   };
-  const composer = <div className="prompt-composer" ref={commandAnchorRef}><textarea ref={promptInput} data-prompt-id={id} className={listening ? 'voice-listening' : undefined} aria-label="Prompt" aria-description={supportsSpeechRecognition ? 'Press and hold to start dictation. Tap again to stop.' : undefined} aria-autocomplete="list" aria-expanded={commandToken !== undefined} aria-controls={commandToken === undefined ? undefined : `prompt-commands-${id}`} aria-activedescendant={commandOptions[activeCommand] === undefined ? undefined : `prompt-command-${id}-${activeCommand}`} value={value} onFocus={() => { exitTerminalInput.get(id)?.(); onPromptFocus(); }} onBlur={() => setCommandToken(undefined)} onCopy={flashCopiedPromptSelection} onPaste={pasteAttachments} onPointerDown={beginVoiceHold} onPointerUp={endVoiceHold} onPointerCancel={endVoiceHold} onLostPointerCapture={endVoiceHold} onContextMenu={event => { if (voiceHoldStarted.current) event.preventDefault(); }} onKeyDown={event => { const plainArrow = !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey; if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 's') { event.preventDefault(); void saveDraftAsNote(); } else if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowDown') { event.preventDefault(); setActiveCommand(current => (current + 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowUp') { event.preventDefault(); setActiveCommand(current => (current + commandOptions.length - 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'Enter') { event.preventDefault(); selectCommand(commandOptions[activeCommand] ?? commandOptions[0]!); } else if (plainArrow && event.key === 'ArrowUp' && (historyIndex.current !== undefined || event.currentTarget.selectionStart === event.currentTarget.selectionEnd && !value.slice(0, event.currentTarget.selectionStart).includes('\n'))) { event.preventDefault(); recallPrompt(-1); } else if (plainArrow && event.key === 'ArrowDown' && historyIndex.current !== undefined) { event.preventDefault(); recallPrompt(1); } else if (event.key === 'Escape' && commandToken !== undefined) { event.preventDefault(); setCommandToken(undefined); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); /* preserve explicit line breaks */ if (event.ctrlKey || event.shiftKey) insertPromptText(event.currentTarget, '\n'); /* forward plain blank Enter to output */ else if (!event.metaKey && !event.altKey && !value && attachments.length === 0) terminalInputs.get(id)?.('\r'); /* preserve mobile multiline entry */ else if (window.matchMedia('(max-width: 600px)').matches) insertPromptText(event.currentTarget, '\n'); else void submit(); } }} onChange={updatePrompt} />{commandToken !== undefined && <FlyoutPortal onDismiss={() => setCommandToken(undefined)}><div ref={commandFlyoutRef} className="command-menu" style={commandFlyoutStyle} id={`prompt-commands-${id}`} role="listbox" aria-label={`${commandToken.prefix} commands`}>{commandOptions.length > 0 ? commandOptions.map((command, index) => <button key={command.value} id={`prompt-command-${id}-${index}`} type="button" role="option" aria-selected={index === activeCommand} className={index === activeCommand ? 'active' : ''} onMouseDown={event => event.preventDefault()} onClick={() => selectCommand(command)}><code>{command.value}</code><span>{command.description}</span></button>) : <span className="command-menu-empty">No matching commands</span>}</div></FlyoutPortal>}</div>;
+  const composer = <div className="prompt-composer" ref={commandAnchorRef}><textarea ref={promptInput} data-prompt-id={id} className={listening ? 'voice-listening' : undefined} aria-label="Prompt" aria-description={supportsSpeechRecognition ? 'Press and hold to start dictation. Tap again to stop.' : undefined} aria-autocomplete="list" data-context-flyout aria-expanded={commandToken !== undefined} aria-controls={commandToken === undefined ? undefined : `prompt-commands-${id}`} aria-activedescendant={commandOptions[activeCommand] === undefined ? undefined : `prompt-command-${id}-${activeCommand}`} value={value} onFocus={() => { exitTerminalInput.get(id)?.(); onPromptFocus(); }} onBlur={() => setCommandToken(undefined)} onCopy={flashCopiedPromptSelection} onPaste={pasteAttachments} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onPointerDown={beginVoiceHold} onPointerUp={endVoiceHold} onPointerCancel={endVoiceHold} onLostPointerCapture={endVoiceHold} onContextMenu={event => { /* preserve active dictation */ if (voiceHoldStarted.current) { event.preventDefault(); return; } openPromptContextMenu(event); }} onKeyDown={event => { const plainArrow = !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey; if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 's') { event.preventDefault(); void saveDraftAsNote(); } else if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowDown') { event.preventDefault(); setActiveCommand(current => (current + 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowUp') { event.preventDefault(); setActiveCommand(current => (current + commandOptions.length - 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'Enter') { event.preventDefault(); selectCommand(commandOptions[activeCommand] ?? commandOptions[0]!); } else if (plainArrow && event.key === 'ArrowUp' && (historyIndex.current !== undefined || event.currentTarget.selectionStart === event.currentTarget.selectionEnd && !value.slice(0, event.currentTarget.selectionStart).includes('\n'))) { event.preventDefault(); recallPrompt(-1); } else if (plainArrow && event.key === 'ArrowDown' && historyIndex.current !== undefined) { event.preventDefault(); recallPrompt(1); } else if (event.key === 'Escape' && commandToken !== undefined) { event.preventDefault(); setCommandToken(undefined); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); /* preserve explicit line breaks */ if (event.ctrlKey || event.shiftKey) insertPromptText(event.currentTarget, '\n'); /* forward plain blank Enter to output */ else if (!event.metaKey && !event.altKey && !value && attachments.length === 0) terminalInputs.get(id)?.('\r'); /* preserve mobile multiline entry */ else if (window.matchMedia('(max-width: 600px)').matches) insertPromptText(event.currentTarget, '\n'); else void submit(); } }} onChange={updatePrompt} />{commandToken !== undefined && <FlyoutPortal onDismiss={() => setCommandToken(undefined)}><div ref={commandFlyoutRef} className="command-menu" style={commandFlyoutStyle} id={`prompt-commands-${id}`} role="listbox" aria-label={`${commandToken.prefix} commands`}>{commandOptions.length > 0 ? commandOptions.map((command, index) => <button key={command.value} id={`prompt-command-${id}-${index}`} type="button" role="option" aria-selected={index === activeCommand} className={index === activeCommand ? 'active' : ''} onMouseDown={event => event.preventDefault()} onClick={() => selectCommand(command)}><code>{command.value}</code><span>{command.description}</span></button>) : <span className="command-menu-empty">No matching commands</span>}</div></FlyoutPortal>}</div>;
   const questionModeToggle = question === undefined ? null : <button type="button" className="question-mode-toggle" aria-label={`Switch to ${answerMode ? 'normal prompt' : 'answer'} mode`} onClick={() => { /* toggle detected question mode */ setNormalPromptQuestionId(answerMode ? question.id : undefined); }}>{answerMode ? 'Normal prompt' : 'Answer mode'}</button>;
   const questionNotesId = `question-notes-${id}`;
   const questionNotes = questionNotesOpen ? <div className="question-notes" id={questionNotesId}><textarea aria-label="Answer notes" maxLength={32_000} placeholder="Type an answer for the agent…" value={value} onFocus={() => { /* leave terminal input */ exitTerminalInput.get(id)?.(); onPromptFocus(); }} onChange={event => { /* update note draft */ setValue(event.target.value); }} /><div className="question-notes-actions"><button type="button" disabled={pending || !value.trim()} aria-label="Submit notes" onClick={() => { /* answer the active question directly */ void answer(value); }}>{pending ? <><span className="spinner" />Submitting</> : 'Submit notes'}</button></div></div> : null;
   // render numbered answers
-  if (question && answerMode) return <section className="prompt question-prompt" aria-label="Agent question" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}><div className="question-heading"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-tools"><button type="button" className="question-notes-toggle" aria-controls={questionNotesId} aria-expanded={questionNotesOpen} onClick={() => { /* toggle answer notes */ setNotesQuestionId(questionNotesOpen ? undefined : question.id); }}>{questionNotesOpen ? 'Hide notes' : 'Add notes'}</button>{questionModeToggle}</div></div><div className="question-choices">{question.choices.map(choice => <button key={`${choice.answerIndex}-${choice.label}`} className="question-choice" disabled={pending} onClick={() => void answer(choice.answerIndex)}><b aria-hidden="true">{choice.number}</b><span>{choice.label}{choice.description && <small>{choice.description}</small>}</span></button>)}</div>{questionNotes}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}</section>;
+  if (question && answerMode) return <section className="prompt question-prompt" aria-label="Agent question" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}><div className="question-heading"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-tools"><button type="button" className="question-notes-toggle" aria-controls={questionNotesId} data-context-flyout aria-expanded={questionNotesOpen} onClick={() => { /* toggle answer notes */ setNotesQuestionId(questionNotesOpen ? undefined : question.id); }}>{questionNotesOpen ? 'Hide notes' : 'Add notes'}</button>{questionModeToggle}</div></div><div className="question-choices">{question.choices.map(choice => <button key={`${choice.answerIndex}-${choice.label}`} className="question-choice" disabled={pending} onClick={() => void answer(choice.answerIndex)}><b aria-hidden="true">{choice.number}</b><span>{choice.label}{choice.description && <small>{choice.description}</small>}</span></button>)}</div>{questionNotes}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}</section>;
   const queueLabel = pending ? 'Queueing' : 'Queue';
   const queuePanel = queuedPromptsOpen && <FlyoutPortal onDismiss={() => setQueuedPromptsOpen(false)}><section className="queued-prompts-panel more-menu flyout-menu" ref={queuedPromptFlyoutRef} style={queuedPromptFlyoutStyle} aria-label="Queued prompts"><header><strong>Queued prompts</strong></header>{queuedPromptError && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<div className="queued-prompts-list">{queuedPrompts.map((queued, index) => { const label = queued.text || queued.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; const editing = queuedPromptEdit?.id === queued.id; const busy = queuedPromptAction !== undefined; return <div className={`queued-prompt-item${editing ? ' editing' : ''}`} key={queued.id}><span className="queued-prompt-order"><strong className="queued-prompt-position" aria-label={`Queue position ${index + 1}`}>{index + 1}</strong><span className="queued-prompt-order-buttons"><button type="button" disabled={busy || index === 0} aria-label={`Move queued prompt earlier: ${label}`} title="Move earlier" onClick={() => void moveQueuedPrompt(queued, 'earlier')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button type="button" disabled={busy || index === queuedPrompts.length - 1} aria-label={`Move queued prompt later: ${label}`} title="Move later" onClick={() => void moveQueuedPrompt(queued, 'later')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></span></span>{editing ? <textarea aria-label={`Edit queued prompt: ${label}`} value={queuedPromptEdit.text} maxLength={32_000} autoFocus onChange={event => setQueuedPromptEdit({ id: queued.id, text: event.target.value })} /> : <button className="queued-prompt-copy" type="button" disabled={busy} title={label} onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><span>{queued.text || 'Attachments only'}</span>{queued.attachments?.length ? <small>{queued.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</button>}<span className="queued-prompt-actions">{editing ? <><button type="button" disabled={busy || !queuedPromptEdit.text.trim() && queued.attachments === undefined} aria-label={`Save queued prompt changes: ${label}`} title="Save changes" onClick={() => void saveQueuedPromptEdit(queued)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={busy} aria-label={`Stop editing queued prompt: ${label}`} title="Stop editing" onClick={() => setQueuedPromptEdit(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></> : <button type="button" disabled={busy} aria-label={`Save queued prompt as note: ${label}`} title="Save as note" onClick={() => void saveQueuedPromptAsNote(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'save' ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}</button>}<button className="queued-prompt-cancel" type="button" disabled={busy} aria-label={`Cancel queued prompt: ${label}`} title="Cancel queued prompt" onClick={() => void cancelQueuedPrompt(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'cancel' ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button></span></div>; })}</div></section></FlyoutPortal>;
   // the queued prompts stay one tap away: counted, and disabled while the queue is empty
-  const queuedToggle = <button className={`queued-prompts-toggle icon-button${queuedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending || queuedPrompts.length === 0} aria-label={`Queued prompts (${queuedPrompts.length})`} aria-expanded={queuedPromptsOpen} title={queuedPrompts.length === 0 ? 'No queued prompts' : `${queuedPrompts.length} queued prompt${queuedPrompts.length === 1 ? '' : 's'}`} onClick={() => setQueuedPromptsOpen(open => !open)}><span className="flyout-caret" aria-hidden="true" /><svg viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.queue} /></svg>{queuedPrompts.length > 0 && <span className="saved-prompts-count queued-prompts-count" aria-hidden="true">{queuedPrompts.length}</span>}</button>;
+  const queuedToggle = <button className={`queued-prompts-toggle icon-button${queuedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending || queuedPrompts.length === 0} aria-label={`Queued prompts (${queuedPrompts.length})`} data-context-flyout aria-expanded={queuedPromptsOpen} title={queuedPrompts.length === 0 ? 'No queued prompts' : `${queuedPrompts.length} queued prompt${queuedPrompts.length === 1 ? '' : 's'}`} onClick={() => setQueuedPromptsOpen(open => !open)}><span className="flyout-caret" aria-hidden="true" /><svg viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.queue} /></svg>{queuedPrompts.length > 0 && <span className="saved-prompts-count queued-prompts-count" aria-hidden="true">{queuedPrompts.length}</span>}</button>;
   const sendButton = <button className="queue icon-button" disabled={!ready || pending || (!value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.send} /></svg>}</button>;
   return <section className="prompt agent-composer" aria-label="Prompt composer" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}>{draggingAttachments && <div className="prompt-drop-overlay" role="status">Drop files to attach</div>}<div className="agent-composer-column" aria-label="Prompt shortcuts">{historyControl}{attachmentButton}</div><div className="prompt-content">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}><PanelIcon path={panelIcons.close} /></button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} />{questionModeToggle && <div className="prompt-actions">{questionModeToggle}</div>}</div><div className="agent-composer-column" ref={queuedPromptAnchorRef} role="group" aria-label="Prompt submission controls">{queuedToggle}{sendButton}</div>{queuePanel}</section>;
 }
@@ -2903,7 +2977,7 @@ function useLatestAssistantFiles(agentId: string, message: string | undefined, o
   }, [agentId, message]);
 
   const label = `Files from latest response (${files.length})`;
-  const control = files.length === 0 ? null : <div className="response-files-control" ref={anchorRef}><button className={`log-control page-arrow response-files-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} onPointerDown={event => event.preventDefault()} onClick={() => setMenuOpen(open => !open)}><span className="flyout-caret" aria-hidden="true" /><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3" /></svg><span className="saved-prompts-count response-files-count" aria-hidden="true">{files.length}</span></button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="response-files-menu" style={flyoutStyle} aria-label="Files from latest response">{files.map(file => <button className="log-control" type="button" key={file.path} title={file.path} onClick={() => { setMenuOpen(false); onOpenFile(file.path); }}><span>{file.path}</span><small>{assistantFileSize(file.size)}</small></button>)}</div></FlyoutPortal>}</div>;
+  const control = files.length === 0 ? null : <div className="response-files-control" ref={anchorRef}><button className={`log-control page-arrow response-files-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} data-context-flyout aria-expanded={menuOpen} onPointerDown={event => event.preventDefault()} onClick={() => setMenuOpen(open => !open)}><span className="flyout-caret" aria-hidden="true" /><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3" /></svg><span className="saved-prompts-count response-files-count" aria-hidden="true">{files.length}</span></button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="response-files-menu" style={flyoutStyle} aria-label="Files from latest response">{files.map(file => <button className="log-control" type="button" key={file.path} title={file.path} onClick={() => { setMenuOpen(false); onOpenFile(file.path); }}><span>{file.path}</span><small>{assistantFileSize(file.size)}</small></button>)}</div></FlyoutPortal>}</div>;
   return { control };
 }
 
@@ -3162,7 +3236,7 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string, resume?
   const dialog = dialogOpen && createPortal(<div className="dialog conversations-dialog" role="dialog" aria-modal="true" aria-labelledby="conversations-dialog-title" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeDialog(); } }} onClick={event => { if (event.target === event.currentTarget) closeDialog(); }}><div><header><div><small>NAMED CONVERSATIONS</small><h2 id="conversations-dialog-title">Conversations</h2></div><button type="button" aria-label="Close conversations" title="Close" onClick={closeDialog}><PanelIcon path={panelIcons.close} /></button></header><div className="conversations-tools"><label className="conversations-search"><span className="sr-only">Search conversations</span><input type="search" value={query} placeholder="Search by name or agent" autoFocus onChange={event => setQuery(event.target.value)} /></label>{/* one line of guidance for the whole list; per-row block reasons surface as a toast on tap */}<p className="conversations-note">Tap a conversation to resume it in its home worktree.</p>{/* a resume failure keeps the list; a load failure replaces it (below) */}{error && conversations !== undefined && <p className="conversations-error" role="alert">{error}</p>}</div><div className="conversations-list">{loading && conversations === undefined ? <div className="conversations-loading" role="status"><span className="spinner" />Loading…</div> : error && conversations === undefined ? <p className="conversations-error" role="alert">{error}</p> : matches.length === 0 ? <p className="conversations-empty">{total === 0 ? 'No named conversations in this project yet.' : 'No matches.'}</p> : <>{namedHere.length > 0 && <><p className="conversations-heading">Named here</p><ul className="conversation-rows">{namedHere.map(conversation => row(conversation, true))}</ul></>}{allNamed.length > 0 && <><p className="conversations-heading">All named</p><ul className="conversation-rows">{allNamed.map(conversation => row(conversation))}</ul></>}</>}</div><footer><span>{total} named</span><button type="button" onClick={closeDialog}>Close</button></footer></div></div>, document.body);
 
   // distinguish conversations with left- and right-facing message bubbles
-  const control = <div className="conversations-control" ref={anchorRef}><button className={`log-control page-arrow conversations-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}><span className="flyout-caret" aria-hidden="true" />{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7l-5 4V5a2 2 0 0 1 2-2Z" /><path d="M20 8a2 2 0 0 1 2 2v11l-4-3h-7a2 2 0 0 1-2-2" /></svg>}{consoleNamedCount > 0 && <span className="saved-prompts-count conversations-count" aria-hidden="true">{consoleNamedCount}</span>}</button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="conversations-menu" style={flyoutStyle} aria-label="Conversations">{agentId !== undefined && <form className="conversation-name" onSubmit={event => { event.preventDefault(); void submitName(); }}><input type="text" value={nameDraft} maxLength={120} placeholder={currentName ? `Rename “${currentName}”` : 'Name this conversation'} aria-label="Name this conversation" onChange={event => setNameDraft(event.target.value)} /><button type="submit" disabled={naming || nameDraft.trim() === ''} aria-label="Name conversation">{naming ? <span className="spinner" /> : 'Name'}</button></form>}{error && <p className="conversation-error" role="alert">{error}</p>}{flyoutConsoleNamed.length > 0 && <><p className="conversations-note">Tap a conversation to resume it in its home worktree.</p><ul className="conversation-rows">{flyoutConsoleNamed.map(conversation => row(conversation, true))}</ul></>}<button className="log-control conversations-all" type="button" onClick={() => void openDialog()}><span>All conversations</span><small>{total}</small></button></div></FlyoutPortal>}{dialog}</div>;
+  const control = <div className="conversations-control" ref={anchorRef}><button className={`log-control page-arrow conversations-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} data-context-flyout aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}><span className="flyout-caret" aria-hidden="true" />{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7l-5 4V5a2 2 0 0 1 2-2Z" /><path d="M20 8a2 2 0 0 1 2 2v11l-4-3h-7a2 2 0 0 1-2-2" /></svg>}{consoleNamedCount > 0 && <span className="saved-prompts-count conversations-count" aria-hidden="true">{consoleNamedCount}</span>}</button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="conversations-menu" style={flyoutStyle} aria-label="Conversations">{agentId !== undefined && <form className="conversation-name" onSubmit={event => { event.preventDefault(); void submitName(); }}><input type="text" value={nameDraft} maxLength={120} placeholder={currentName ? `Rename “${currentName}”` : 'Name this conversation'} aria-label="Name this conversation" onChange={event => setNameDraft(event.target.value)} /><button type="submit" disabled={naming || nameDraft.trim() === ''} aria-label="Name conversation">{naming ? <span className="spinner" /> : 'Name'}</button></form>}{error && <p className="conversation-error" role="alert">{error}</p>}{flyoutConsoleNamed.length > 0 && <><p className="conversations-note">Tap a conversation to resume it in its home worktree.</p><ul className="conversation-rows">{flyoutConsoleNamed.map(conversation => row(conversation, true))}</ul></>}<button className="log-control conversations-all" type="button" onClick={() => void openDialog()}><span>All conversations</span><small>{total}</small></button></div></FlyoutPortal>}{dialog}</div>;
   // the current Conversation's name, once the list has loaded (it is fetched on open, never polled)
   return { control, currentName };
 }
@@ -4042,7 +4116,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   };
 
   // hide notes without any persistence context
-  if (resourceBase === undefined) return { active: false, appendToActive, canAppendToActive, canCreate: false, control: null, createWithText: create, pane: null, toggleMenu: undefined };
+  if (resourceBase === undefined) return { active: false, appendToActive, canAppendToActive, canCreate: false, canClose: false, close, control: null, createWithText: create, pane: null, toggleMenu: undefined };
   const noteCount = notes?.length ?? 0;
   const substantialResponse = latestSubstantialResponse(latestAssistantMessage, promptHistory);
   const latestResponseAvailable = notes !== undefined && substantialResponse !== undefined && !notes.some(note => note.text === substantialResponse);
@@ -4051,7 +4125,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   const noteMenuBusy = attachmentPending || lockPending || menuRenamingId !== undefined || menuDeletingId !== undefined || menuRunningId !== undefined;
   // pulse recovered prompts until the notes list acknowledges them
   const control = <div className="notes-control" ref={anchorRef}>
-    <button ref={triggerRef} className={`log-control page-arrow notes-toggle toolbar-button${unreadQueuedNotes ? ' unread-queued-prompts' : ''}${menuOpen || activeNote !== undefined ? ' active' : ''}${activeNote !== undefined ? ' panel-open' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={`${notesLabel}${unreadQueuedNotes ? ' — unread queued prompts' : ''}`} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}><span className="flyout-caret" aria-hidden="true" />{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}<span className="toolbar-label">Notes</span>{noteCount > 0 && <span className={`saved-prompts-count notes-count${unreadQueuedNotes ? ' unread' : ''}`} aria-hidden="true">{noteCount}</span>}</button>
+    <button ref={triggerRef} className={`log-control page-arrow notes-toggle toolbar-button${unreadQueuedNotes ? ' unread-queued-prompts' : ''}${menuOpen || activeNote !== undefined ? ' active' : ''}${activeNote !== undefined ? ' panel-open' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={`${notesLabel}${unreadQueuedNotes ? ' — unread queued prompts' : ''}`} data-context-flyout aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}><span className="flyout-caret" aria-hidden="true" />{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}<span className="toolbar-label">Notes</span>{noteCount > 0 && <span className={`saved-prompts-count notes-count${unreadQueuedNotes ? ' unread' : ''}`} aria-hidden="true">{noteCount}</span>}</button>
     {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="notes-menu" style={flyoutStyle} aria-label={worktreeId === undefined ? 'Scratch notes' : 'Worktree notes'}>
       <button className="log-control save-latest-response" disabled={!latestResponseAvailable || noteMenuBusy || menuRenameDraft !== undefined} onClick={() => {
         // save only an available response
@@ -4085,6 +4159,64 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
     </div></FlyoutPortal>}
   </div>;
   const actionStatus = copyState === 'error' ? 'Copy failed' : sendState === 'queued' ? 'Queued' : sendState === 'error' ? 'Queue failed' : '';
+  // open note modes and clipboard actions without moving the editor caret
+  const openNoteContextMenu = (event: React.MouseEvent<HTMLElement>) => {
+    const editor = editorRef.current;
+    const preview = previewRef.current;
+    const browserSelection = window.getSelection();
+    const previewOwnsSelection = preview !== null && browserSelection !== null && !browserSelection.isCollapsed && preview.contains(browserSelection.anchorNode) && preview.contains(browserSelection.focusNode);
+    const start = editing && editor !== null ? editor.selectionStart : draftRef.current.length;
+    const end = editing && editor !== null ? editor.selectionEnd : start;
+    const selectedText = editing && editor !== null ? editor.value.slice(start, end) : previewOwnsSelection ? browserSelection?.toString() ?? '' : '';
+    // insert text into the source editor and retain note attachment behavior
+    const paste = (contents: ClipboardContents, includeFiles: boolean) => {
+      const available = Math.max(0, 30_000 - (draftRef.current.length - (end - start)));
+      const text = contents.text.slice(0, available);
+      const next = text ? `${draftRef.current.slice(0, start)}${text}${draftRef.current.slice(end)}` : draftRef.current;
+      const cursor = start + text.length;
+      setEditing(true);
+      // update only when a text representation exists
+      if (text) changeDraft(next);
+      // restore the inserted range after the editor mounts
+      window.requestAnimationFrame(() => {
+        editorRef.current?.focus();
+        editorRef.current?.setSelectionRange(cursor, cursor);
+      });
+      // ordinary paste keeps images while plain paste stays text-only
+      if (includeFiles && contents.files.length > 0) chooseNoteFiles(contents.files);
+    };
+    const workspaceKey = worktreeId !== undefined ? placeItemKey(worktreeId) : agentId === undefined ? undefined : `agent-${agentId}`;
+    const agentOpen = agentId !== undefined && (workspaceKey === undefined || !agentSplitHidden(workspaceKey));
+    const noteSelectionActions: SelectionActions = {
+      agentOpen,
+      noteOpen: true,
+      canAppendToNote: canAppendToActive,
+      canCreateNote: !loading,
+      appendToNote: appendToActive,
+      createNote: text => create(text, assistantNoteTitle(text)),
+      addToPrompt: agentId === undefined ? undefined : text => setPromptDraft(agentId, current => appendTextBlock(current, text))
+    };
+    openSelectionContextMenu(event, {
+      label: 'Note actions',
+      modes: [
+        { id: 'edit', label: 'Edit', checked: editing, onSelect: () => setEditing(true) },
+        { id: 'selection', label: 'Selection', checked: !editing, onSelect: () => { flush(); setEditing(false); } }
+      ],
+      selectedText,
+      selectAll: () => {
+        // select the source text in edit mode
+        if (editing && editor !== null) { editor.focus(); editor.setSelectionRange(0, editor.value.length); return; }
+        // select the rendered note in selection mode
+        if (preview !== null) { const range = document.createRange(); range.selectNodeContents(preview); browserSelection?.removeAllRanges(); browserSelection?.addRange(range); }
+      },
+      copy: () => copySelection(selectedText),
+      paste: contents => paste(contents, true),
+      pasteAcceptsFiles: true,
+      pasteDisabled: noteFilesDisabled,
+      pastePlain: text => paste({ text, files: [] }, false),
+      selectionActions: noteSelectionActions
+    });
+  };
   const inferEditing = (target: EventTarget | null) => {
     if (target instanceof Element && target.closest('a, button, input')) {
       selectionAtPointerDown.current = false;
@@ -4128,7 +4260,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   // the title pill: the note picker (with the count of notes at this Place) or the rename field
   const noteTitlePill = activeNote === undefined ? null : renaming
     ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form>
-    : <><button ref={picker.anchorRef} type="button" className="note-picker" aria-label={`Switch note (${noteCount} here): ${noteTitle}`} aria-expanded={pickerOpen} title={noteTitle} disabled={noteFilesDisabled} onClick={() => setPickerOpen(value => !value)} onKeyDown={event => { if (event.key === 'Escape' && pickerOpen) { event.preventDefault(); event.stopPropagation(); setPickerOpen(false); } }}><strong>{noteTitle}</strong>{noteCount > 1 && <span className="note-picker-count" aria-hidden="true">{noteCount}</span>}<svg className="note-picker-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button><span className="panel-header-sub">{activeNote.schedule === undefined ? 'Note' : 'Scheduled'}</span>{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}</>;
+    : <><button ref={picker.anchorRef} type="button" className="note-picker" aria-label={`Switch note (${noteCount} here): ${noteTitle}`} data-context-flyout aria-expanded={pickerOpen} title={noteTitle} disabled={noteFilesDisabled} onClick={() => setPickerOpen(value => !value)} onKeyDown={event => { if (event.key === 'Escape' && pickerOpen) { event.preventDefault(); event.stopPropagation(); setPickerOpen(false); } }}><strong>{noteTitle}</strong>{noteCount > 1 && <span className="note-picker-count" aria-hidden="true">{noteCount}</span>}<svg className="note-picker-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button><span className="panel-header-sub">{activeNote.schedule === undefined ? 'Note' : 'Scheduled'}</span>{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}</>;
   const notePicker = pickerOpen && activeNote !== undefined && <FlyoutPortal onDismiss={() => setPickerOpen(false)}><div ref={picker.flyoutRef} className="more-menu note-picker-menu" style={picker.style} role="group" aria-label="Notes here" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setPickerOpen(false); } }}>
     {notes?.map(note => <button key={note.id} type="button" className="note-picker-choice" aria-current={note.id === activeNote.id ? 'true' : undefined} onClick={() => { setPickerOpen(false); if (note.id !== activeNote.id) open(note, undefined, true); }}>{note.schedule !== undefined && <svg className="note-picker-scheduled" viewBox="0 0 24 24" aria-label="Scheduled"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>}<span>{noteName(note)}</span></button>)}
     <button type="button" className="note-picker-new" disabled={noteMenuBusy} onClick={() => { setPickerOpen(false); void create(); }}>+ New note</button>
@@ -4151,8 +4283,8 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   // expansion with its view
   const paneExpanded = expanded || expansion.immersive;
   // Esc closes the note, unless it is expanded: then the Workspace restores its siblings first
-  const pane = activeNote === undefined ? null : <><section className={`note-pane${paneExpanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !paneExpanded && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><PanelHeader panelKey="note" label="note" title={noteTitlePill} actions={noteSendAction} secondary={noteSecondary} menuContent={scheduleMenu} expandDisabled={noteFilesDisabled} close={{ key: 'close', label: 'Close note', className: 'note-close', disabled: noteFilesDisabled, icon: <PanelIcon path={panelIcons.close} />, onSelect: close }} /><div className="note-pane-head">{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}{notePicker}</>;
-  return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, initialNotesLoaded, control, createWithText: create, pane, toggleMenu: toggle };
+  const pane = activeNote === undefined ? null : <><section className={`note-pane${paneExpanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={openNoteContextMenu} onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !paneExpanded && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><PanelHeader panelKey="note" label="note" title={noteTitlePill} actions={noteSendAction} secondary={noteSecondary} menuContent={scheduleMenu} expandDisabled={noteFilesDisabled} close={{ key: 'close', label: 'Close note', className: 'note-close', disabled: noteFilesDisabled, icon: <PanelIcon path={panelIcons.close} />, onSelect: close }} /><div className="note-pane-head">{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}{notePicker}</>;
+  return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, canClose: activeNote !== undefined && !noteFilesDisabled, close, initialNotesLoaded, control, createWithText: create, pane, toggleMenu: toggle };
 }
 type WorktreeNotes = ReturnType<typeof useWorktreeNotes>;
 
@@ -4289,6 +4421,7 @@ const isProjectBrowserDeviceErrorMessage = (value: unknown): value is ProjectBro
   && (value as ProjectBrowserDeviceErrorMessage).properties.every(property => typeof property === 'string');
 // render the embedded project browser
 function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationRequest, onNavigate, onClose }: { url: string; homeUrl: string; proxied: boolean; worktreeId?: string; navigationRequest?: ProjectBrowserNavigationRequest; onNavigate: (url: string) => boolean; onClose: () => void }) {
+  const selectionActions = useSelectionActions();
   const [loading, setLoading] = useState(true);
   const expanded = usePanelExpand('browser')?.expanded === true;
   const [mobile, setMobile] = useState(() => savedBrowserMobile(worktreeId));
@@ -4458,6 +4591,37 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     setFrameAwayFromKnownUrl(false);
     loadFrame(loadedFrameSource.current, nextMobile);
   };
+  // offer browser chrome actions without accessing a cross-origin document
+  const browserContextMenu = (event: React.MouseEvent<HTMLElement>) => {
+    const input = event.target instanceof HTMLInputElement ? event.target : undefined;
+    const addressInput = event.currentTarget.querySelector<HTMLInputElement>('input[aria-label="Browser address"]');
+    const selection = window.getSelection();
+    const selected = input === undefined
+      ? selection?.anchorNode !== null && selection?.anchorNode !== undefined && event.currentTarget.contains(selection.anchorNode) ? selection.toString() : ''
+      : input.value.slice(input.selectionStart ?? 0, input.selectionEnd ?? 0);
+    const start = input?.selectionStart ?? address.length;
+    const end = input?.selectionEnd ?? start;
+    // replace only the address range captured when the menu opened
+    const pasteAddress = (text: string) => {
+      // readonly browser chrome cannot receive text
+      if (input === undefined || !input.isConnected) return;
+      setAddress(current => `${current.slice(0, start)}${text}${current.slice(end)}`);
+      window.requestAnimationFrame(() => { input.focus(); input.setSelectionRange(start + text.length, start + text.length); });
+    };
+    openSelectionContextMenu(event, {
+      label: 'Browser options',
+      modes: [
+        { id: 'desktop', label: 'Desktop viewport', checked: !mobile, onSelect: () => { /* change only a different viewport */ if (mobile) toggleDevice(); } },
+        { id: 'mobile', label: 'Mobile viewport', checked: mobile, onSelect: () => { /* change only a different viewport */ if (!mobile) toggleDevice(); } }
+      ],
+      selectedText: selected,
+      selectAll: () => { /* select browser chrome without entering the embedded page */ addressInput?.focus(); addressInput?.select(); },
+      copy: () => copyText(selected),
+      paste: input === undefined ? undefined : contents => pasteAddress(contents.text),
+      pastePlain: input === undefined ? undefined : pasteAddress,
+      selectionActions
+    });
+  };
   // describe the applied preview capability
   const deviceLabel = proxied ? mobile ? 'Use desktop viewport and user agent' : 'Use mobile viewport and user agent' : mobile ? 'Use desktop viewport' : 'Use mobile viewport';
   const deviceTitle = proxied ? mobile ? 'Desktop viewport and user agent' : 'Mobile viewport and user agent' : mobile ? 'Desktop viewport' : 'Mobile viewport';
@@ -4472,7 +4636,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     { key: 'device', label: deviceLabel, title: deviceTitle, className: 'browser-device-toggle', pressed: mobile, icon: <svg className="panel-header-icon" data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg>, onSelect: toggleDevice }
   ];
   const title = <>{deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}<form className="browser-address-form" onSubmit={submitAddress}><input type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onBlur={navigate} /></form></>;
-  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onKeyDown={handleEscape}><PanelHeader panelKey="browser" label="browser" title={title} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close browser', title: 'Close', className: 'browser-close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} /><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
+  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={browserContextMenu} onKeyDown={handleEscape}><PanelHeader panelKey="browser" label="browser" title={title} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close browser', title: 'Close', className: 'browser-close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} /><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
 }
 
 // reuse the owning view's note persistence and prompt draft
@@ -4895,7 +5059,11 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
   const canvas = useRef<HTMLDivElement | null>(null);
   const [focused, setFocused] = useState(false);
   const [selection, setSelection] = useState<TerminalSelection>();
+  const [selectionModeActive, setSelectionModeActive] = useState(false);
   const copySelectionRef = useRef<(value: string) => Promise<void>>(copyText);
+  const selectionControllerRef = useRef<TerminalSelectionController | undefined>(undefined);
+  const pasteTerminalRef = useRef<((text: string) => void) | undefined>(undefined);
+  const workspaceSelectionActions = useSelectionActions();
   // this Terminal's share of the Workspace's expansion, keyed by its pane id
   const expand = usePanelExpand(paneId);
   const expanded = expand?.expanded === true;
@@ -4933,6 +5101,7 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
     // mount only after the terminal canvas exists
     if (container === null) return;
     setSelection(undefined);
+    setSelectionModeActive(false);
     setConnection('Connecting');
     const handle = mountStreamedTerminal(container, {
       connect: createWorktreePaneConnector(worktreeId, paneId, request),
@@ -4942,11 +5111,14 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
     });
     const selection = attachTerminalSelection(container, handle, {
       onSelection: setSelection,
+      onSelectionModeChange: setSelectionModeActive,
       copyText,
       flashElement: container.closest<HTMLElement>('.terminal-pane') ?? container,
       copyFlashMs: selectionCopyFlashMs
     });
     copySelectionRef.current = selection.copy;
+    selectionControllerRef.current = selection;
+    pasteTerminalRef.current = handle.paste;
     const blur = () => handle.terminal.blur();
     terminalInputs.set(paneId, handle.sendInput);
     exitTerminalInput.set(paneId, blur);
@@ -4960,6 +5132,9 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
     // release selection listeners before disposing the terminal
     return () => {
       selection.dispose();
+      // release only this mounted controller
+      if (selectionControllerRef.current === selection) selectionControllerRef.current = undefined;
+      if (pasteTerminalRef.current === handle.paste) pasteTerminalRef.current = undefined;
       container.removeEventListener('focusin', onFocusIn);
       container.removeEventListener('focusout', onFocusOut);
       // only clear our own registrations, so a fast remount of the same pane id keeps the new one
@@ -4969,11 +5144,29 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
       handle.dispose();
     };
   }, [worktreeId, paneId]);
+  // open terminal modes and clipboard actions without sending a secondary mouse report
+  const openTerminalContextMenu = (event: React.MouseEvent<HTMLElement>) => {
+    const controller = selectionControllerRef.current;
+    const selectedText = controller?.getSelectedText() ?? '';
+    openSelectionContextMenu(event, {
+      label: `Terminal ${name} actions`,
+      modes: [
+        { id: 'output', label: 'Output', checked: !selectionModeActive, onSelect: () => controller?.setMode('output') },
+        { id: 'selection', label: 'Selection', checked: selectionModeActive, onSelect: () => controller?.setMode('selection') }
+      ],
+      selectedText,
+      selectAll: () => controller?.selectAll(),
+      copy: () => controller?.copy(selectedText),
+      paste: contents => { controller?.setMode('output'); if (contents.text) pasteTerminalRef.current?.(contents.text); },
+      pastePlain: text => { controller?.setMode('output'); pasteTerminalRef.current?.(text); },
+      selectionActions: workspaceSelectionActions
+    });
+  };
   const secondary: PanelAction[] = [];
   if (onRename !== undefined) secondary.push({ key: 'rename', label: `Rename terminal ${name}`, title: 'Rename terminal', className: 'pane-rename-toggle', disabled: deletePending || renaming, icon: <PanelIcon path={actionIconPaths.pencil} />, onSelect: () => { setRenameDraft(name); setRenaming(true); } });
   // keep managed-shell deletion visible even when rename folds into More
   const deleteControl = onDelete === undefined ? undefined : <button type="button" className="panel-header-action pane-delete" aria-label={`Delete terminal ${name}`} title="Delete shell (ends the running shell)" disabled={deletePending || renamePending} onClick={() => void deleteShell()}>{deletePending ? <span className="spinner" /> : <PanelIcon path={actionIconPaths.trash} />}</button>;
-  return <section className={`terminal-pane${expanded ? ' expanded' : ''}${focused ? ' focused' : ''}${selection ? ' selection-active' : ''}`} data-panel-key={paneId}>
+  return <section className={`terminal-pane${expanded ? ' expanded' : ''}${focused ? ' focused' : ''}${selectionModeActive ? ' selection-active' : ''}`} data-panel-key={paneId} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenuCapture={openTerminalContextMenu}>
     <PanelHeader panelKey={paneId} label={`terminal ${name}`} expandDisabled={deletePending} actions={deleteControl} secondary={secondary} close={{ key: 'minimize', label: `Minimize terminal ${name}`, title: 'Minimize terminal (the shell keeps running)', className: 'pane-minimize', disabled: deletePending, icon: <PanelIcon path="M5 12h14" />, onSelect: onMinimize }} title={<>
       {deleteError
       ? <span className="pane-status error" role="alert" title="Could not delete shell. Try again.">Delete failed</span>
@@ -5041,7 +5234,7 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
       {showEnd && <button type="button" className="terminal-picker-end" aria-label={`End ${terminalPaneLabel(pane)}`} title="End this shell" disabled={busy} onClick={() => void endShell(pane)}><LauncherRowIcon name="trash" /></button>}
     </div>;
   };
-  return <><span className="terminal-picker-wrap" ref={anchorRef}><button type="button" className={`terminal-picker-toggle toolbar-button${open.length > 0 ? ' panel-open' : ''}`} aria-haspopup="menu" aria-expanded={menuOpen} aria-label="Open a terminal" aria-description={minimizedDescription} title="Open a terminal" onClick={toggle}><span className="flyout-caret" aria-hidden="true" /><LauncherRowIcon name="terminal" /><span className="toolbar-label">Terminal</span>{minimizedCount > 0 && <span className="saved-prompts-count terminal-minimized-count" aria-hidden="true">{minimizedCount}</span>}</button></span>
+  return <><span className="terminal-picker-wrap" ref={anchorRef}><button type="button" className={`terminal-picker-toggle toolbar-button${open.length > 0 ? ' panel-open' : ''}`} aria-haspopup="menu" data-context-flyout aria-expanded={menuOpen} aria-label="Open a terminal" aria-description={minimizedDescription} title="Open a terminal" onClick={toggle}><span className="flyout-caret" aria-hidden="true" /><LauncherRowIcon name="terminal" /><span className="toolbar-label">Terminal</span>{minimizedCount > 0 && <span className="saved-prompts-count terminal-minimized-count" aria-hidden="true">{minimizedCount}</span>}</button></span>
     {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="terminal-picker flyout-menu" ref={flyoutRef} style={style} role="menu" aria-label="Open a terminal">
       {panes.length === 0 && <div className="terminal-picker-empty">No panes yet</div>}
       {sessionPanes.length > 0 && <><div className="terminal-picker-heading">Session panes</div>{sessionPanes.map(pane => paneRow(pane, false))}</>}
@@ -5052,16 +5245,18 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
 
 // The split columns and the toolbar's Terminal button for a Place's Terminals, shared by the Agent tab
 // and the agentless Worktree and Place tabs. A target the dashboard placed nowhere gets neither.
-function useTerminalViews(worktreeId: string | undefined): { columns?: TerminalColumn[]; control?: ReactNode } {
+function useTerminalViews(worktreeId: string | undefined): { columns?: TerminalColumn[]; control?: ReactNode; closeAll: () => void } {
   const terminals = useWorktreeTerminals(worktreeId);
-  if (worktreeId === undefined) return {};
+  // minimize every visible shell without ending its process
+  const closeAll = () => terminals.open.forEach(terminal => terminals.closePane(terminal.paneId));
+  if (worktreeId === undefined) return { closeAll };
   // keep destructive actions limited to managed shells
   const columns = terminals.open.map(terminal => {
     const pane = terminals.panes.find(pane => pane.paneId === terminal.paneId);
     const managedShell = pane?.role === 'shell' && !pane.agent;
     return { key: terminal.paneId, label: terminal.name, node: <TerminalPane key={terminal.paneId} worktreeId={worktreeId} paneId={terminal.paneId} name={terminal.name} onMinimize={() => { /* keep the shell running */ terminals.closePane(terminal.paneId); }} onExit={() => { /* remove ended shells from the count */ terminals.forgetPane(terminal.paneId); }} onRename={managedShell ? (name => terminals.renamePane(terminal.paneId, name)) : undefined} onDelete={managedShell ? (() => terminals.endPane(pane)) : undefined} /> };
   });
-  return { columns, control: <TerminalPicker worktreeId={worktreeId} terminals={terminals} /> };
+  return { columns, control: <TerminalPicker worktreeId={worktreeId} terminals={terminals} />, closeAll };
 }
 
 // format one git stat number
@@ -5360,7 +5555,7 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
   if (tab === 'prs') activePanel = pullRequestPanel;
   // show local branch choices
   if (tab === 'branches') activePanel = branchPanel;
-  return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}${pullRequest === undefined ? '' : ` has-pull-request status-${pullRequest.status}`}${review !== undefined ? ' review-ready' : ''}${review?.generating ? ' review-generating' : ''}${review?.stale ? ' review-stale' : ''}`} type="button" aria-label={label} aria-busy={review?.generating || undefined} aria-expanded={expanded} title={label} onClick={onToggle}><span className="flyout-caret" aria-hidden="true" /><svg className="git-branch-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.5" /><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="7" r="2.5" /><path d="M6 7.5v9M18 9.5v1a6 6 0 0 1-6 6H6" /></svg><span className="git-status-dot" aria-hidden="true" /><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span>{/* retain compact pr indicators beside the prompt */}{pullRequest !== undefined && <PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} />}</button>{expanded && <FlyoutPortal onDismiss={() => onToggle?.()}><div className="git-status-panel" role="region" aria-label="Changed files" aria-busy={repositoryTabVisible && loadingPrSwitch} style={panelStyle}>{activePanel}<span className="git-status-tabs" role="tablist" aria-label="Branch views"><button type="button" role="tab" aria-selected={tab === 'working'} onClick={() => setTab('working')}>Working</button><button type="button" role="tab" aria-selected={tab === 'prs'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load pull requests' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('prs'); }}>PRs{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button><button type="button" role="tab" aria-selected={tab === 'branches'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load branches' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('branches'); }}>Branches{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button></span></div></FlyoutPortal>}{removingBranch !== undefined && worktreeId !== undefined && <RemoveBranchDialog worktreeId={worktreeId} branch={removingBranch} onClose={() => setRemovingBranch(undefined)} onDeleted={branchRemoved} />}</span>;
+  return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}${pullRequest === undefined ? '' : ` has-pull-request status-${pullRequest.status}`}${review !== undefined ? ' review-ready' : ''}${review?.generating ? ' review-generating' : ''}${review?.stale ? ' review-stale' : ''}`} type="button" aria-label={label} aria-busy={review?.generating || undefined} data-context-flyout aria-expanded={expanded} title={label} onClick={onToggle}><span className="flyout-caret" aria-hidden="true" /><svg className="git-branch-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.5" /><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="7" r="2.5" /><path d="M6 7.5v9M18 9.5v1a6 6 0 0 1-6 6H6" /></svg><span className="git-status-dot" aria-hidden="true" /><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span>{/* retain compact pr indicators beside the prompt */}{pullRequest !== undefined && <PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} />}</button>{expanded && <FlyoutPortal onDismiss={() => onToggle?.()}><div className="git-status-panel" role="region" aria-label="Changed files" aria-busy={repositoryTabVisible && loadingPrSwitch} style={panelStyle}>{activePanel}<span className="git-status-tabs" role="tablist" aria-label="Branch views"><button type="button" role="tab" aria-selected={tab === 'working'} onClick={() => setTab('working')}>Working</button><button type="button" role="tab" aria-selected={tab === 'prs'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load pull requests' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('prs'); }}>PRs{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button><button type="button" role="tab" aria-selected={tab === 'branches'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load branches' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('branches'); }}>Branches{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button></span></div></FlyoutPortal>}{removingBranch !== undefined && worktreeId !== undefined && <RemoveBranchDialog worktreeId={worktreeId} branch={removingBranch} onClose={() => setRemovingBranch(undefined)} onDeleted={branchRemoved} />}</span>;
 }
 
 // The Place a Workspace shows: the fields it reads from a Worktree, a directory-Project or Scratch
@@ -5387,7 +5582,51 @@ function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNa
   const expansion = usePanelExpansion();
   const placeNotes = useWorktreeNotes(place.id, expansion, agentId, notes.agentWorking, notes.latestAssistantMessage, notes.latestAssistantMessageOverflows, notes.onPromptHistoryChanged, notes.promptHistory, notes.schedulePrefill, notes.onLaunchAndRun, notes.launchRunLabel);
   const [gitExpanded, setGitExpanded] = useState(false);
-  return { place, browser, code, terminals, carousel, setCarousel, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded };
+  const key = place.id === undefined ? `agent-${agentId ?? 'pending'}` : placeItemKey(place.id);
+  useWorkspaceViewRevision();
+  const agentHidden = agentSplitHidden(key);
+  // bring a requested split into view without changing its interaction mode
+  const jump = (panelKey: string) => {
+    expansion.restore();
+    carousel?.show(panelKey);
+    window.requestAnimationFrame(() => {
+      const panel = document.querySelector<HTMLElement>(`[data-workspace-key="${CSS.escape(key)}"] .log-split ${splitPanelSelector(panelKey)}`);
+      panel?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      // focus the panel container rather than its editor or terminal input
+      if (panel !== null) { panel.tabIndex = -1; panel.focus({ preventScroll: true }); }
+    });
+  };
+  // publish only live view callbacks for the active workspace
+  useLayoutEffect(() => {
+    const view = {
+      splits: (carousel?.panels ?? []).map(panel => ({ key: panel.key, label: panel.title })),
+      canClose: !placeNotes.active || placeNotes.canClose,
+      closeAll: () => {
+        // preserve attachment or metadata mutations before closing any siblings
+        if (placeNotes.active && !placeNotes.canClose) return;
+        // close only a visible note
+        if (placeNotes.active) placeNotes.close();
+        browser.close();
+        code.close();
+        terminals.closeAll();
+        expansion.restore();
+        // retain a restore action only when an agent or draft was actually visible
+        if (carousel?.panels.some(panel => panel.key === 'agent')) setAgentSplitHidden(key, true);
+      },
+      jump
+    };
+    workspaceViews.set(key, view);
+    const requested = pendingWorkspaceJumps.get(key);
+    // wait until restored panels have reached the carousel
+    if (requested !== undefined && view.splits.some(panel => panel.key === requested)) {
+      pendingWorkspaceJumps.delete(key);
+      jump(requested);
+    }
+    return () => { /* release only this mounted view */ if (workspaceViews.get(key) === view) workspaceViews.delete(key); };
+  });
+  // restore and reveal a minimized agent without creating a new session
+  const showAgent = () => { pendingWorkspaceJumps.set(key, 'agent'); setAgentSplitHidden(key, false); };
+  return { place, browser, code, terminals, carousel, setCarousel, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded, agentHidden, showAgent, viewKey: key };
 }
 type WorkspaceState = ReturnType<typeof useWorkspace>;
 // The git actions only an Agent offers (push, fixup, guided review); an agentless Workspace passes
@@ -5407,7 +5646,8 @@ function WorkspaceGitStatus({ workspace, actions, onToggle }: { workspace: Works
 // shows `empty` instead. With no agent panel the Workspace is idle.
 function Workspace({ workspace, output, empty, git, onAddToPrompt }: { workspace: WorkspaceState; output?: ReactNode; empty?: ReactNode; git?: WorkspaceGitActions; onAddToPrompt?: (text: string) => void }) {
   const { place, browser, code, notes, expansion } = workspace;
-  const idle = output === undefined || output === null;
+  const visibleOutput = workspace.agentHidden ? undefined : output;
+  const idle = visibleOutput === undefined || visibleOutput === null;
   // With no Agent there is no output to split against, so the Code panel opens filling the Workspace.
   useLayoutEffect(() => { if (idle && code.open) expansion.setExpanded('code', true); }, [idle, code.open, expansion.setExpanded]);
   // Terminal selections save into this Place's notes or go to the card's composer.
@@ -5416,10 +5656,24 @@ function Workspace({ workspace, output, empty, git, onAddToPrompt }: { workspace
     createNote: text => notes.createWithText(text, assistantNoteTitle(text)),
     addToPrompt: onAddToPrompt
   };
+  // share selection destinations across every panel and its composer
+  const selectionActions: SelectionActions = {
+    agentOpen: !idle,
+    noteOpen: notes.active,
+    canCreateNote: notes.canCreate,
+    canAppendToNote: notes.canAppendToActive,
+    appendToNote: text => { expansion.restore(); notes.appendToActive(text); workspace.carousel?.show('note'); },
+    createNote: async text => {
+      const created = await notes.createWithText(text, assistantNoteTitle(text));
+      // reveal a newly created note without disturbing failed saves
+      if (created) { expansion.restore(); workspace.carousel?.show('note'); }
+    },
+    addToPrompt: onAddToPrompt === undefined ? undefined : text => { expansion.restore(); onAddToPrompt(text); workspace.carousel?.show('agent'); }
+  };
   const browserPane = browser.url === undefined || browser.homeUrl === undefined ? null : <ProjectBrowserPane url={browser.url} homeUrl={browser.homeUrl} proxied={browser.proxied} worktreeId={place.id} navigationRequest={browser.navigationRequest} onNavigate={browser.navigate} onClose={browser.close} />;
   const review = git === undefined || (git.onReview === undefined && git.reviewUnavailable === undefined) ? undefined : { onReview: git.onReview, open: git.review !== undefined, unavailable: git.reviewUnavailable };
   const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} branch={place.branch} review={review} /> : null;
-  return <section className="log-shell"><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={output} empty={empty} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onCarousel={workspace.setCarousel} initialPanelsReady={notes.initialNotesLoaded} /></div><ClientSettingsPane /></section>;
+  return <SelectionActionsContext.Provider value={selectionActions}><section className="log-shell" data-workspace-key={workspace.viewKey}><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={visibleOutput} empty={empty} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onCarousel={workspace.setCarousel} initialPanelsReady={notes.initialNotesLoaded} /></div><ClientSettingsPane /></section></SelectionActionsContext.Provider>;
 }
 
 type LogProps = { id: string; embedded?: boolean; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined, overflow: boolean) => void; header?: (connection: string) => ReactNode; composer?: ReactNode; notes?: WorktreeNotes; onAddToPrompt?: (text: string) => void; onOpenUrl?: (url: string) => boolean; onOpenFile?: (path: string) => void; processingLabel?: string; processingDetail?: string };
@@ -5443,6 +5697,9 @@ function Log({ id, embedded = false, onQuestion, onMetadata, header, composer, n
   const [selectionActive, setSelectionActive] = useState(false);
   const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
   const copyOutputSelectionRef = useRef<(value: string) => Promise<void>>(copyText);
+  const selectionControllerRef = useRef<TerminalSelectionController | undefined>(undefined);
+  const pasteOutputRef = useRef<((text: string) => void) | undefined>(undefined);
+  const workspaceSelectionActions = useSelectionActions();
   const onMetadataRef = useRef(onMetadata);
   onMetadataRef.current = onMetadata;
   // retain the file opener across terminal reconnections (pane file links call it)
@@ -5521,6 +5778,8 @@ function Log({ id, embedded = false, onQuestion, onMetadata, header, composer, n
       copyFlashMs: selectionCopyFlashMs
     });
     copyOutputSelectionRef.current = selection.copy;
+    selectionControllerRef.current = selection;
+    pasteOutputRef.current = handle.paste;
     // Ctrl/Cmd =/+ grow, - shrink, 0 reset the terminal font; the component's font-size
     // subscription applies the new size. Skipped in editable fields other than xterm's
     // own textarea, and captured so the browser does not page-zoom.
@@ -5539,6 +5798,9 @@ function Log({ id, embedded = false, onQuestion, onMetadata, header, composer, n
       disposed = true;
       renderSub.dispose();
       selection.dispose();
+      // release only this mounted controller
+      if (selectionControllerRef.current === selection) selectionControllerRef.current = undefined;
+      if (pasteOutputRef.current === handle.paste) pasteOutputRef.current = undefined;
       canvas.current?.removeEventListener('focusin', onFocusIn);
       canvas.current?.removeEventListener('focusout', onFocusOut);
       if (!embedded) document.removeEventListener('keydown', terminalFontShortcut, true);
@@ -5549,6 +5811,61 @@ function Log({ id, embedded = false, onQuestion, onMetadata, header, composer, n
       handle.dispose();
     };
   }, [embedded, id, onQuestion]);
+  // open agent modes and clipboard actions from any non-prompt part of the split
+  const openOutputContextMenu = (event: MouseEvent) => {
+    const controller = selectionControllerRef.current;
+    const selectedText = controller?.getSelectedText() ?? '';
+    const promptInput = Array.from(document.querySelectorAll<HTMLTextAreaElement>('textarea[data-prompt-id]')).find(input => input.dataset.promptId === id);
+    const hasPrompt = !embedded && promptInput !== undefined;
+    openSelectionContextMenu(event, {
+      label: embedded ? 'Output actions' : 'Agent actions',
+      modes: [
+        ...(hasPrompt ? [{ id: 'prompt', label: 'Prompt', checked: !inputActive && !selectionActive, onSelect: () => { controller?.setMode('prompt'); promptInput.focus(); } }] : []),
+        { id: 'output', label: 'Output', checked: !selectionActive && (inputActive || !hasPrompt), onSelect: () => controller?.setMode('output') },
+        { id: 'selection', label: 'Selection', checked: selectionActive, onSelect: () => controller?.setMode('selection') }
+      ],
+      selectedText,
+      selectAll: () => controller?.selectAll(),
+      copy: () => controller?.copy(selectedText),
+      paste: contents => { controller?.setMode('output'); if (contents.text) pasteOutputRef.current?.(contents.text); },
+      pastePlain: text => { controller?.setMode('output'); pasteOutputRef.current?.(text); },
+      selectionActions: workspaceSelectionActions
+    });
+  };
+  useEffect(() => {
+    const panel = canvas.current?.closest<HTMLElement>(embedded ? '.log-output' : '.agent-panel');
+    // skip a detached output surface
+    if (panel === null || panel === undefined) return;
+    // leave ordinary editors to their own clipboard behavior
+    const isEditorTarget = (target: EventTarget | null) => {
+      // retain the terminal menu for xterm's helper textarea
+      if (!(target instanceof Element) || target.closest('.xterm') !== null) return false;
+      return target.closest('input, textarea, select, [contenteditable]') !== null;
+    };
+    // preserve the current mode until contextmenu dispatch
+    const preserveSecondaryPress = (event: MouseEvent | PointerEvent) => {
+      // leave ordinary editors and non-secondary presses unchanged
+      if (event.button !== 2 || isEditorTarget(event.target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    // leave editors and explicit flyout triggers to their own context behavior
+    const openPanelMenu = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      // never route an answer or prompt paste into terminal input
+      if (isEditorTarget(target) || target?.closest('[data-context-flyout]') !== null) return;
+      openOutputContextMenu(event);
+    };
+    panel.addEventListener('pointerdown', preserveSecondaryPress, true);
+    panel.addEventListener('mousedown', preserveSecondaryPress, true);
+    panel.addEventListener('contextmenu', openPanelMenu, true);
+    // release native panel handlers with this render surface
+    return () => {
+      panel.removeEventListener('pointerdown', preserveSecondaryPress, true);
+      panel.removeEventListener('mousedown', preserveSecondaryPress, true);
+      panel.removeEventListener('contextmenu', openPanelMenu, true);
+    };
+  }, [embedded, id, inputActive, selectionActive, workspaceSelectionActions]);
   const processing = processingLabel !== undefined;
   const loading = !hasRendered || processing;
   const visibleStatus = processing ? 'Starting' : status;
@@ -5669,14 +5986,14 @@ function PromptHistoryControl({ agentId, history, refreshHistory, notes, open, o
     setHistoryAnswerId(undefined);
     void notes.createWithText(entry.answer, assistantNoteTitle(entry.answer));
   };
-  const historyPanel = open && <FlyoutPortal onDismiss={() => { onOpenChange(false); setHistoryAnswerId(undefined); }}><section className="prompt-history-menu more-menu flyout-menu" ref={historyFlyoutRef} style={historyFlyoutStyle} aria-label="Prompt history"><header><strong>Prompt history</strong><span>{history.length}</span></header><div className="prompt-history-list" ref={historyListRef} onScroll={updateHistoryPin} onWheel={markHistoryScrollIntent} onTouchStart={markHistoryScrollIntent} onPointerDown={markHistoryScrollIntent} onKeyDown={markHistoryScrollIntent}>{history.length === 0 ? <p>No prompts have been queued for this worktree yet.</p> : [...history].reverse().map(entry => <div className={`prompt-history-entry${historyAnswerId === entry.id ? ' answer-open' : ''}`} key={entry.id}><button className="prompt-history-prompt" type="button" title={entry.text} onClick={() => useHistoryEntry(entry)}><span>{entry.text}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time></button><button className="prompt-history-answer-toggle" type="button" disabled={entry.answer === undefined} title={entry.answer === undefined ? 'Answer not recorded yet' : 'View final answer'} aria-label={`View answer for ${entry.text}`} aria-expanded={historyAnswerId === entry.id} onClick={() => toggleHistoryAnswer(entry)}>View answer</button>{historyAnswerId === entry.id && entry.answer !== undefined && <div className="prompt-history-answer" role="region" aria-label={`Answer for ${entry.text}`}><button className="prompt-history-save-note" type="button" disabled={!notes.canCreate || entry.answer.length > 30_000} onClick={() => saveHistoryAnswer(entry)}>Save as note</button><div className="prompt-history-answer-text">{entry.answer}</div></div>}</div>)}</div></section></FlyoutPortal>;
+  const historyPanel = open && <FlyoutPortal onDismiss={() => { onOpenChange(false); setHistoryAnswerId(undefined); }}><section className="prompt-history-menu more-menu flyout-menu" ref={historyFlyoutRef} style={historyFlyoutStyle} aria-label="Prompt history"><header><strong>Prompt history</strong><span>{history.length}</span></header><div className="prompt-history-list" ref={historyListRef} onScroll={updateHistoryPin} onWheel={markHistoryScrollIntent} onTouchStart={markHistoryScrollIntent} onPointerDown={markHistoryScrollIntent} onKeyDown={markHistoryScrollIntent}>{history.length === 0 ? <p>No prompts have been queued for this worktree yet.</p> : [...history].reverse().map(entry => <div className={`prompt-history-entry${historyAnswerId === entry.id ? ' answer-open' : ''}`} key={entry.id}><button className="prompt-history-prompt" type="button" title={entry.text} onClick={() => useHistoryEntry(entry)}><span>{entry.text}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time></button><button className="prompt-history-answer-toggle" type="button" disabled={entry.answer === undefined} title={entry.answer === undefined ? 'Answer not recorded yet' : 'View final answer'} aria-label={`View answer for ${entry.text}`} data-context-flyout aria-expanded={historyAnswerId === entry.id} onClick={() => toggleHistoryAnswer(entry)}>View answer</button>{historyAnswerId === entry.id && entry.answer !== undefined && <div className="prompt-history-answer" role="region" aria-label={`Answer for ${entry.text}`}><button className="prompt-history-save-note" type="button" disabled={!notes.canCreate || entry.answer.length > 30_000} onClick={() => saveHistoryAnswer(entry)}>Save as note</button><div className="prompt-history-answer-text">{entry.answer}</div></div>}</div>)}</div></section></FlyoutPortal>;
   // open or close prompt history
   const toggleHistory = () => {
     onOpenChange(!open);
     // discard closed answer details
     if (open) setHistoryAnswerId(undefined);
   };
-  return <><span className="prompt-history-anchor" ref={historyAnchorRef}><button className={`prompt-history-toggle${open ? ' active' : ''}`} type="button" aria-label={`Prompt history (${history.length})`} title="Prompt history" aria-expanded={open} onClick={event => { event.stopPropagation(); toggleHistory(); }}><span className="flyout-caret" aria-hidden="true" /><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5M12 7v5l3 2" /></svg></button></span>{historyPanel}</>;
+  return <><span className="prompt-history-anchor" ref={historyAnchorRef}><button className={`prompt-history-toggle${open ? ' active' : ''}`} type="button" aria-label={`Prompt history (${history.length})`} title="Prompt history" data-context-flyout aria-expanded={open} onClick={event => { event.stopPropagation(); toggleHistory(); }}><span className="flyout-caret" aria-hidden="true" /><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5M12 7v5l3 2" /></svg></button></span>{historyPanel}</>;
 }
 
 type MoreMenuIconName = 'actions'|'attachment'|'new-task'|'push'|'rename';
@@ -5937,7 +6254,7 @@ function PlaceMenu({ agentId, worktreeId, git = false, pinned, onTogglePin, onRe
   const pinToggle = onTogglePin !== undefined && <button className="more-pin-toggle" aria-pressed={pinned === true} onClick={() => choose(onTogglePin)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v5" /></svg>{`${pinned ? 'Unpin' : 'Pin'} folder`}</button>;
   const githubActions = githubActionsRoute === undefined ? null : loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>;
   const removal = onRemoveWorktree !== undefined && <button className="remove-worktree-option" type="button" disabled={removeDisabledReason !== undefined} title={removeDisabledReason ?? 'Remove worktree'} onClick={() => choose(onRemoveWorktree)}><svg className="more-menu-icon action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>Remove worktree…</button>;
-  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} title="Workspace options" onClick={toggleMenu}><span className="flyout-caret" aria-hidden="true" /><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="12" cy="19" r="1" /></svg></button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu place-menu" ref={flyoutRef} style={style} aria-busy={loadingGithubActions}>{panelRows}{pinToggle}{githubActions}{removal}</div></FlyoutPortal>}</>;
+  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" data-context-flyout aria-expanded={menuOpen} title="Workspace options" onClick={toggleMenu}><span className="flyout-caret" aria-hidden="true" /><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="12" cy="19" r="1" /></svg></button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu place-menu" ref={flyoutRef} style={style} aria-busy={loadingGithubActions}>{panelRows}{pinToggle}{githubActions}{removal}</div></FlyoutPortal>}</>;
 }
 
 // render the Workspace of a Place where Agents run: the Place's panels and toolbar, with the agent
@@ -6189,7 +6506,7 @@ function AgentSwitcher({ agent, agents, title, placeLabel, onSelect }: { agent: 
     setOpen(false);
     if (agentId !== agent.id) onSelect(agentId);
   };
-  return <><span className="agent-switcher-wrap" ref={anchorRef}><button type="button" className="agent-switcher" aria-label={label} aria-haspopup="menu" aria-expanded={open} title={label} onClick={() => setOpen(value => !value)}>
+  return <><span className="agent-switcher-wrap" ref={anchorRef}><button type="button" className="agent-switcher" aria-label={label} aria-haspopup="menu" data-context-flyout aria-expanded={open} title={label} onClick={() => setOpen(value => !value)}>
     <span className="agent-panel-title">{title}</span>
     {agents.length > 1 && <span className="agent-switcher-count" aria-hidden="true">{agents.length}</span>}
     {othersNeedYou && <i className="agent-switcher-attention" aria-hidden="true" />}
@@ -6292,6 +6609,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, 
   // a phone toolbar action replaces the settings panel with its chosen workspace view
   return <section className="workspace-toolbar" aria-label="Workspace toolbar" onClickCapture={phone && settingsSplit?.open ? settingsSplit.close : undefined}><div className="workspace-toolbar-actions">
     {visibleLaunch !== undefined && <LaunchSplitButton label={visibleLaunch.label} resolution={visibleLaunch.resolution} quiet={hasAgent} disabled={visibleLaunch.disabled} disabledReason={visibleLaunch.disabledReason} pending={visibleLaunch.pending} alwaysShowMenu showUpdateIndicator onLaunch={visibleLaunch.start} />}
+    {workspace?.agentHidden && <button type="button" className="toolbar-button" onClick={workspace.showAgent}>Show agent</button>}
     {conversations}
     {workspace?.terminals.control}
     {workspace?.notes.control}
@@ -6660,7 +6978,7 @@ function workspaceSheetDetail(entry: DashboardItem): string {
 // The phone tab row's one tab, the current Workspace as a dropdown: its marks, label and rolled-up
 // state, with a badge counting the Agents in other Workspaces that wait on the operator. It opens a
 // bottom sheet listing every Workspace, then New Workspace…, which opens the + menu.
-function WorkspaceDropdown({ items, current, onSelect, onNewWorkspace, onRenameWorktree, renameDisabled }: { items: readonly DashboardItem[]; current: number; onSelect: (index: number) => void; onNewWorkspace: () => void; onRenameWorktree: (worktreeId: string) => void; renameDisabled: boolean }) {
+function WorkspaceDropdown({ items, current, onSelect, onNewWorkspace, onRenameWorktree, renameDisabled, onContextMenu }: { items: readonly DashboardItem[]; current: number; onSelect: (index: number) => void; onNewWorkspace: () => void; onRenameWorktree: (worktreeId: string) => void; renameDisabled: boolean; onContextMenu: (event: React.MouseEvent<HTMLButtonElement>, entry: DashboardItem) => void }) {
   const [open, setOpen] = useState(false);
   const entry = items[current];
   if (entry === undefined) return null;
@@ -6669,7 +6987,7 @@ function WorkspaceDropdown({ items, current, onSelect, onNewWorkspace, onRenameW
   const waiting = questions + unread;
   const waitingLabel = `Other Workspaces: ${questions} need an answer, ${unread} unread`;
   const choose = (action: () => void) => { setOpen(false); action(); };
-  return <><button id={`tab-${current}`} type="button" role="tab" aria-selected="true" aria-controls={`panel-${current}`} className={`workspace-dropdown active ${className}`} aria-haspopup="dialog" aria-expanded={open} aria-busy={transition !== undefined} aria-label={`${entry.label} — ${label}`} aria-description={waiting > 0 ? waitingLabel : undefined} title="Switch Workspace" onClick={() => setOpen(value => !value)}>
+  return <><button id={`tab-${current}`} type="button" role="tab" aria-selected="true" aria-controls={`panel-${current}`} className={`workspace-dropdown active ${className}`} aria-haspopup="dialog" aria-expanded={open} aria-busy={transition !== undefined} aria-label={`${entry.label} — ${label}`} aria-description={waiting > 0 ? waitingLabel : undefined} title="Switch Workspace" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => onContextMenu(event, entry)} onClick={() => setOpen(value => !value)}>
     <TabKindStack entry={entry} />
     <span className={`workspace-dropdown-label${entry.state === 'working' && transition === undefined ? ' tab-label' : ''}`}>{transition !== undefined && <span className="spinner" aria-hidden="true" />}{entry.label}</span>
     {waiting > 0 && <span className={`workspace-dropdown-badge${questions > 0 ? ' question' : ''}`} title={waitingLabel} aria-hidden="true">{waiting}</span>}
@@ -6680,7 +6998,7 @@ function WorkspaceDropdown({ items, current, onSelect, onNewWorkspace, onRenameW
     {items.map((candidate, index) => {
       const worktree = candidate.worktree;
       const status = tabStatus(candidate);
-      return <div key={candidate.key} className={`workspace-sheet-row ${status.className}`}><button type="button" className="workspace-sheet-entry" aria-current={index === current ? 'true' : undefined} autoFocus={index === current} onClick={() => choose(() => onSelect(index))}><TabKindStack entry={candidate} /><span className="workspace-sheet-copy"><strong className={candidate.state === 'working' && status.transition === undefined ? 'tab-label' : undefined}>{candidate.label}</strong><small>{workspaceSheetDetail(candidate)}</small></span></button>{worktree !== undefined && <button type="button" className="workspace-sheet-rename" disabled={renameDisabled} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => choose(() => onRenameWorktree(worktree.id))}><LauncherRowIcon name="rename" /></button>}</div>;
+      return <div key={candidate.key} className={`workspace-sheet-row ${status.className}`}><button type="button" className="workspace-sheet-entry" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => { /* keep the target menu above the dismissed sheet */ setOpen(false); onContextMenu(event, candidate); }} aria-current={index === current ? 'true' : undefined} autoFocus={index === current} onClick={() => choose(() => onSelect(index))}><TabKindStack entry={candidate} /><span className="workspace-sheet-copy"><strong className={candidate.state === 'working' && status.transition === undefined ? 'tab-label' : undefined}>{candidate.label}</strong><small>{workspaceSheetDetail(candidate)}</small></span></button>{worktree !== undefined && <button type="button" className="workspace-sheet-rename" disabled={renameDisabled} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => choose(() => onRenameWorktree(worktree.id))}><LauncherRowIcon name="rename" /></button>}</div>;
     })}
     <hr />
     <button type="button" className="workspace-sheet-entry workspace-sheet-new" onClick={() => choose(onNewWorkspace)}><span className="tab-kind-stack" aria-hidden="true"><span className="tab-place-mark"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg></span></span><span className="workspace-sheet-copy"><strong>New Workspace…</strong><small>Launch, Terminal or Empty workspace</small></span></button>
@@ -6741,6 +7059,14 @@ type WorktreeCreated = { worktreeId: string; agentId?: string; launchError?: str
 // Password managers offer to fill a lone text field in a dialog, reading a branch name as a
 // username; `autoComplete="off"` alone does not stop them, so opt out per vendor as well.
 const noAutofill = { autoComplete: 'off', autoCorrect: 'off', autoCapitalize: 'off', spellCheck: false, 'data-1p-ignore': 'true', 'data-lpignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other' } as const;
+
+// rename a non-git workspace on this browser without renaming its folder
+function RenameWorkspaceDialog({ workspace, onClose }: { workspace: { key: string; label: string }; onClose: () => void }) {
+  const [name, setName] = useState(workspace.label);
+  // save the client-local alias without changing server identity
+  const save = (event: React.FormEvent) => { event.preventDefault(); setWorkspaceAlias(workspace.key, name); onClose(); };
+  return createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-rename-title" onKeyDown={event => { /* dismiss without saving */ if (event.key === 'Escape') onClose(); }}><div><header><h2 id="workspace-rename-title">Rename workspace</h2><button type="button" aria-label="Close rename workspace" onClick={onClose}><PanelIcon path={panelIcons.close} /></button></header><form onSubmit={save}><p>This name applies to this browser only.</p><label>Workspace name<input autoFocus value={name} maxLength={120} {...noAutofill} onChange={event => setName(event.target.value)} /></label><footer><button type="button" onClick={() => { /* restore the discovered name */ setWorkspaceAlias(workspace.key, ''); onClose(); }}>Use default name</button><button type="button" onClick={onClose}>Cancel</button><button type="submit" disabled={!name.trim()}>Save</button></footer></form></div></div>, document.body);
+}
 
 // rename one discovered Worktree without moving its checkout or changing its branch
 function RenameWorktreeDialog({ worktree, request, onClose, onRenamed }: { worktree: Worktree; request: (url: string, init?: RequestInit) => Promise<Response>; onClose: () => void; onRenamed: (label: string | undefined) => void }) {
@@ -6966,6 +7292,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const clientSettings = useContext(ClientSettingsContext);
   const davo = clientSettings?.davo ?? legacyDavoSettings;
   const dynamicWorktrees = useDynamicWorktrees();
+  useWorkspaceViewRevision();
+  const [renameWorkspace, setRenameWorkspace] = useState<{ key: string; label: string }>();
   const [data, setData] = useState<Dashboard>();
   // the dashboard generation as reactive state, updated on every advancing snapshot even when the
   // content itself is deduped, so an open notes fly-out or pane refetches after any Run outcome
@@ -7469,6 +7797,11 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       items.push({ key: placeItemKey(place.id), label: place.label, state: 'closed', order: Number.MAX_SAFE_INTEGER, unread: false, agents: [], placeId: place.id, place, transient: !kept });
     }
     for (const pendingLaunch of pendingSessionLaunches) items.push({ key: `pending-${pendingLaunch.id}`, label: pendingLaunch.label, state: 'closed', order: Number.MAX_SAFE_INTEGER, unread: false, operation: pendingLaunch.phase === 'failed' ? undefined : 'launching', agents: [], pendingLaunch });
+    // preserve server-owned worktree names and apply client-local aliases elsewhere
+    for (const entry of items) {
+      const alias = entry.worktree === undefined ? workspaceAlias(entry.key) : null;
+      if (alias !== null) entry.label = alias;
+    }
     items.sort((left, right) => left.order - right.order);
   }
   // the Agent a Place tab's switcher shows
@@ -7569,7 +7902,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     const previousAgent = selectedItemKey.current === item.key ? currentAgentOf(item) : undefined;
     selectedItemKey.current = item.key;
     const chosen = item.agents.find(agent => agent.id === agentId);
-    if (chosen !== undefined) chooseAgent(item.key, chosen.id);
+    // explicit agent navigation restores a previously minimized output
+    if (chosen !== undefined) { chooseAgent(item.key, chosen.id); setAgentSplitHidden(item.key, false); }
     const agent = chosen ?? currentAgentOf(item);
     // mark newly viewed agent output as read
     if (agent !== undefined && agent.id !== previousAgent?.id) viewAgent(agent);
@@ -7988,7 +8322,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   if (data === undefined) return <LoadingScreen label={unavailable ? 'Reconnecting to console' : 'Syncing console state'} />;
   const item = items[visibleActive];
   const cleanupCount = data.cleanupPending ?? 0;
-  const cleanupControl = cleanupCount === 0 ? null : <button ref={cleanupTriggerRef} className="log-control page-arrow cleanup-toggle" aria-label={`Review ${cleanupCount} cleanup ${cleanupCount === 1 ? 'target' : 'targets'}`} title="Review cleanup" aria-haspopup="dialog" aria-expanded={cleanupOpen} onPointerDown={event => event.preventDefault()} onClick={() => void openCleanup()}><svg className="broom-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m19.36 2.72 1.42 1.42-5.72 5.71c1.07 1.54 1.22 3.39.32 4.59L9.06 8.12c1.2-.9 3.05-.75 4.59.32l5.71-5.72ZM5.93 17.57c-2.01-2.01-3.24-4.41-3.58-6.65l4.88-2.09 7.44 7.44-2.09 4.88c-2.24-.34-4.64-1.57-6.65-3.58Z" /></svg><span className="saved-prompts-count cleanup-count" aria-hidden="true">{cleanupCount}</span></button>;
+  const cleanupControl = cleanupCount === 0 ? null : <button ref={cleanupTriggerRef} className="log-control page-arrow cleanup-toggle" aria-label={`Review ${cleanupCount} cleanup ${cleanupCount === 1 ? 'target' : 'targets'}`} title="Review cleanup" aria-haspopup="dialog" data-context-flyout aria-expanded={cleanupOpen} onPointerDown={event => event.preventDefault()} onClick={() => void openCleanup()}><svg className="broom-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m19.36 2.72 1.42 1.42-5.72 5.71c1.07 1.54 1.22 3.39.32 4.59L9.06 8.12c1.2-.9 3.05-.75 4.59.32l5.71-5.72ZM5.93 17.57c-2.01-2.01-3.24-4.41-3.58-6.65l4.88-2.09 7.44 7.44-2.09 4.88c-2.24-.34-4.64-1.57-6.65-3.58Z" /></svg><span className="saved-prompts-count cleanup-count" aria-hidden="true">{cleanupCount}</span></button>;
   const cleanupKindLabel: Record<CleanupTarget['kind'], string> = {
     'orphan-worker': 'Orphaned worker',
     'stale-agent': 'Stale agent',
@@ -8103,7 +8437,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   }} />;
   const pruneProject = pruneProjectId === undefined ? undefined : data.projects.find(project => project.id === pruneProjectId);
   const pruneDialog = pruneProject === undefined ? null : <PruneWorktreesDialog project={pruneProject} request={request} onClose={() => setPruneProjectId(undefined)} onPruned={() => void worktreesPruned()} />;
-  const worktreeManagementDialogs = <>{newWorktreeDialog}{removeWorktreeDialog}{renameWorktreeDialog}{pruneDialog}</>;
+  const worktreeManagementDialogs = <>{renameWorkspace !== undefined && <RenameWorkspaceDialog key={renameWorkspace.key} workspace={renameWorkspace} onClose={() => setRenameWorkspace(undefined)} />}{newWorktreeDialog}{removeWorktreeDialog}{renameWorktreeDialog}{pruneDialog}</>;
   const reviewDialog = reviewLaunch === undefined ? null : <ReviewTourDialog key={`${reviewLaunch.worktreeId}:${reviewLaunch.scope}:${reviewInitialTour?.fingerprint ?? 'generated'}`} launch={reviewLaunch} request={request} minimized={reviewMinimized} initialTour={reviewInitialTour} onMinimize={minimizeReview} onDismiss={dismissReview} onIndicatorChange={setReviewIndicator} onReady={notifyReviewReady} />;
   const storedReview = agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === agent.worktreeId);
   const localReview = agent?.worktreeId !== undefined && agent.worktreeId === reviewLaunch?.worktreeId;
@@ -8153,10 +8487,80 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const globalLaunch: ToolbarLaunch = { label: 'Scratch', resolution: data.scratchLaunch, pending: creatingAgent, start: choice => createAgent(choice) };
   // share one toast stack while the active agent supplies its rebase action
   const renderNotifications = (content: ReactNode = null) => <ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage}>{content}</ToastRegion>;
-  const tabBar = <><nav className={`tabs${phone ? ' workspace-dropdown-row' : ''}`} ref={tabsRef} role="tablist" aria-label="Agents and worktrees"><TabRowLead />{phone ? <WorkspaceDropdown items={items} current={visibleActive} onSelect={index => select(index)} onNewWorkspace={() => setLauncherOpen(true)} onRenameWorktree={setRenameWorktreeId} renameDisabled={creatingAgent} /> : items.map((entry, index) => {
+  // read an inactive workspace's retained splits without activating it
+  const retainedSplits = (entry: DashboardItem): WorkspaceSplit[] => {
+    const live = workspaceViews.get(entry.key);
+    // use mounted panels rather than storage while the workspace is active
+    if (live !== undefined) return live.splits;
+    const splits: WorkspaceSplit[] = [];
+    // include the one visible agent panel
+    if (!agentSplitHidden(entry.key) && (entry.agents.length > 0 || entry.pendingLaunch !== undefined)) splits.push({ key: 'agent', label: 'Agent output' });
+    const placeId = entry.placeId;
+    // restore only place-scoped terminal and project panels
+    if (placeId !== undefined) {
+      // keep each visible shell separately addressable
+      for (const terminal of savedTerminals(placeId)) splits.push({ key: terminal.paneId, label: `Terminal ${terminal.name}` });
+      // omit browser preferences for unavailable project previews
+      if (savedBrowserSplit(placeId) && (entry.worktree?.projectUrl ?? entry.agents[0]?.projectUrl) !== undefined) splits.push({ key: 'browser', label: 'Project browser' });
+      // include retained code views
+      if (savedCodeOpen(placeId)) splits.push({ key: 'code', label: 'Code changes' });
+    }
+    const selectedAgent = currentAgentOf(entry);
+    const noteViewId = placeId ?? (selectedAgent === undefined ? undefined : `agent:${selectedAgent.id}`);
+    // retain notes belonging to agents without a discovered place too
+    if (noteViewId !== undefined && getWorktreeNoteView(noteViewId) !== undefined) splits.push({ key: 'note', label: 'Note' });
+    return splits;
+  };
+  // close panels only; process lifetime belongs to their explicit power controls
+  const closeWorkspaceSplits = (entry: DashboardItem) => {
+    const live = workspaceViews.get(entry.key);
+    // flush mounted note drafts before minimizing their panels
+    if (live !== undefined) { live.closeAll(); return; }
+    // inactive panes have already flushed on unmount
+    if (entry.placeId !== undefined) { forgetOpenPanels(entry.placeId); saveCodeOpen(entry.placeId, false); }
+    const selectedAgent = currentAgentOf(entry);
+    // clear the unscoped note view without deleting its stored content
+    if (entry.placeId === undefined && selectedAgent !== undefined) clearWorktreeNoteView(`agent:${selectedAgent.id}`);
+    // keep empty workspaces free of a meaningless agent restore button
+    if (entry.agents.length > 0 || retainedSplits(entry).some(split => split.key === 'agent')) setAgentSplitHidden(entry.key, true);
+  };
+  // route each tab menu action by identity rather than the currently selected tab
+  const workspaceContextMenu = (event: React.MouseEvent<HTMLButtonElement>, entry: DashboardItem) => {
+    const place = entry.worktree ?? entry.place;
+    const splits = retainedSplits(entry);
+    const kind = currentAgentOf(entry)?.kind ?? entry.pendingLaunch?.kind;
+    // reuse each split's existing glyph without adding navigation verbs to its name
+    const splitIcons: Record<string, ReactNode> = {
+      agent: kind === undefined ? <PanelIcon path="M5 7h14v13H5zM12 3v4M8 12h1m6 0h1M9 16h6M2 11v5m20-5v5" /> : <span>{agentKindGlyph[kind]}</span>,
+      terminal: <LauncherRowIcon name="terminal" />,
+      note: <PanelIcon path="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM15 21v-6h6" />,
+      browser: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{browserGlyph}</svg>,
+      code: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{codeGlyph}</svg>
+    };
+    const menu: ContextMenuItem[] = [
+      { type: 'action', id: 'pin', label: place?.pinned ? 'Unpin workspace' : 'Pin workspace', icon: place?.pinned ? <LauncherRowIcon name="pin" /> : undefined, mode: 'checkbox', checked: place?.pinned ?? false, disabled: place === undefined, onSelect: () => { /* require a pinnable discovered place */ if (place !== undefined) void togglePin(place); } },
+      { type: 'action', id: 'rename', label: 'Rename', disabled: creatingAgent, onSelect: () => { /* reuse server-owned worktree naming when available */ if (entry.worktree !== undefined) setRenameWorktreeId(entry.worktree.id); else setRenameWorkspace({ key: entry.key, label: entry.label }); } },
+      { type: 'action', id: 'close-all', label: 'Close all splits', disabled: splits.length === 0 || entry.pendingLaunch !== undefined || workspaceViews.get(entry.key)?.canClose === false, onSelect: () => closeWorkspaceSplits(entry) }
+    ];
+    // separate workspace commands from split navigation
+    if (splits.length > 0) menu.push({ type: 'separator' });
+    // capture each target workspace and split by identity
+    for (const split of splits) menu.push({ type: 'action', id: `split-${split.key}`, label: split.label, icon: splitIcons[splitPanelKind(split.key)], onSelect: () => {
+      const index = items.findIndex(candidate => candidate.key === entry.key);
+      // ignore tabs removed since the menu opened
+      if (index < 0) return;
+      const live = workspaceViews.get(entry.key);
+      // defer navigation until an inactive workspace mounts
+      if (live !== undefined) live.jump(split.key);
+      else pendingWorkspaceJumps.set(entry.key, split.key);
+      select(index);
+    } });
+    openContextMenu(event, { label: `${entry.label} workspace`, items: menu });
+  };
+  const tabBar = <><nav className={`tabs${phone ? ' workspace-dropdown-row' : ''}`} ref={tabsRef} role="tablist" aria-label="Agents and worktrees"><TabRowLead />{phone ? <WorkspaceDropdown items={items} current={visibleActive} onSelect={index => select(index)} onNewWorkspace={() => setLauncherOpen(true)} onRenameWorktree={setRenameWorktreeId} renameDisabled={creatingAgent} onContextMenu={workspaceContextMenu} /> : items.map((entry, index) => {
     const { transition, label, className } = tabStatus(entry);
-    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${className}`} title={label} aria-label={`${entry.label} — ${label}`} aria-busy={transition !== undefined} onClick={() => select(index)}><TabKindStack entry={entry} />{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => { /* toggle the launcher */ if (launcherOpen) closeLauncher(); else setLauncherOpen(true); }}><span className="flyout-caret" aria-hidden="true" />{creatingAgent ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}</button></span>{launcherOpen && <FlyoutPortal onDismiss={closeLauncher}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}{launcherPlaceSplit('~ Scratch', scratchPlace, data.scratchLaunch, '/api/agents/launch', choice => void createAgent(choice))}</div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}{clientSettings && <ClientSettingsTrigger />}</nav>{agent === undefined && item?.worktree === undefined && renderNotifications()}</>;
+    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${className}`} title={label} aria-label={`${entry.label} — ${label}`} aria-busy={transition !== undefined} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => workspaceContextMenu(event, entry)} onClick={() => select(index)}><TabKindStack entry={entry} />{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
+  })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} data-context-flyout aria-expanded={launcherOpen} onClick={() => { /* toggle the launcher */ if (launcherOpen) closeLauncher(); else setLauncherOpen(true); }}><span className="flyout-caret" aria-hidden="true" />{creatingAgent ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}</button></span>{launcherOpen && <FlyoutPortal onDismiss={closeLauncher}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}{launcherPlaceSplit('~ Scratch', scratchPlace, data.scratchLaunch, '/api/agents/launch', choice => void createAgent(choice))}</div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}{clientSettings && <ClientSettingsTrigger />}</nav>{agent === undefined && item?.worktree === undefined && renderNotifications()}</>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><OptionalClientSettingsLayout settings={clientSettings}><GlobalLaunchContext.Provider value={globalLaunch}><main className={consoleClass}>{voiceDialog}<article className="agent-view cleanup-empty-view"><section className="log-shell"><div className="log inactive-log"><div className="empty-workspace"><h2>No sessions</h2></div></div><ClientSettingsPane /></section>{tabBar}<WorkspaceToolbar cleanupControl={cleanupControl} />{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></GlobalLaunchContext.Provider></OptionalClientSettingsLayout></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
   return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><OptionalClientSettingsLayout settings={clientSettings}><GlobalLaunchContext.Provider value={globalLaunch}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item !== undefined && agent !== undefined && <AgentPlaceCard key={item.key} agent={agent} agents={item.agents} onSelectAgent={agentId => select(visibleActive, agentId)} active={agentState(agent) === 'working'} tabBar={tabBar} renderNotifications={renderNotifications} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(agent)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} launch={activeLaunch} {...(activeWorktree !== undefined || activePlace === undefined ? {} : { pinned: activePlace.pinned, onTogglePin: () => void togglePin(activePlace) })} {...(activeWorktree === undefined ? {} : { worktreeLabel: activeWorktree.label, ...(activeWorktree.main ? {} : { onRemoveWorktree: () => setRemoveWorktreeId(activeWorktree.id), removeDisabledReason: 'Turn off the agents here before removing this worktree' }) })} />}{item?.worktree !== undefined && agent === undefined && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} renderNotifications={renderNotifications} cleanupControl={cleanupControl} transient={item.transient === true} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onTogglePin={() => void togglePin(item.worktree!)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place !== undefined && agent === undefined && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} transient={item.transient === true} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></GlobalLaunchContext.Provider></OptionalClientSettingsLayout></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
@@ -8669,7 +9073,7 @@ function App() {
   const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, clientUpdateAvailable, serverUpdateAvailable, serverUpdateVisible: serverUpdateOpen && !serverUpdateMinimized, serverUpdateMinimized, davo: sessionInfo.davo ?? legacyDavoSettings, renameClient, renameServer, loadServerRevision, reloadClient, openServerUpdate, updateDavo, codexAccounts, switchCodexAccount, renameCodexAccount, resetCodexAccount, addCodexApiKeyAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [addCodexApiKeyAccount, cancelCodexAccountLogin, clientUpdateAvailable, codexAccountLoginStatus, codexAccounts, loadServerRevision, openServerUpdate, reloadClient, renameClient, renameServer, renameCodexAccount, resetCodexAccount, serverInfo.name, serverInfo.url, serverUpdateAvailable, serverUpdateMinimized, serverUpdateOpen, sessionInfo?.davo, sessionInfo?.deviceName, startCodexAccountLogin, state, switchCodexAccount, updateDavo]);
   // share the current launch settings with every flyout
   const agentLaunchSettings = useMemo(() => ({ statuses: agentUpdateStatuses, updating: updatingAgent, errors: Array.from(new Set([defaultAgentError, agentUpdateError, versionCheckError, ...agentUpdateStatuses.map(status => status.error ?? '')].filter(Boolean))), defaultAgent: sessionInfo?.defaultAgent, defaultPending: defaultAgentPending, setDefaultAgent: (kind: AgentKind) => { /* persist one default */ void selectDefaultAgent(kind); }, updateAgent: (kind: AgentKind) => { /* run one installer */ void runAgentUpdate(kind); } }), [agentUpdateStatuses, updatingAgent, agentUpdateError, versionCheckError, defaultAgentError, sessionInfo?.defaultAgent, defaultAgentPending, selectDefaultAgent, runAgentUpdate]);
-  return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}><AgentLaunchSettingsContext.Provider value={agentLaunchSettings}>{screen}<ServerUpdateDialog open={serverUpdateOpen} minimized={serverUpdateMinimized} onMinimize={minimizeServerUpdate} onClose={closeServerUpdate} />{reconnecting && <ReconnectingOverlay />}</AgentLaunchSettingsContext.Provider></ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
+  return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}><AgentLaunchSettingsContext.Provider value={agentLaunchSettings}>{screen}<ContextMenuHost /><ContextFlyoutEvents /><ServerUpdateDialog open={serverUpdateOpen} minimized={serverUpdateMinimized} onMinimize={minimizeServerUpdate} onClose={closeServerUpdate} />{reconnecting && <ReconnectingOverlay />}</AgentLaunchSettingsContext.Provider></ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 // Reflect the stored flavour before the first render, now that the stylesheet is

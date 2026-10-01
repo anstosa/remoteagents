@@ -449,7 +449,7 @@ test('every split keeps its bottom border above any input footer', async ({ page
   await page.setViewportSize({ width: 428, height: 880 });
   await chooseSplit(page, 'Agent output');
   await expectBorderAbove(agent, agent.locator('.agent-output'), prompt, 'phone Agent prompt');
-  await agent.locator('.xterm-accessibility-tree').tap();
+  await agent.locator('.terminal-selection-surface').tap();
   const agentKeys = agent.getByLabel('Terminal keys');
   await expect(agentKeys).toBeVisible();
   await expectBorderAbove(agent, agent.locator('.agent-output'), agentKeys, 'phone Agent keys');

@@ -1109,10 +1109,15 @@ test('a narrow panel folds its secondary actions into the header ⋮', async ({ 
   await expect(page.getByRole('group', { name: 'More note actions' })).toHaveCount(0);
   await expect(note).toBeVisible();
 
-  // expanded to the Workspace's width the header has room, so the actions are inline again
+  // expanded to the Workspace's width the header has room, so secondary actions are inline again
   await note.getByRole('button', { name: 'Expand note', exact: true }).click();
-  await expect(note.getByRole('button', { name: 'More note actions', exact: true })).toHaveCount(0);
   await expect(note.getByRole('button', { name: 'Lock note', exact: true })).toBeVisible();
+  const expandedMore = note.getByRole('button', { name: 'More note actions', exact: true });
+  await expect(expandedMore).toBeVisible();
+  await expandedMore.click();
+  const expandedMenu = page.getByRole('group', { name: 'More note actions' });
+  await expect(expandedMenu.getByRole('button', { name: 'Schedule note', exact: true })).toBeVisible();
+  await expect(expandedMenu.getByRole('button', { name: 'Lock note', exact: true })).toHaveCount(0);
 });
 
 test('on a phone the carousel gains a dot for the Terminal', async ({ page }) => {

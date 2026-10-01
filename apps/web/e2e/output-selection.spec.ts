@@ -776,14 +776,12 @@ test('ordinary Windows drag selects Codex output starting on a file link', async
   // clear the test selection before exercising ordinary semantic link behavior
   await clearNativeSelection(page);
   await expect(page.getByRole('toolbar', { name: 'Output selection actions' })).toBeHidden();
-  await page.evaluate(() => {
-    document.addEventListener('contextmenu', event => {
-      document.body.dataset.contextFile = (event.target as HTMLElement).closest<HTMLAnchorElement>('a')?.dataset.outputFilePath ?? '';
-    }, { once: true });
-  });
   await page.mouse.click(start.x, start.y, { button: 'right' });
-  await expect(page.locator('body')).toHaveAttribute('data-context-file', 'src/app.ts');
+  const contextMenu = page.getByRole('menu', { name: 'Agent actions' });
+  await expect(contextMenu).toBeVisible();
   await expect(page.getByRole('region', { name: 'Code changes' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(contextMenu).toHaveCount(0);
   await fileLink.click();
   await expect(page.getByRole('region', { name: 'Code changes' }).getByRole('button', { name: 'Close file' })).toBeVisible();
 });

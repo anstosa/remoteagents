@@ -1,0 +1,70 @@
+.context-menu {
+  z-index: calc(var(--layer-dialog) + 2);
+  display: grid;
+  width: max-content;
+  min-width: 11rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: .3rem;
+  border: 1px solid var(--surface-1);
+  border-radius: var(--control-radius);
+  outline: 0;
+  background: color-mix(in srgb, var(--mantle) 97%, transparent);
+  box-shadow: 0 .7rem 1.8rem color-mix(in srgb, var(--crust) 80%, transparent), inset 0 1px color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text);
+  font: 700 .78rem var(--font-mono);
+  letter-spacing: .035em;
+  backdrop-filter: blur(10px);
+}
+
+.context-menu-item {
+  display: grid;
+  width: 100%;
+  min-height: 2rem;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  align-items: center;
+  gap: .45rem;
+  border: 0;
+  border-radius: calc(var(--control-radius) - .08rem);
+  padding: .45rem .65rem;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  text-align: left;
+  white-space: nowrap;
+  transition: background-color .1s ease, color .1s ease;
+}
+
+.context-menu-item:not(:disabled):is(:hover, :focus-visible, [data-active='true']) {
+  outline: 0;
+  background: var(--surface-0);
+  color: var(--text);
+  filter: none;
+}
+
+.context-menu-item:disabled {
+  color: var(--overlay-0);
+  cursor: not-allowed;
+  opacity: .72;
+}
+
+.context-menu-mark {
+  display: inline-grid;
+  width: 1rem;
+  place-items: center;
+  color: var(--mauve);
+  font-size: .8rem;
+  line-height: 1;
+}
+
+.context-menu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: .25rem .35rem;
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+}

@@ -304,17 +304,17 @@ export function ScheduleEditor({ schedule, nextRun, prefill, runsOnText, adapter
     <div className={`schedule-sentence${invalid ? ' schedule-invalid' : ''}`} role="group" aria-label="Schedule" ref={rootRef}>
       <p className="schedule-line">
         <button type="button" className={`schedule-slot schedule-onoff${enabled ? '' : ' off'}`} role="switch" aria-checked={enabled} aria-label="Schedule enabled" disabled={busy} onClick={() => apply({ cron, kind: schedule.kind, target: schedule.target, enabled: !enabled })}>{enabled ? '● Runs' : '○ Paused'}</button>
-        <button type="button" className="schedule-slot" aria-label="Cadence" aria-expanded={openSlot === 'cadence'} disabled={busy} onClick={() => setOpenSlot(current => current === 'cadence' ? null : 'cadence')}>{cadenceLabel(edit)}</button>
+        <button type="button" className="schedule-slot" aria-label="Cadence" data-context-flyout aria-expanded={openSlot === 'cadence'} disabled={busy} onClick={() => setOpenSlot(current => current === 'cadence' ? null : 'cadence')}>{cadenceLabel(edit)}</button>
         {presetHasTime(edit.preset) && <>
           <span>at</span>
-          <button type="button" className="schedule-slot" aria-label="Time" aria-expanded={openSlot === 'time'} disabled={busy} onClick={() => setOpenSlot(current => current === 'time' ? null : 'time')}>{clock(edit.hour, edit.minute)}</button>
+          <button type="button" className="schedule-slot" aria-label="Time" data-context-flyout aria-expanded={openSlot === 'time'} disabled={busy} onClick={() => setOpenSlot(current => current === 'time' ? null : 'time')}>{clock(edit.hour, edit.minute)}</button>
         </>}
       </p>
       <p className="schedule-line">
         <span>with</span>
-        <button type="button" className="schedule-slot schedule-slot-kind" aria-label="Agent" aria-expanded={openSlot === 'kind'} disabled={busy} onClick={() => setOpenSlot(current => current === 'kind' ? null : 'kind')}><KindMark kind={kind} />{agentKindLabel[kind]}</button>
+        <button type="button" className="schedule-slot schedule-slot-kind" aria-label="Agent" data-context-flyout aria-expanded={openSlot === 'kind'} disabled={busy} onClick={() => setOpenSlot(current => current === 'kind' ? null : 'kind')}><KindMark kind={kind} />{agentKindLabel[kind]}</button>
         <span>on</span>
-        <button type="button" className={`schedule-slot${gone ? ' schedule-slot-bad' : ''}`} aria-label="Target" aria-expanded={openSlot === 'target'} disabled={busy} onClick={() => setOpenSlot(current => current === 'target' ? null : 'target')}>{gone ? goneTargetLabel(currentTarget) : targetText}</button>
+        <button type="button" className={`schedule-slot${gone ? ' schedule-slot-bad' : ''}`} aria-label="Target" data-context-flyout aria-expanded={openSlot === 'target'} disabled={busy} onClick={() => setOpenSlot(current => current === 'target' ? null : 'target')}>{gone ? goneTargetLabel(currentTarget) : targetText}</button>
       </p>
       {invalid && <p className="schedule-invalid-note" role="alert">This schedule won’t run — its cron can’t be read or never matches a date. Edit it under Cadence or remove it.</p>}
       <div className="schedule-meta">

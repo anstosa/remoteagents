@@ -151,11 +151,13 @@ export type CodePanelController = {
 
 // scope the open flag to one browser client and Worktree, mirroring the browser split's key
 const codeOpenKey = (worktreeId: string) => `rac.code-open:${worktreeId}`;
-const savedCodeOpen = (worktreeId: string | undefined): boolean => {
+// read the retained code split for inactive workspace menus
+export const savedCodeOpen = (worktreeId: string | undefined): boolean => {
   if (worktreeId === undefined) return false;
   try { return localStorage.getItem(codeOpenKey(worktreeId)) === '1'; } catch { return false; }
 };
-const saveCodeOpen = (worktreeId: string | undefined, open: boolean) => {
+// persist non-destructive code split visibility
+export const saveCodeOpen = (worktreeId: string | undefined, open: boolean) => {
   if (worktreeId === undefined) return;
   try { if (open) localStorage.setItem(codeOpenKey(worktreeId), '1'); else localStorage.removeItem(codeOpenKey(worktreeId)); }
   catch { /* browser storage is optional */ }

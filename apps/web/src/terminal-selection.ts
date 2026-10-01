@@ -4,6 +4,14 @@ import { subscribeTerminalFontSize } from './terminal-font-size.js';
 
 export type TerminalSelection = { text: string; top: number; left: number };
 
+export type TerminalSelectionController = {
+  copy: (value: string) => Promise<void>;
+  getSelectedText: () => string;
+  selectAll: () => void;
+  setMode: (mode: 'prompt' | 'output' | 'selection') => void;
+  dispose: () => void;
+};
+
 type TerminalSelectionOptions = {
   onSelection: (selection: TerminalSelection | undefined) => void;
   onSelectionModeChange?: (active: boolean) => void;
@@ -145,12 +153,13 @@ const selectionEndpointOwner = (node: Node | null): HTMLElement | undefined => {
 };
 
 // attach selection freezing, actions and copy feedback to one terminal
-export function attachTerminalSelection(container: HTMLElement, handle: StreamedTerminalHandle, options: TerminalSelectionOptions): { copy: (value: string) => Promise<void>; dispose: () => void } {
+export function attachTerminalSelection(container: HTMLElement, handle: StreamedTerminalHandle, options: TerminalSelectionOptions): TerminalSelectionController {
   const terminal = handle.terminal;
   const terminalScreen = terminal.element?.querySelector<HTMLElement>('.xterm-screen');
   let disposed = false;
   let nativeSelectionWasActive = false;
   let mouseSelectionGesture = false;
+  let pinnedSelectionMode = false;
   let rectangularSelection: boolean | undefined;
   let linkSelectionOrigin: { node: Node; offset: number; x: number; y: number } | undefined;
   let linkSelectionDragged = false;
@@ -233,6 +242,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     // release hidden panes instead of retaining global shortcut ownership
     if (!paneIsVisible()) {
       mouseSelectionGesture = false;
+      pinnedSelectionMode = false;
       nativeSelectionWasActive = false;
       // discard browser ranges owned by the hidden pane
       if (nativeSelectionActive()) window.getSelection()?.removeAllRanges();
@@ -259,7 +269,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     restoreTerminalTheme();
     const hasTerminalSelection = terminal.hasSelection();
     const hasSelection = hasTerminalSelection || nativeActive;
-    setSelectionMode(mouseSelectionGesture || hasSelection);
+    setSelectionMode(pinnedSelectionMode || mouseSelectionGesture || hasSelection);
     // claim shortcuts only from an event local to this pane
     if (hasSelection && claimShortcuts) shortcutOwner = container;
     // release only this pane's cleared shortcut claim
@@ -326,10 +336,23 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     }
   };
 
+  // release an explicitly pinned selection mode from an ordinary output click
+  const releasePinnedSelectionMode = () => {
+    // retain natural selections until their owner clears them
+    if (!pinnedSelectionMode) return;
+    pinnedSelectionMode = false;
+    if (!nativeSelectionActive() && !terminal.hasSelection()) setSelectionMode(false);
+  };
+
   // freeze before xterm commits desktop drag selections on mouseup
   const beginOutputSelection = (event: PointerEvent) => {
     linkSelectionOrigin = undefined;
     linkSelectionDragged = false;
+    // keep a secondary press from reaching xterm mouse reporting
+    if (event.pointerType === 'mouse' && event.button === 2 && event.target instanceof Element && (event.target.closest('.xterm-screen') !== null || nativeMouseSurface(event.target))) {
+      event.stopPropagation();
+      return;
+    }
     // leave hidden panes, touch scrolling, secondary clicks and scrollbar drags alone
     if (!paneIsVisible() || event.pointerType !== 'mouse' || event.button !== 0 || !(event.target instanceof Element)) return;
     // bridge link-start drags only when native text is the active selection surface
@@ -342,6 +365,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
       if (caret === undefined) return;
       linkSelectionOrigin = { ...caret, x: event.clientX, y: event.clientY };
     } else if (!event.target.closest('.xterm-screen') && !nativeMouseSurface(event.target)) return;
+    releasePinnedSelectionMode();
     const nativeSurface = linkSelectionOrigin !== undefined || nativeMouseSurface(event.target);
     // preserve live application mouse gestures without the platform override
     if (!nativeSurface && terminal.modes.mouseTrackingMode !== 'none') {
@@ -359,6 +383,12 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
   // let the browser select native text without xterm focusing or reporting the drag
   const preserveNativeMouseSelection = (event: MouseEvent) => {
     const target = eventTargetElement(event.target);
+    // preserve focus, mode and selected text until the contextmenu action runs
+    if (event.button === 2 && target !== null && (target.closest('.xterm-screen') !== null || nativeMouseSurface(target))) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     // remember xterm's selection shape without depending on private selection services
     if (event.button === 0 && linkSelectionOrigin === undefined && target?.closest('.xterm-screen') && !nativeMouseSurface(target) && !(event.shiftKey && terminal.hasSelection())) {
       rectangularSelection = event.detail < 2 && event.altKey && !(navigator.platform.startsWith('Mac') && terminal.options.macOptionClickForcesSelection === true);
@@ -413,6 +443,12 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     event.stopPropagation();
   };
 
+  // release an empty pinned mode for touch taps that synthesize only a click
+  const releasePinnedOnClick = (event: MouseEvent) => {
+    // preserve secondary activation and completed selections
+    if (event.button === 0 && !nativeSelectionActive() && !terminal.hasSelection()) releasePinnedSelectionMode();
+  };
+
   // keep completed selections frozen but release empty or cancelled drags
   const endOutputSelection = (event: Event) => {
     linkSelectionOrigin = undefined;
@@ -459,6 +495,37 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
       return projectedSelectionText(selection, terminal, leadingColumns) ?? selection?.toString() ?? '';
     }
     return terminal.hasSelection() ? terminalSelectionText(terminal, leadingColumns, rectangularSelection) : '';
+  };
+
+  // select the entire terminal buffer through xterm's public selection API
+  const selectAll = () => {
+    pinnedSelectionMode = true;
+    rectangularSelection = false;
+    // remove a browser projection before creating the terminal selection
+    if (nativeSelectionActive()) window.getSelection()?.removeAllRanges();
+    terminal.selectAll();
+    shortcutOwner = container;
+    syncSelectionMode(true);
+  };
+
+  // switch modes only from an explicit menu choice
+  const setMode = (mode: 'prompt' | 'output' | 'selection') => {
+    pinnedSelectionMode = mode === 'selection';
+    // selection mode must not keep sending keys to xterm
+    if (pinnedSelectionMode) {
+      terminal.blur();
+      shortcutOwner = container;
+      setSelectionMode(true);
+      return;
+    }
+    // output mode releases every owned selection before focusing input
+    if (nativeSelectionActive()) window.getSelection()?.removeAllRanges();
+    if (terminal.hasSelection()) terminal.clearSelection();
+    options.onSelection(undefined);
+    setSelectionMode(false);
+    // prompt mode hands focus to its composer instead of xterm
+    if (mode === 'output') handle.focus();
+    else terminal.blur();
   };
 
   // yank or copy the active output selection
@@ -516,6 +583,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
   terminalScreen?.addEventListener('mousedown', preserveNativeScreenSelection);
   container.addEventListener('mouseup', suppressSelectedHyperlink, true);
   container.addEventListener('mousemove', preserveNativeMouseDrag, true);
+  container.addEventListener('click', releasePinnedOnClick, true);
   container.addEventListener('click', suppressSelectedLinkClick, true);
   window.addEventListener('pointermove', extendLinkSelection, true);
   window.addEventListener('pointerup', endOutputSelection, true);
@@ -582,6 +650,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     terminalScreen?.removeEventListener('mousedown', preserveNativeScreenSelection);
     container.removeEventListener('mouseup', suppressSelectedHyperlink, true);
     container.removeEventListener('mousemove', preserveNativeMouseDrag, true);
+    container.removeEventListener('click', releasePinnedOnClick, true);
     container.removeEventListener('click', suppressSelectedLinkClick, true);
     window.removeEventListener('pointermove', extendLinkSelection, true);
     window.removeEventListener('pointerup', endOutputSelection, true);
@@ -597,5 +666,12 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     selectionContainers.delete(container);
   };
 
-  return { copy, dispose };
+  return {
+    copy,
+    // keep transfer actions faithful to the selection; copy applies its own gutter crop
+    getSelectedText: () => selectedOutput(),
+    selectAll,
+    setMode,
+    dispose
+  };
 }

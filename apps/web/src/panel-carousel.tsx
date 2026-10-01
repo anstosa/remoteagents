@@ -230,7 +230,7 @@ export function PanelDots({ carousel }: { carousel: PanelCarousel }) {
   const swipe = usePanelSwipe(carousel);
   // close the chooser before navigating to its selected split
   const select = (key: string) => { setOpen(false); carousel.show(key); anchorRef.current?.focus(); };
-  return <><span className="panel-dots" role="group" aria-label="Panels"><button ref={anchorRef} type="button" className="panel-dots-trigger" aria-label="Choose split" aria-haspopup="menu" aria-expanded={open} onPointerDown={swipe.onPointerDown} onPointerUp={swipe.onPointerUp} onPointerCancel={swipe.onPointerCancel} onClickCapture={swipe.onClickCapture} onClick={() => setOpen(value => !value)}><span className="flyout-caret" aria-hidden="true" />
+  return <><span className="panel-dots" role="group" aria-label="Panels"><button ref={anchorRef} type="button" className="panel-dots-trigger" aria-label="Choose split" aria-haspopup="menu" data-context-flyout aria-expanded={open} onPointerDown={swipe.onPointerDown} onPointerUp={swipe.onPointerUp} onPointerCancel={swipe.onPointerCancel} onClickCapture={swipe.onClickCapture} onClick={() => setOpen(value => !value)}><span className="flyout-caret" aria-hidden="true" />
     {/* keep summary dots in panel order */}
     {carousel.panels.map(panel => <span key={panel.key} className={`panel-dot ${panel.kind}-dot`} aria-hidden="true" title={panel.label} data-current={panel.key === carousel.visibleKey ? 'true' : undefined} />)}
   </button></span>

@@ -45,6 +45,8 @@ export interface StreamedTerminalHandle {
   // Type bytes into the pane (helper keys, paste); goes out as an input frame. Returns
   // whether the bytes reached the connection (`false` only mid-reconnect).
   sendInput: (data: string) => boolean;
+  // paste through xterm's newline and bracketed-paste handling without sticky modifiers
+  paste: (data: string) => void;
   // Ask the Agent pane's derive to resend its question and metadata (on-demand).
   requestMetadata: () => void;
   // freeze visual updates while output text is selected
@@ -448,9 +450,9 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   // Exposed for helper keys and paste, which already carry the exact bytes; the boolean lets a
   // caller that needs delivery confirmation (the update advisor's feedback) know it was sent.
   const sendInput = (data: string): boolean => sendBytes(new TextEncoder().encode(data));
-  // Typed keys pass through the panel's sticky mobile modifiers first (identity when the
-  // panel supplies no transform).
-  terminal.onData(data => sendBytes(new TextEncoder().encode(options.transformInput ? options.transformInput(data) : data)));
+  let pasting = false;
+  // typed keys pass through sticky mobile modifiers while paste stays exact
+  terminal.onData(data => sendBytes(new TextEncoder().encode(options.transformInput && !pasting ? options.transformInput(data) : data)));
   // Legacy (non-SGR) mouse tracking reports one byte per char code on onBinary; forward
   // those raw, without the modifier transform.
   terminal.onBinary(data => sendBytes(Uint8Array.from(data, character => character.charCodeAt(0))));
@@ -513,6 +515,12 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     terminal,
     focus: () => terminal.focus(),
     sendInput,
+    // let xterm normalize line endings and honor application bracketed-paste mode
+    paste: data => {
+      pasting = true;
+      try { terminal.paste(data); }
+      finally { pasting = false; }
+    },
     requestMetadata: () => connection?.send({ type: 'metadata' }),
     setOutputPaused,
     dispose: () => {

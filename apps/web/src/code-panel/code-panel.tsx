@@ -6,8 +6,9 @@
 // them in — so it stays free of any network code and easy to drive in isolation. What the view owns
 // itself is purely visual: the diff mode (Hunks / Full context / Plain file), unified vs split, and
 // the changed-file rail/drawer.
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type MouseEvent as ReactMouseEvent, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions, type FileDiffMetadata } from '@pierre/diffs/react';
+import { openSelectionContextMenu, preserveContextMenuPress, useSelectionActions, type SelectionActions, type SelectionContextMode } from '../selection-context-menu.js';
 import { useColorTheme } from '../color-theme.js';
 import { PanelHeader, PanelIcon, panelIcons, usePanelExpand } from '../panel-header.js';
 import { useTerminalFontSize } from '../terminal-font-size.js';
@@ -116,7 +117,44 @@ const placeholderFor = (file: ComparisonFile): Placeholder | undefined => {
   return undefined;
 };
 
+// scope readonly selection to the rendered code, including diff shadow roots
+function codeContextMenu(event: ReactMouseEvent<HTMLElement>, actions: SelectionActions | undefined, modes: SelectionContextMode[] = []) {
+  const panel = event.currentTarget;
+  const path = event.nativeEvent.composedPath();
+  const shadow = path.find((node): node is ShadowRoot => node instanceof ShadowRoot);
+  // retain the clicked side when the diff uses two code columns
+  const targetCode = path.find((node): node is HTMLElement => node instanceof HTMLElement && node.tagName === 'CODE');
+  const selection = window.getSelection();
+  let anchor = selection?.anchorNode;
+  // cross shadow boundaries only to verify this panel owns the selection
+  while (anchor !== null && anchor !== undefined && !panel.contains(anchor)) {
+    const root = anchor.getRootNode();
+    if (!(root instanceof ShadowRoot)) break;
+    anchor = root.host;
+  }
+  const selected = anchor !== null && anchor !== undefined && panel.contains(anchor) ? selection?.toString() ?? '' : '';
+  // header invocations have no shadow path, so resolve the active or first rendered file
+  const selectedRoot = selection?.anchorNode?.getRootNode();
+  const selectedCode = selectedRoot instanceof ShadowRoot && panel.contains(selectedRoot.host) ? selection?.anchorNode?.parentElement?.closest('code') ?? selectedRoot.querySelector('code') : undefined;
+  const renderedCode = Array.from(panel.querySelectorAll('diffs-container'), host => host.shadowRoot?.querySelector('code')).find(code => Boolean(code?.textContent));
+  const content = targetCode ?? shadow?.querySelector('code') ?? selectedCode ?? renderedCode ?? panel.querySelector('.code-pane-view') ?? panel;
+  openSelectionContextMenu(event, {
+    label: 'Code options', modes, selectedText: selected,
+    // select the rendered code rather than controls outside this split
+    selectAll: () => {
+      const range = document.createRange();
+      range.selectNodeContents(content);
+      const current = window.getSelection();
+      current?.removeAllRanges();
+      current?.addRange(range);
+    },
+    copy: () => copyToClipboard(selected),
+    selectionActions: actions
+  });
+}
+
 export default function CodePanel({ mode, state, patch, selectedPath, filePreview, prAvailable, branch, review, loadFile, onSelectFile, onClearFile, onSetMode, onCloseFile, onClose, onRetry }: CodePanelProps) {
+  const selectionActions = useSelectionActions();
   const theme = useColorTheme();
   const fontSize = useTerminalFontSize();
   const [supportingExpanded, setSupportingExpanded] = useState(false);
@@ -479,7 +517,10 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   </>;
 
   return (
-    <section className={`code-pane${expanded ? ' expanded' : ''}`} data-wrap-lines={wrapLines ? 'true' : undefined} style={style} role="region" aria-label="Code changes" ref={panelRef}>
+    <section className={`code-pane${expanded ? ' expanded' : ''}`} data-wrap-lines={wrapLines ? 'true' : undefined} style={style} role="region" aria-label="Code changes" ref={panelRef} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => codeContextMenu(event, selectionActions, [
+      { id: 'working', label: 'Working changes', checked: mode === 'working', onSelect: () => onSetMode('working') },
+      ...(prAvailable ? [{ id: 'pr', label: 'All PR changes', checked: mode === 'pr', onSelect: () => onSetMode('pr') }] : [])
+    ])}>
       <PanelHeader panelKey="code" label="code panel" title={title} actions={actions} menuContent={viewMenu} close={{ key: 'close', label: 'Close code changes', title: 'Close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} />
       <div className="code-pane-main">
         {state === 'ready' && fileCount > 0 && railVisible && (
@@ -551,6 +592,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
 // screenshot bridge), a binary file, and the over-cap truncation notice are plain non-library views.
 // "‹ Changes" returns to the Comparison the panel would otherwise show; the close button dismisses it.
 function FileView({ filePreview, options, style, expanded, onBack, onClose }: { filePreview: FilePreviewView; options: PanelOptions; style: CSSProperties; expanded: boolean; onBack: () => void; onClose: () => void }) {
+  const selectionActions = useSelectionActions();
   const { path, state, preview } = filePreview;
   const [copied, setCopied] = useState(false);
   useEffect(() => setCopied(false), [path]);
@@ -560,7 +602,7 @@ function FileView({ filePreview, options, style, expanded, onBack, onClose }: { 
   // a text file becomes a single plain-file item; an image or binary file renders without the library
   const items = useMemo<PanelItem[]>(() => state === 'ready' && preview !== undefined && !preview.binary ? [fileItemForContents(path, preview.content)] : [], [state, preview, path]);
   return (
-    <section className={`code-pane code-pane-file${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes">
+    <section className={`code-pane code-pane-file${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => codeContextMenu(event, selectionActions)}>
       <PanelHeader panelKey="code" label="code panel" title={<nav className="code-pane-crumbs" aria-label="Location">
           <button type="button" className="code-pane-crumb-back" onClick={onBack}>‹ Changes</button>
           <span className="code-pane-crumb-sep" aria-hidden="true">/</span>
