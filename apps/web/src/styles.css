@@ -1392,8 +1392,16 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .operation-feedback > button:hover { color: var(--text); }
 /* Float the transient console notices in the top-right corner instead of a strip below the tab bar. */
 /* toasts sit below the panels' floating header pills, so they never cover a panel's actions */
-.toast-region { position: fixed; top: calc(var(--panel-header-clearance) + .6rem + env(safe-area-inset-top, 0px)); right: calc(.6rem + env(safe-area-inset-right, 0px)); z-index: calc(var(--layer-dialog) + 1); display: flex; flex-direction: column; gap: .5rem; width: min(24rem, calc(100vw - 1.2rem)); pointer-events: none; }
-.toast { pointer-events: auto; animation: toast-in .18s ease-out; }
+/* scroll crowded notices while leaving most of the settings surface available */
+.toast-region { position: fixed; top: calc(var(--panel-header-clearance) + .6rem + env(safe-area-inset-top, 0px)); right: calc(.6rem + env(safe-area-inset-right, 0px)); z-index: calc(var(--layer-dialog) + 1); display: flex; flex-direction: column; gap: .5rem; width: min(24rem, calc(100vw - 1.2rem)); max-height: min(calc(var(--app-height, 100dvh) * .4), max(0px, calc(var(--app-height, 100dvh) - var(--panel-header-clearance) - 1.2rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)))); overflow-y: auto; pointer-events: none; }
+.toast { flex-shrink: 0; pointer-events: auto; animation: toast-in .18s ease-out; }
+/* retain the reload action without dismissal controls or a timeout */
+.client-update-notification { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: .65rem; min-width: 0; padding: .55rem .7rem; border: 1px solid color-mix(in srgb, var(--blue) 58%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 94%, var(--blue)); box-shadow: 0 .7rem 1.9rem color-mix(in srgb, var(--crust) 70%, transparent); }
+.client-update-copy { display: grid; flex: 1; min-width: 0; gap: .2rem; overflow-wrap: anywhere; }
+.client-update-copy h2 { margin: 0; color: var(--text); font: 700 .75rem var(--font-mono); }
+.client-update-copy > span { color: var(--subtext-0); font: 500 .66rem/1.35 var(--font-mono); }
+.client-update-notification > button { flex: none; min-height: 2rem; padding: .25rem .55rem; border-color: color-mix(in srgb, var(--blue) 72%, var(--surface-1)); background: transparent; color: var(--blue); box-shadow: none; font: 700 .68rem var(--font-mono); }
+.client-update-notification > button:hover { background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--text); }
 .toast-error { display: flex; align-items: center; min-height: 2rem; margin: 0; padding: .5rem .7rem; border: 1px solid color-mix(in srgb, var(--red) 65%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 90%, var(--red)); box-shadow: 0 .7rem 1.9rem color-mix(in srgb, var(--crust) 70%, transparent); color: var(--red); font-size: .72rem; line-height: 1.35; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-.35rem) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 /* On phones the corner is cramped: span the top edge with side insets instead. */
@@ -1492,7 +1500,8 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .flyout-menu[data-flyout-side="below"] { top: calc(100% + .4rem); bottom: auto; }
 .flyout-menu .spinner { box-sizing: border-box; flex: 0 0 1rem; width: 1rem; height: 1rem; }
 .more-menu button { width: 100%; justify-content: flex-start; border: 0; background: transparent; color: var(--text); box-shadow: none; white-space: nowrap; transition: background-color .15s ease, color .15s ease; }
-.client-settings-page { --panel-accent: var(--mauve); position: relative; isolation: isolate; display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); overflow: hidden; padding-top: var(--panel-header-clearance); background: radial-gradient(circle at 80% -12rem, #3a3765 0, var(--mantle) 34rem, var(--crust) 78rem); color: var(--text); }
+/* reserve the toast stack above settings without hiding persistent notices */
+.client-settings-page { --panel-accent: var(--mauve); position: relative; isolation: isolate; display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); overflow: hidden; padding-top: max(var(--panel-header-clearance), var(--toast-region-clearance, 0px)); background: radial-gradient(circle at 80% -12rem, #3a3765 0, var(--mantle) 34rem, var(--crust) 78rem); color: var(--text); }
 /* keep settings inside the workspace row, leaving the static tab and toolbar below */
 .log-shell:has(> .client-settings-page) { grid-template: minmax(0, 1fr) / minmax(0, 1fr) clamp(24rem, 30vw, 28rem); }
 .log-shell:has(> .client-settings-page) > .log { width: 100%; margin-left: 0; }

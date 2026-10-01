@@ -72,6 +72,7 @@ test('reloads a stale client instead of restarting the server', async ({ page })
 
   await page.goto('/');
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(page.getByRole('status', { name: 'UI update available' })).toBeVisible();
   const initialNavigations = navigations;
   const tabs = page.getByRole('tablist');
   await expect(tabs.getByRole('button', { name: 'Reload local update' })).toHaveCount(0);

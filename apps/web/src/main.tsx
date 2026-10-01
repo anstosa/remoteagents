@@ -7041,11 +7041,29 @@ function OperationFeedbackToast({ feedback, onDismiss }: { feedback: OperationFe
 
 // stack transient feedback and persistent notices in one corner region
 function ToastRegion({ children, feedback, onDismissFeedback, updateError, launchErrorMessage }: { children?: ReactNode; feedback?: OperationFeedback; onDismissFeedback: () => void; updateError?: string; launchErrorMessage?: string }) {
+  const clientSettings = useContext(ClientSettingsContext);
+  // keep stale-client guidance visible until the browser reloads
+  const showClientUpdate = clientSettings?.clientUpdateAvailable === true;
   // the launch error is redundant while an error-tone operation toast already says the same thing
   const showLaunchError = Boolean(launchErrorMessage) && feedback?.tone !== 'error';
+  // keep the settings pane's scrollable controls below the visible toast stack
+  const reserveToastSpace = useCallback((element: HTMLDivElement | null) => {
+    // detached regions have no space to reserve
+    if (element === null) return;
+    const root = document.documentElement;
+    // include the resolved safe-area inset and keep wrapped notices clear of settings
+    const measure = () => root.style.setProperty('--toast-region-clearance', element.offsetHeight === 0 ? '0px' : `${Math.ceil(element.getBoundingClientRect().bottom)}px`);
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    window.addEventListener('resize', measure);
+    measure();
+    // release the reservation when this workspace's region unmounts
+    return () => { observer.disconnect(); window.removeEventListener('resize', measure); root.style.removeProperty('--toast-region-clearance'); };
+  }, []);
   // omit an empty stack when there is no persistent notice
-  if (children == null && feedback === undefined && !updateError && !showLaunchError) return null;
-  return createPortal(<div className="toast-region">
+  if (children == null && feedback === undefined && !updateError && !showLaunchError && !showClientUpdate) return null;
+  return createPortal(<div className="toast-region" ref={reserveToastSpace}>
+    {showClientUpdate && <section className="toast client-update-notification" role="status" aria-label="UI update available"><div className="client-update-copy"><h2>UI update available</h2><span>Reload to use the latest version.</span></div><button type="button" onClick={clientSettings.reloadClient}>Reload UI</button></section>}
     {feedback && <OperationFeedbackToast key={feedback.id} feedback={feedback} onDismiss={onDismissFeedback} />}
     {updateError && <p className="toast toast-error" role="alert">{updateError}</p>}
     {showLaunchError && <p className="toast toast-error" role="alert">{launchErrorMessage}</p>}
