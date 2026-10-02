@@ -204,10 +204,10 @@ const chooseFromRow = async (page: import('@playwright/test').Page, row: string,
 
 test('Terminal from + opens an idle Worktree with a new shell, focused, and never a second one', async ({ page }) => {
   const { created } = await mountWorkspaces(page);
-  // the row keeps direct Launch while the dropdown lists only workspace actions
+  // the row keeps direct Launch while workspace actions follow agent choices
   await chooseFromRow(page, 'Feature', 'Terminal', async (menu, row) => {
     await expect(row.getByRole('button', { name: 'Launch Feature' })).toBeVisible();
-    await expect(menu.getByRole('menuitem')).toHaveText([/^Terminal/u, /^Empty workspace/u]);
+    await expect(menu.getByRole('menuitem', { name: /^(Terminal|Empty workspace)/u })).toHaveText([/^Terminal/u, /^Empty workspace/u]);
     await expect(menu.getByRole('menuitem', { name: /^Terminal/u })).toContainText('Open the Workspace with a new shell');
   });
   // the Place's tab opens with the new shell as a focused Terminal panel
@@ -235,7 +235,7 @@ test('Terminal from + at a Worktree with an Agent opens its minimized shell with
   // a row with a running Agent keeps Open as its default, beside the same dropdown
   await chooseFromRow(page, 'Feature', 'Terminal', async (menu, row) => {
     await expect(row.getByRole('button', { name: 'Open Feature' })).toBeVisible();
-    await expect(menu.getByRole('menuitem')).toHaveText([/^Terminal/u, /^Empty workspace/u]);
+    await expect(menu.getByRole('menuitem', { name: /^(Terminal|Empty workspace)/u })).toHaveText([/^Terminal/u, /^Empty workspace/u]);
   });
   await expect(page.getByRole('tab', { name: /^Feature —/u })).toHaveAttribute('aria-selected', 'true');
   const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');

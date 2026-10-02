@@ -423,9 +423,9 @@ test('shows the active Codex account beside its version in launch menus', async 
   expect(state.patches).toEqual([{ id: 'work-account', body: { label: longName }, csrf: 'account-settings-csrf' }]);
 });
 
-// keep restart choices informational instead of exposing global account management
-test('shows the active Codex account in Restart as without account actions', async ({ page }) => {
-  await setupAccountSettings(page, [
+// keep restart choices independent from toolbar-only account state
+test('keeps Restart as choice-only and defers account loading to the toolbar', async ({ page }) => {
+  const state = await setupAccountSettings(page, [
     { id: 'personal-account', label: 'Personal', email: 'personal@example.com', active: true, planType: 'pro' },
   ]);
   // provide one ready configured Agent and its worktree
@@ -442,10 +442,11 @@ test('shows the active Codex account in Restart as without account actions', asy
     reviews: [],
     reviewTour: { available: false, reason: 'generator_unavailable' },
   } }));
-  // publish the installed Codex version for the restart row
+  // keep toolbar-only version and update state available
   await page.route('**/api/agents/updates', route => route.fulfill({ json: { agents: [{ kind: 'codex', currentVersion: '0.153.2', latestVersion: '0.154.0', updateAvailable: true }] } }));
 
   await page.goto('/');
+  expect(state.accountQueries).toBe(0);
   await page.getByRole('button', { name: 'Agent power options' }).click();
   const menu = page.getByRole('menu', { name: 'Agent power options' });
   const compactBounds = await menu.boundingBox();
@@ -454,30 +455,12 @@ test('shows the active Codex account in Restart as without account actions', asy
   await menu.getByRole('menuitem', { name: 'Restart as…', exact: true }).click();
   const pickerBounds = await menu.boundingBox();
   expect(pickerBounds).not.toBeNull();
-  expect(pickerBounds!.width).toBeGreaterThan(compactBounds!.width);
+  expect(pickerBounds!.width).toBeCloseTo(208, 0);
   const codex = menu.getByRole('group', { name: 'Codex agent' });
-  const version = codex.locator('.launch-agent-version');
-  const activeName = codex.locator('.launch-agent-account');
-  await expect(version).toHaveText('v0.153.2 → v0.154.0');
-  await expect(activeName).toHaveText('Personal');
-  await expect(codex.getByText('personal@example.com', { exact: true })).toHaveCount(0);
-  const [rowBounds, detailsBounds, versionBounds, activeBounds, defaultBounds] = await Promise.all([
-    codex.locator(':scope > .launch-row').boundingBox(),
-    codex.locator('.launch-agent-details').boundingBox(),
-    version.boundingBox(),
-    activeName.boundingBox(),
-    codex.locator(':scope > .launch-agent-default').boundingBox(),
-  ]);
-  expect(rowBounds).not.toBeNull();
-  expect(detailsBounds).not.toBeNull();
-  expect(versionBounds).not.toBeNull();
-  expect(activeBounds).not.toBeNull();
-  expect(defaultBounds).not.toBeNull();
-  expect(activeBounds!.x).toBeGreaterThan(versionBounds!.x + versionBounds!.width);
-  expect(detailsBounds!.x + detailsBounds!.width).toBeLessThanOrEqual(rowBounds!.x + rowBounds!.width + 1);
-  expect(detailsBounds!.x + detailsBounds!.width).toBeLessThanOrEqual(defaultBounds!.x + 1);
-  await page.screenshot({ path: '/tmp/remoteagents-restart-account-fixed.png' });
-  await expect(menu.getByRole('menuitem', { name: 'Codex accounts', exact: true })).toHaveCount(0);
+  await expect(codex.getByRole('menuitem', { name: /^Codex/u })).toBeVisible();
+  await expect(menu.locator('.launch-agent-details, .launch-agent-default, .launch-agent-accounts, .launch-agent-update, .launch-menu-error')).toHaveCount(0);
+  expect(state.accountQueries).toBe(0);
+  await page.screenshot({ path: '/tmp/remoteagents-restart-choices-desktop.png' });
 
   await page.keyboard.press('Escape');
   await page.setViewportSize({ width: 320, height: 640 });
@@ -486,32 +469,58 @@ test('shows the active Codex account in Restart as without account actions', asy
   expect(mobileCompactBounds).not.toBeNull();
   expect(mobileCompactBounds!.width).toBeCloseTo(208, 0);
   await menu.getByRole('menuitem', { name: 'Restart as…', exact: true }).click();
-  await expect(version).toHaveText('v0.153.2 → v0.154.0');
-  await expect(activeName).toHaveText('Personal');
-  const [mobileMenuBounds, mobileRowBounds, mobileDetailsBounds, mobileVersionBounds, mobileAccountBounds, mobileUpdateBounds, mobileDefaultBounds] = await Promise.all([
-    menu.boundingBox(),
-    codex.locator(':scope > .launch-row').boundingBox(),
-    codex.locator('.launch-agent-details').boundingBox(),
-    version.boundingBox(),
-    activeName.boundingBox(),
-    codex.locator(':scope > .launch-agent-update').boundingBox(),
-    codex.locator(':scope > .launch-agent-default').boundingBox(),
-  ]);
+  const [mobileMenuBounds, mobileRowBounds] = await Promise.all([menu.boundingBox(), codex.locator(':scope > .launch-row').boundingBox()]);
   expect(mobileMenuBounds).not.toBeNull();
   expect(mobileRowBounds).not.toBeNull();
-  expect(mobileDetailsBounds).not.toBeNull();
-  expect(mobileVersionBounds).not.toBeNull();
-  expect(mobileAccountBounds).not.toBeNull();
-  expect(mobileUpdateBounds).not.toBeNull();
-  expect(mobileDefaultBounds).not.toBeNull();
-  expect(mobileMenuBounds!.width).toBeLessThanOrEqual(304);
-  expect(mobileAccountBounds!.x).toBeGreaterThan(mobileVersionBounds!.x + mobileVersionBounds!.width);
-  expect(mobileDetailsBounds!.x + mobileDetailsBounds!.width).toBeLessThanOrEqual(mobileRowBounds!.x + mobileRowBounds!.width + 1);
-  expect(mobileDetailsBounds!.x + mobileDetailsBounds!.width).toBeLessThanOrEqual(mobileUpdateBounds!.x + 1);
-  expect(mobileUpdateBounds!.x + mobileUpdateBounds!.width).toBeLessThanOrEqual(mobileDefaultBounds!.x + 1);
-  await expect(menu.getByRole('menuitem', { name: 'Codex accounts', exact: true })).toHaveCount(0);
+  expect(mobileMenuBounds!.width).toBeCloseTo(208, 0);
+  expect(mobileRowBounds!.x).toBeGreaterThanOrEqual(mobileMenuBounds!.x);
+  expect(mobileRowBounds!.x + mobileRowBounds!.width).toBeLessThanOrEqual(mobileMenuBounds!.x + mobileMenuBounds!.width);
+  await expect(menu.locator('.launch-agent-details, .launch-agent-default, .launch-agent-accounts, .launch-agent-update, .launch-menu-error')).toHaveCount(0);
+  expect(state.accountQueries).toBe(0);
   const mobileHorizontalMetrics = await page.evaluate(() => ({ viewport: window.innerWidth, document: document.documentElement.scrollWidth, body: document.body.scrollWidth }));
   expect(mobileHorizontalMetrics.document).toBeLessThanOrEqual(mobileHorizontalMetrics.viewport);
   expect(mobileHorizontalMetrics.body).toBeLessThanOrEqual(mobileHorizontalMetrics.viewport);
-  await page.screenshot({ path: '/tmp/remoteagents-restart-account-mobile.png' });
+  await page.screenshot({ path: '/tmp/remoteagents-restart-choices-mobile.png' });
+
+  await page.keyboard.press('Escape');
+  const toolbar = page.getByRole('region', { name: 'Workspace toolbar' });
+  await toolbar.getByRole('button', { name: /^(Choose agent|Launch agent)(?: — update available)?$/u }).click();
+  await expect.poll(() => state.accountQueries).toBe(1);
+  const toolbarCodex = page.getByRole('menu', { name: 'Choose agent' }).getByRole('group', { name: 'Codex agent' });
+  await expect(toolbarCodex.locator('.launch-agent-version')).toHaveText('v0.153.2 → v0.154.0');
+  await expect(toolbarCodex.locator('.launch-agent-account')).toHaveText('Personal');
+  await expect(toolbarCodex.getByRole('menuitem', { name: 'Codex accounts' })).toBeVisible();
+  await expect(toolbarCodex.getByRole('menuitem', { name: 'Update Codex to 0.154.0' })).toBeVisible();
+  await expect(toolbarCodex.getByRole('menuitemradio', { name: 'Make Codex default' })).toBeVisible();
+});
+
+// keep + choices detached from toolbar-only account state
+test('defers account loading through + choices until the toolbar opens', async ({ page }) => {
+  const state = await setupAccountSettings(page, [
+    { id: 'personal-account', label: 'Personal', email: 'personal@example.com', active: true, planType: 'pro' },
+  ]);
+
+  await page.goto('/');
+  expect(state.accountQueries).toBe(0);
+  const plusTrigger = page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: 'Launch agent', exact: true });
+  await plusTrigger.click();
+  const launcher = page.getByRole('group', { name: 'Agent launcher' });
+  const scratch = launcher.locator('.launcher-row').filter({ hasText: 'Scratch' });
+  await scratch.getByRole('button', { name: 'More workspace actions' }).click();
+  const choices = page.getByRole('menu', { name: 'More workspace actions' });
+  const plusCodex = choices.getByRole('group', { name: 'Codex agent' });
+  await expect(plusCodex.getByRole('menuitem', { name: /^Codex/u })).toBeVisible();
+  await expect(choices.locator('.launch-agent-details, .launch-agent-default, .launch-agent-accounts, .launch-agent-update, .launch-menu-error')).toHaveCount(0);
+  expect(state.accountQueries).toBe(0);
+
+  await page.keyboard.press('Escape');
+  await expect(choices).toHaveCount(0);
+  await expect(launcher).toHaveCount(0);
+  const toolbar = page.getByRole('region', { name: 'Workspace toolbar' });
+  await toolbar.getByRole('button', { name: /^(Choose agent|Launch agent)(?: — update available)?$/u }).click();
+  await expect.poll(() => state.accountQueries).toBe(1);
+  const toolbarCodex = page.getByRole('menu', { name: 'Choose agent' }).getByRole('group', { name: 'Codex agent' });
+  await expect(toolbarCodex.locator('.launch-agent-account')).toHaveText('Personal');
+  await expect(toolbarCodex.getByText('personal@example.com', { exact: true })).toHaveCount(0);
+  expect(state.accountQueries).toBe(1);
 });

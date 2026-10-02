@@ -197,12 +197,12 @@ test('a remembered kind that is no longer launchable is skipped with a footnote'
   await expect(page.locator('.launch-menu-note')).toContainText('Remembered Claude (here) skipped — /bin/claude is not executable');
 });
 
-test('the + flyout keeps direct Place actions while agent details stay in the far-left Launch', async ({ page }) => {
+test('the + flyout keeps direct Place actions while its dropdown chooses configured agents', async ({ page }) => {
   const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }], scratchLaunch: { kind: 'codex', origin: 'scratch' } });
-  await page.getByRole('button', { name: 'Launch agent' }).click();
+  await page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: 'Launch agent', exact: true }).click();
   const launcher = page.locator('.launcher-menu');
   await expect(launcher.getByText('Scratch', { exact: true })).toBeVisible();
-  // each row offers a plain action without an agent kind or update controls
+  // each row keeps its plain direct action
   const worktreeRow = launcher.locator('.launcher-row').filter({ hasText: 'Cora' });
   const rowLaunch = worktreeRow.getByRole('button', { name: 'Launch Cora' });
   await expect(rowLaunch).toBeVisible();
@@ -225,12 +225,89 @@ test('the + flyout keeps direct Place actions while agent details stay in the fa
   await rowLaunch.hover();
   await expect(rowLaunch).toHaveCSS('filter', 'none');
   await expect(compactSplit).not.toHaveCSS('filter', 'none');
-  // only the persistent Launch identifies the resolved kind
-  await expect(launcher.locator('.launch-kind-mark, .launch-agent-line, .launch-agent-default, .launch-agent-accounts, .launch-agent-update')).toHaveCount(0);
+  // resolved compact Launch identifies its direct agent without widening the fixed column
+  const compactMark = worktreeRow.locator('.launch-primary .launch-kind-mark');
+  await expect(compactMark).toHaveText('✳');
+  await expect(compactMark).toHaveCSS('color', 'rgb(250, 179, 135)');
+  const [primaryBox, markBox, labelBox, chevronBox] = await Promise.all([
+    rowLaunch.boundingBox(),
+    compactMark.boundingBox(),
+    rowLaunch.locator('.launch-primary-label').boundingBox(),
+    compactSplit.locator('.launch-chevron').boundingBox(),
+  ]);
+  expect(primaryBox).not.toBeNull();
+  expect(markBox).not.toBeNull();
+  expect(labelBox).not.toBeNull();
+  expect(chevronBox).not.toBeNull();
+  expect(markBox!.x + markBox!.width).toBeLessThanOrEqual(labelBox!.x);
+  expect(labelBox!.x + labelBox!.width).toBeLessThanOrEqual(primaryBox!.x + primaryBox!.width);
+  expect(primaryBox!.x + primaryBox!.width).toBeLessThanOrEqual(chevronBox!.x + 1);
   await expect(page.locator('.workspace-toolbar .launch-split:not(.compact)').getByRole('button', { name: 'Launch Claude' }).locator('.launch-kind-mark')).toHaveText('✳');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(compactMark).toBeVisible();
+  const [mobileSplitBox, mobileMarkBox, mobileLabelBox, mobileChevronBox] = await Promise.all([
+    compactSplit.boundingBox(),
+    compactMark.boundingBox(),
+    rowLaunch.locator('.launch-primary-label').boundingBox(),
+    compactSplit.locator('.launch-chevron').boundingBox(),
+  ]);
+  expect(mobileSplitBox).not.toBeNull();
+  expect(mobileMarkBox).not.toBeNull();
+  expect(mobileLabelBox).not.toBeNull();
+  expect(mobileChevronBox).not.toBeNull();
+  expect(mobileSplitBox!.width).toBeLessThanOrEqual(130);
+  expect(mobileMarkBox!.x + mobileMarkBox!.width).toBeLessThanOrEqual(mobileLabelBox!.x);
+  expect(mobileLabelBox!.x + mobileLabelBox!.width).toBeLessThanOrEqual(mobileChevronBox!.x + 1);
+  await page.screenshot({ path: '/tmp/remoteagents-plus-primary-mobile.png' });
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  await worktreeRow.getByRole('button', { name: 'More workspace actions' }).click();
+  const choices = page.getByRole('menu', { name: 'More workspace actions' });
+  await expect(choices.getByRole('menuitem', { name: /^Codex/u })).toBeVisible();
+  await expect(choices.getByRole('menuitem', { name: /^Claude/u })).toBeVisible();
+  await expect(choices.locator('.launch-agent-details, .launch-agent-default, .launch-agent-accounts, .launch-agent-update, .launch-menu-error')).toHaveCount(0);
+  await page.screenshot({ path: '/tmp/remoteagents-plus-chooser-desktop.png' });
+  await choices.getByRole('menuitem', { name: /^Codex/u }).click();
+  await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'codex', sandboxed: false } }]);
+
   // the scratch row primary launches its own resolved kind
+  await page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: 'Launch agent', exact: true }).click();
   await launcher.locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch ~ Scratch' }).click();
-  await expect.poll(() => posts).toEqual([{ path: '/api/agents/launch', body: { kind: 'codex', sandboxed: false } }]);
+  await expect.poll(() => posts).toEqual([
+    { path: '/api/worktrees/cora/launch', body: { kind: 'codex', sandboxed: false } },
+    { path: '/api/agents/launch', body: { kind: 'codex', sandboxed: false } },
+  ]);
+});
+
+// keep running-worktree choices available from a phone without changing Open
+test('mobile + Open keeps configured-agent choices for a running worktree', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const agent = { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 1, title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0, launch: { kind: 'codex', origin: 'worktree' } };
+  const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [agent], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'codex', origin: 'worktree' })] }] });
+  await page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: 'Launch agent', exact: true }).click();
+  const launcher = page.getByRole('group', { name: 'Agent launcher' });
+  const open = launcher.getByRole('button', { name: 'Open Cora' });
+  await expect(open).toBeVisible();
+  await expect(open.locator('.launch-kind-mark')).toHaveCount(0);
+  await open.locator('..').getByRole('button', { name: 'More workspace actions' }).click();
+  const choices = page.getByRole('menu', { name: 'More workspace actions' });
+  await expect(choices.getByRole('menuitem', { name: /^Claude/u })).toBeVisible();
+  await page.screenshot({ path: '/tmp/remoteagents-plus-chooser-mobile.png' });
+  await choices.getByRole('menuitem', { name: /^Claude/u }).click();
+  await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'claude', sandboxed: false } }]);
+});
+
+// keep Scratch choices reachable before the server resolves a direct default
+test('the + Scratch dropdown chooses an agent without a Place or resolution', async ({ page }) => {
+  const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [] });
+  await page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: 'Launch agent', exact: true }).click();
+  const scratch = page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: 'Scratch' });
+  await expect(scratch.getByRole('button', { name: 'Launch ~ Scratch' })).toBeVisible();
+  await expect(scratch.locator('.launch-primary .launch-kind-mark')).toHaveCount(0);
+  await scratch.getByRole('button', { name: 'More workspace actions' }).click();
+  await page.getByRole('menu', { name: 'More workspace actions' }).getByRole('menuitem', { name: /^Claude/u }).click();
+  await expect.poll(() => posts).toEqual([{ path: '/api/agents/launch', body: { kind: 'claude', sandboxed: false } }]);
 });
 
 // keep agent glyphs full-size and colored only in the persistent Launch chooser
@@ -267,22 +344,28 @@ test('the far-left Launch chooser owns every agent glyph and sandbox mark', asyn
 // the launcher rows open the same anchored flyout every other Launch control opens: one
 // fixed-width menu hung off the row, dismissed by a press anywhere outside it — including
 // one inside the launcher, whose own backdrop only covers presses outside itself
-test('a + row menu contains only workspace actions and closes on an outside press', async ({ page }) => {
-  await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }], scratchLaunch: { kind: 'codex', origin: 'scratch' } });
+test('a + row menu keeps agent states and workspace actions, then closes outside', async ({ page }) => {
+  const unavailableCodex = adapter('/bin/codex', { launchable: false, unavailableReason: '/bin/codex is not executable' });
+  const sandboxedClaude = adapter('/bin/claude', { sandbox: true });
+  await mount(page, { generation: 1, adapters: { codex: unavailableCodex, claude: sandboxedClaude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }], scratchLaunch: { kind: 'claude', origin: 'scratch' } });
   await page.getByRole('button', { name: 'Launch agent' }).click();
   const launcher = page.locator('.launcher-menu');
   const menu = page.locator('.launch-menu');
   const row = launcher.locator('.launcher-row').filter({ hasText: 'Cora' });
   await row.getByRole('button', { name: 'More workspace actions' }).click();
-  await expect(menu.getByRole('menuitem')).toHaveText([/^Terminal/u, /^Empty workspace/u]);
-  await expect(menu.locator('.launch-agent-line, .launch-agent-default, .launch-agent-accounts, .launch-agent-update')).toHaveCount(0);
+  await expect(menu.getByRole('menuitem', { name: /^Codex/u })).toBeDisabled();
+  await expect(menu.getByRole('menuitem', { name: /^Claude · last used here/u })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: /Claude.*Sandbox disabled for this launch/u })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: /^Terminal/u })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: /^Empty workspace/u })).toBeVisible();
+  await expect(menu.locator('.launch-agent-details, .launch-agent-default, .launch-agent-accounts, .launch-agent-update')).toHaveCount(0);
   // a press elsewhere in the launcher closes the menu alone, leaving the launcher open
   await launcher.locator('.launcher-project-header').click({ position: { x: 3, y: 3 } });
   await expect(menu).toHaveCount(0);
   await expect(launcher).toBeVisible();
-  // reopening the row preserves the simple workspace-only menu
+  // reopening preserves the same mixed choice menu
   await row.getByRole('button', { name: 'More workspace actions' }).click();
-  await expect(menu.getByRole('menuitem')).toHaveCount(2);
+  await expect(menu.getByRole('menuitem')).toHaveCount(5);
 });
 
 test('an idle agent restarts as another kind from its power menu', async ({ page }) => {

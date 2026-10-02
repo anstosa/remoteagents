@@ -393,7 +393,7 @@ test('a pending scratch session keeps the mobile keyboard gutter', async ({ page
   await page.setViewportSize({ width: 390, height: 844 });
   const harness = await mountPendingSession(page, 'scratch');
   await openAgentLauncher(page);
-  await page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' }).click();
+  await page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch ~ Scratch' }).click();
   await expect.poll(harness.launchRequests).toBe(1);
 
   const pendingPanel = page.locator('.log > .log-output');

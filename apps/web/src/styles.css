@@ -1493,8 +1493,8 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .more > svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .flyout-backdrop { position: fixed; inset: 0; z-index: calc(var(--layer-popover) - 1); background: transparent; cursor: default; }
 .more-menu { position: absolute; right: 0; z-index: var(--layer-popover); width: max-content; max-width: calc(100vw - 1rem); max-height: calc(100vh - 1rem); overflow: auto; padding: .3rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: var(--mantle); box-shadow: 0 .7rem 1.8rem color-mix(in srgb, var(--crust) 80%, transparent); font: 700 .78rem var(--font-mono); letter-spacing: .035em; }
-/* retain compact power actions without constraining the restart picker */
-.more-menu.agent-power-menu:not(.launch-menu) { width: 13rem; }
+/* keep power actions and restart choices compact */
+.more-menu.agent-power-menu { width: 13rem; }
 .more-menu.agent-power-menu .agent-power-off { color: var(--red); }
 .flyout-menu[data-flyout-side="above"] { top: auto; bottom: calc(100% + .4rem); }
 .flyout-menu[data-flyout-side="below"] { top: calc(100% + .4rem); bottom: auto; }

@@ -89,23 +89,30 @@ test('moves Codex accounts from settings into the launcher submenu', async ({ pa
   await expect(menu.getByRole('group', { name: 'Codex agent' }).getByRole('menuitem').first()).toBeVisible();
 });
 
-test('keeps Codex accounts in the far-left toolbar, not the empty card or + flyout', async ({ page }) => {
+test('keeps agent management in the far-left toolbar while + dropdowns only choose agents', async ({ page }) => {
   await openSettings(page, {
     codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false }
-  }, { defaultAgent: 'codex', emptyWorkspace: true, open: false });
+  }, { defaultAgent: 'codex', emptyWorkspace: true, open: false, agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
   const toolbar = page.getByRole('region', { name: 'Workspace toolbar' });
   await expect(page.getByRole('region', { name: 'Empty workspace' }).getByRole('button', { name: 'Choose agent' })).toHaveCount(0);
   // the persistent Launch control leads every other static action
   await expect(toolbar.locator('.workspace-toolbar-actions > :first-child')).toHaveClass(/launch-split/u);
   const menu = await openAgentMenu(page);
   const codex = menu.getByRole('group', { name: 'Codex agent' });
-  await expect(codex.locator(':scope > button')).toHaveText([/Codex/u, /Accounts/u, '★']);
+  await expect(codex.locator(':scope > button')).toHaveText([/Codex/u, /Accounts/u, 'Update', '★']);
   await codex.getByRole('menuitem', { name: 'Codex accounts' }).click();
   await expect(menu.getByRole('group', { name: 'Codex accounts' }).getByRole('heading', { name: 'Accounts' })).toBeVisible();
   await toolbar.getByRole('button', { name: 'Choose agent' }).click();
   await page.getByRole('button', { name: 'Launch agent', exact: true }).click();
   const plus = page.getByRole('group', { name: 'Agent launcher' });
-  await expect(plus.locator('.launch-kind-mark, .launch-agent-default, .launch-agent-accounts, .launch-agent-update')).toHaveCount(0);
+  const worktreeLaunch = plus.getByRole('button', { name: 'Launch Cora' });
+  await expect(worktreeLaunch).toBeVisible();
+  const worktree = worktreeLaunch.locator('..');
+  await worktree.getByRole('button', { name: 'More workspace actions' }).click();
+  const choices = page.getByRole('menu', { name: 'More workspace actions' });
+  await expect(choices.getByRole('menuitem', { name: /^Codex/u })).toBeVisible();
+  await expect(choices.locator('.launch-agent-details, .launch-agent-default, .launch-agent-accounts, .launch-agent-update, .launch-menu-error')).toHaveCount(0);
+  await expect(choices.getByRole('menuitem', { name: 'Codex accounts' })).toHaveCount(0);
   await expect(plus.getByRole('button', { name: 'Choose agent' })).toHaveCount(0);
 });
 

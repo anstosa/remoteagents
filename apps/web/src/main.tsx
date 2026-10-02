@@ -2156,11 +2156,8 @@ function AgentPowerMenu(props: AgentPowerMenuProps) {
   // Turn off at the foot of the menu
   const footAction = <button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(props.onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button>;
   const menuLabel = 'Agent power options';
-  // reuse launch layout only while choosing a restart agent
-  const restartPicker = view === 'restart-as' && restartAs !== undefined;
-  // let shared picker CSS replace the width retained from compact power actions
-  const flyoutStyle = restartPicker ? { ...style, width: undefined } : style;
-  return <><span className="power-menu-wrap" ref={anchorRef} hidden={hidden}><button className={className} type="button" disabled={pending || disabledReason !== undefined || hidden} aria-label={menuLabel} data-context-flyout aria-expanded={open && !hidden} aria-haspopup="menu" title={disabledReason ?? menuLabel} onClick={() => setOpen(current => !current)}><span className="flyout-caret" aria-hidden="true" />{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && !hidden && <FlyoutPortal onDismiss={() => setOpen(false)}><div className={`more-menu flyout-menu agent-power-menu${restartPicker ? ' launch-menu' : ''}`} ref={flyoutRef} style={flyoutStyle} role="menu" aria-label={menuLabel}>{restartPicker ? restartAsPage : <>{stateActions}{newTaskOption}{footAction}</>}</div></FlyoutPortal>}</>;
+  // keep restart choices in the same compact power flyout
+  return <><span className="power-menu-wrap" ref={anchorRef} hidden={hidden}><button className={className} type="button" disabled={pending || disabledReason !== undefined || hidden} aria-label={menuLabel} data-context-flyout aria-expanded={open && !hidden} aria-haspopup="menu" title={disabledReason ?? menuLabel} onClick={() => setOpen(current => !current)}><span className="flyout-caret" aria-hidden="true" />{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && !hidden && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label={menuLabel}>{view === 'restart-as' && restartAs !== undefined ? restartAsPage : <>{stateActions}{newTaskOption}{footAction}</>}</div></FlyoutPortal>}</>;
 }
 
 // render reusable mobile terminal controls
@@ -6669,7 +6666,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, 
   }
   // a phone toolbar action replaces the settings panel with its chosen workspace view
   return <section className="workspace-toolbar" aria-label="Workspace toolbar" onClickCapture={phone && settingsSplit?.open ? settingsSplit.close : undefined}><div className="workspace-toolbar-actions">
-    {visibleLaunch !== undefined && <LaunchSplitButton label={visibleLaunch.label} resolution={visibleLaunch.resolution} quiet={hasAgent} disabled={visibleLaunch.disabled} disabledReason={visibleLaunch.disabledReason} pending={visibleLaunch.pending} alwaysShowMenu showUpdateIndicator onLaunch={visibleLaunch.start} />}
+    {visibleLaunch !== undefined && <LaunchSplitButton label={visibleLaunch.label} resolution={visibleLaunch.resolution} quiet={hasAgent} disabled={visibleLaunch.disabled} disabledReason={visibleLaunch.disabledReason} pending={visibleLaunch.pending} alwaysShowMenu showAgentSettings onLaunch={visibleLaunch.start} />}
     {workspace?.agentHidden && <button type="button" className="toolbar-button" onClick={workspace.showAgent}>Show agent</button>}
     {conversations}
     {workspace?.terminals.control}
@@ -6910,7 +6907,7 @@ function EmptyWorkspace({ workspace, label, detail, launch, onPin }: { workspace
     <h2>{label}</h2>
     <p className="empty-workspace-detail">{detail}</p>
     <div className="empty-workspace-actions">
-      {launch !== undefined && <LaunchSplitButton label={launch.label} resolution={launch.resolution} disabled={launch.disabled} disabledReason={launch.disabledReason} pending={launch.pending} placeActionsOnly onLaunch={launch.start} />}
+      {launch !== undefined && <LaunchSplitButton label={launch.label} resolution={launch.resolution} disabled={launch.disabled} disabledReason={launch.disabledReason} pending={launch.pending} placeActions onLaunch={launch.start} />}
       {workspace.terminals.control}
       {toggleNotes !== undefined && <button type="button" className="toolbar-button" aria-label="Notes" title="Open the notes here" onClick={() => void toggleNotes()}><svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg><span className="toolbar-label">Notes</span></button>}
       <BrowserToggle browser={workspace.browser} />
@@ -8521,7 +8518,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const storedReview = agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === agent.worktreeId);
   const localReview = agent?.worktreeId !== undefined && agent.worktreeId === reviewLaunch?.worktreeId;
   const activeReview = localReview ? { ...reviewIndicator, onOpen: openLocalReview } : agent !== undefined && storedReview !== undefined ? { generating: reviewRestoringWorktreeId === storedReview.worktreeId, stale: false, onOpen: () => void openStoredReview(agent, storedReview) } : undefined;
-  // a + row offers only Terminal and Empty workspace beside its direct action
+  // append workspace actions after each place's agent choices
   const placeEntries = (place: { id: string; label: string; consoleShells?: number } | undefined): LaunchMenuEntry[] => place === undefined ? [] : [
     { key: 'terminal', label: 'Terminal', detail: (place.consoleShells ?? 0) > 0 ? 'Focus its shell' : 'Open the Workspace with a new shell', icon: <LauncherRowIcon name="terminal" />, onSelect: () => void openTerminalAt(place.id, place.label) },
     { key: 'empty', label: 'Empty workspace', detail: placeTabIndex(place.id) >= 0 ? 'Already open: focuses it' : 'No panels; add them from the toolbar', icon: <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" strokeDasharray="3 3" /></svg>, onSelect: () => openEmptyWorkspace(place.id) }
@@ -8529,12 +8526,12 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   // a + row's control while an Agent runs at its Place: Open selects it, and a kind from the menu
   // launches another beside it through `endpoint`, held back as the toolbar's launch-another is
   const openAgentSplit = (place: { id: string; label: string; consoleShells?: number }, agent: Agent, resolution: LaunchResolution | undefined, endpoint: string, { worktreeId, unavailable = false }: { worktreeId?: string; unavailable?: boolean } = {}): ReactNode =>
-    <LaunchSplitButton label={place.label} resolution={resolution} compact placeActionsOnly primary={{ label: 'Open', ariaLabel: `Open ${place.label}`, onSelect: () => { closeLauncher(); selectTarget({ worktreeId: place.id, agentId: agent.id }); } }} entries={placeEntries(place)} launchDisabled={creatingAgent || launchingAnotherAt !== undefined || unavailable} onLaunch={choice => { closeLauncher(); navigateToWorktree(place.id); void launchAnother({ key: placeItemKey(place.id), label: place.label, endpoint, worktreeId }, choice); }} />;
+    <LaunchSplitButton label={place.label} resolution={resolution} compact placeActions alwaysShowMenu primary={{ label: 'Open', ariaLabel: `Open ${place.label}`, onSelect: () => { closeLauncher(); selectTarget({ worktreeId: place.id, agentId: agent.id }); } }} entries={placeEntries(place)} launchDisabled={creatingAgent || launchingAnotherAt !== undefined || unavailable} onLaunch={choice => { closeLauncher(); navigateToWorktree(place.id); void launchAnother({ key: placeItemKey(place.id), label: place.label, endpoint, worktreeId }, choice); }} />;
   // a directory-Project or Scratch row's control: Open while an Agent runs at its Place, else Launch
   const launcherPlaceSplit = (label: string, place: Place | undefined, resolution: LaunchResolution | undefined, endpoint: string, launch: (choice?: LaunchChoice) => void): ReactNode => {
     const running = place === undefined ? undefined : data.agents.find(agent => agentPlaceId(agent) === place.id);
     if (place !== undefined && running !== undefined) return openAgentSplit(place, running, resolution, endpoint);
-    return <LaunchSplitButton label={label} resolution={resolution} compact placeActionsOnly launchDisabled={creatingAgent} entries={placeEntries(place)} onLaunch={launch} />;
+    return <LaunchSplitButton label={label} resolution={resolution} compact placeActions alwaysShowMenu launchDisabled={creatingAgent} entries={placeEntries(place)} onLaunch={launch} />;
   };
   // render one worktree's launcher actions
   const launcherWorktreeControls = (worktree: Worktree, project: Project): ReactNode => {
@@ -8545,7 +8542,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     // open the existing agent instead of launching another one; its kinds launch another beside it
     if (openAgent !== undefined) action = openAgentSplit(worktree, openAgent, worktree.launch, `/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { worktreeId: worktree.id, unavailable: !worktree.available });
     // launch one inactive worktree
-    else action = <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact placeActionsOnly launchDisabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} entries={placeEntries(worktree)} onLaunch={choice => void launchWorktree(worktree, choice)} />;
+    else action = <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact placeActions alwaysShowMenu launchDisabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} entries={placeEntries(worktree)} onLaunch={choice => void launchWorktree(worktree, choice)} />;
     return <><PlaceShellsAndPin place={worktree} noun="worktree" onTogglePin={() => void togglePin(worktree)} /><button type="button" className="launcher-icon launcher-rename" disabled={creatingAgent} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => setRenameWorktreeId(worktree.id)}><LauncherRowIcon name="rename" /></button><button type="button" className="launcher-icon launcher-remove" disabled={creatingAgent || openAgent !== undefined || removeReason !== undefined} aria-label={`Remove ${worktree.label}`} title={openAgent === undefined ? removeReason ?? 'Remove worktree' : 'Turn off the agents here before removing this worktree'} onClick={() => setRemoveWorktreeId(worktree.id)}><LauncherRowIcon name="trash" /></button>{action}</>;
   };
   // the shell count and pin toggle a directory-Project or Scratch launcher row shows before its Launch
