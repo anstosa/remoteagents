@@ -5332,28 +5332,57 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
   </section>;
 }
 
+// windows already driven by a Terminal (an open panel or the Agent's own pane): one Size claim
+// per window, so a second pane of the same window is not pickable
+const claimedTerminalWindows = (panes: WorktreePane[], openIds: Set<string>) => {
+  const claimed = new Set<string>();
+  for (const pane of panes) if (pane.window !== undefined && (pane.agent || openIds.has(pane.paneId))) claimed.add(pane.window);
+  return claimed;
+};
+const pickableTerminalPane = (pane: WorktreePane, openIds: Set<string>, claimedWindows: Set<string>) =>
+  !pane.agent && !openIds.has(pane.paneId) && (pane.window === undefined || !claimedWindows.has(pane.window));
+
 // render the terminal icon button and worktree pane picker
 function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; terminals: WorktreeTerminals }) {
   const { open, panes, refreshPanes, openPane, endPane } = terminals;
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
   const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(menuOpen, { placement: 'above', align: 'start' });
-  const toggle = () => setMenuOpen(current => { const next = !current; if (next) void refreshPanes(); return next; });
   const openIds = new Set(open.map(terminal => terminal.paneId));
-  // windows already driven by a Terminal (an open panel or the Agent's own pane): one Size
-  // claim per window, so a second pane of the same window is not pickable
-  const claimedWindows = new Set<string>();
-  for (const pane of panes) if (pane.window !== undefined && (pane.agent || openIds.has(pane.paneId))) claimedWindows.add(pane.window);
+  const claimedWindows = claimedTerminalWindows(panes, openIds);
+  // returns the error when the shell could not be made
+  const createShell = async (): Promise<string | undefined> => {
+    const created = await createPlaceShell(worktreeId);
+    if (!('paneId' in created)) return created.error;
+    const { paneId } = created;
+    const list = await refreshPanes();
+    const shell = list?.find(pane => pane.paneId === paneId);
+    openPane(paneId, shell ? terminalPaneLabel(shell) : 'shell');
+    return undefined;
+  };
   const newShell = async () => {
     setBusy(true);
     try {
-      const created = await createPlaceShell(worktreeId);
-      if (!('paneId' in created)) return;
-      const { paneId } = created;
+      const failure = await createShell();
+      setError(failure);
+      if (failure === undefined) setMenuOpen(false);
+    } finally { setBusy(false); }
+  };
+  // with nothing to pick, the menu's only choice is a new shell, so make one without it; a
+  // failed listing or shell opens the menu instead
+  const toggle = async () => {
+    if (menuOpen) { setMenuOpen(false); return; }
+    if (busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
       const list = await refreshPanes();
-      const shell = list?.find(pane => pane.paneId === paneId);
-      openPane(paneId, shell ? terminalPaneLabel(shell) : 'shell');
-      setMenuOpen(false);
+      if (list === undefined) { setMenuOpen(true); return; }
+      const listedClaims = claimedTerminalWindows(list, openIds);
+      if (list.some(pane => pickableTerminalPane(pane, openIds, listedClaims))) { setMenuOpen(true); return; }
+      const failure = await createShell();
+      if (failure !== undefined) { setError(failure); setMenuOpen(true); }
     } finally { setBusy(false); }
   };
   // reuse the header's managed-shell deletion and busy confirmation
@@ -5372,15 +5401,16 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
   const minimizedDescription = minimizedCount > 0 ? `${minimizedCount} minimized shell${minimizedCount === 1 ? '' : 's'}` : undefined;
   const paneRow = (pane: WorktreePane, showEnd: boolean) => {
     const claimed = pane.window !== undefined && claimedWindows.has(pane.window) && !openIds.has(pane.paneId);
-    const disabled = pane.agent || openIds.has(pane.paneId) || claimed;
+    const disabled = !pickableTerminalPane(pane, openIds, claimedWindows);
     const reason = pane.agent ? 'The agent’s own pane' : openIds.has(pane.paneId) ? 'Already open' : claimed ? 'Another terminal already uses this window' : `${pane.session}${pane.sessionName ? ` (${pane.sessionName})` : ''} · ${pane.paneId}`;
     return <div className="terminal-picker-row" key={pane.paneId}>
       <button type="button" role="menuitem" className="terminal-picker-pane" disabled={disabled} title={reason} onClick={() => choose(pane)}><span className="terminal-picker-label">{terminalPaneLabel(pane)}</span><span className="terminal-picker-id" aria-hidden="true">{pane.paneId}</span></button>
       {showEnd && <button type="button" className="terminal-picker-end" aria-label={`End ${terminalPaneLabel(pane)}`} title="End this shell" disabled={busy} onClick={() => void endShell(pane)}><LauncherRowIcon name="trash" /></button>}
     </div>;
   };
-  return <><span className="terminal-picker-wrap" ref={anchorRef}><button type="button" className={`terminal-picker-toggle toolbar-button${open.length > 0 ? ' panel-open' : ''}`} aria-haspopup="menu" data-context-flyout aria-expanded={menuOpen} aria-label="Open a terminal" aria-description={minimizedDescription} title="Open a terminal" onClick={toggle}><span className="flyout-caret" aria-hidden="true" /><LauncherRowIcon name="terminal" /><span className="toolbar-label">Terminal</span>{minimizedCount > 0 && <span className="saved-prompts-count terminal-minimized-count" aria-hidden="true">{minimizedCount}</span>}</button></span>
+  return <><span className="terminal-picker-wrap" ref={anchorRef}><button type="button" className={`terminal-picker-toggle toolbar-button${open.length > 0 ? ' panel-open' : ''}`} aria-haspopup="menu" data-context-flyout aria-expanded={menuOpen} aria-busy={busy && !menuOpen} aria-label="Open a terminal" aria-description={minimizedDescription} title="Open a terminal" onClick={() => void toggle()}><span className="flyout-caret" aria-hidden="true" /><LauncherRowIcon name="terminal" /><span className="toolbar-label">Terminal</span>{minimizedCount > 0 && <span className="saved-prompts-count terminal-minimized-count" aria-hidden="true">{minimizedCount}</span>}</button></span>
     {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="terminal-picker flyout-menu" ref={flyoutRef} style={style} role="menu" aria-label="Open a terminal">
+      {error !== undefined && <div className="terminal-picker-empty" role="alert">{error}</div>}
       {panes.length === 0 && <div className="terminal-picker-empty">No panes yet</div>}
       {sessionPanes.length > 0 && <><div className="terminal-picker-heading">Session panes</div>{sessionPanes.map(pane => paneRow(pane, false))}</>}
       {hiddenShells.length > 0 && <><div className="terminal-picker-heading">Console shells</div>{hiddenShells.map(pane => paneRow(pane, true))}</>}

@@ -30,6 +30,7 @@ const dashboard = {
 async function mount(page: Page) {
   const launches: string[] = [];
   const pins: unknown[] = [];
+  const shells: string[] = [];
   await page.route('**/api/**', async route => {
     const request = route.request();
     const path = decodeURIComponent(new URL(request.url()).pathname);
@@ -37,6 +38,8 @@ async function mount(page: Page) {
     if (path === '/api/dashboard') return route.fulfill({ json: dashboard });
     if (path === '/api/push/public-key') return route.fulfill({ json: {} });
     if (path === `/api/worktrees/${cora}/panes`) return route.fulfill({ json: { panes: [{ paneId: '%9', session: '$9', window: '@9', role: 'shell', command: 'zsh', path: '/repo/wts/cora', title: 'zsh', agent: false }] } });
+    if (path === `/api/worktrees/${idle}/shells` && request.method() === 'POST') { shells.push(path); return route.fulfill({ json: { paneId: '%12' } }); }
+    if (path === `/api/worktrees/${idle}/panes` && shells.length > 0) return route.fulfill({ json: { panes: [{ paneId: '%12', session: '$12', window: '@12', role: 'shell', command: 'zsh', path: '/repo/wts/idle', title: 'zsh', agent: false }] } });
     if (path.endsWith('/panes')) return route.fulfill({ json: { panes: [] } });
     if (path === `/api/worktrees/${cora}/notes`) return route.fulfill({ json: { notes: [{ id: 'note-1', title: 'Plan', text: 'The plan' }] } });
     if (path.endsWith('/notes')) return route.fulfill({ json: { notes: [] } });
@@ -47,7 +50,7 @@ async function mount(page: Page) {
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
   await page.goto('/');
-  return { launches: () => launches, pins: () => pins };
+  return { launches: () => launches, pins: () => pins, shells: () => shells };
 }
 
 const toolbar = (page: Page) => page.getByRole('region', { name: 'Workspace toolbar' });
@@ -160,6 +163,16 @@ test('panel buttons tint while their panel is open', async ({ page }) => {
   await expect(page.locator('.code-pane')).toBeVisible();
   await toolbar(page).getByRole('button', { name: 'Code', exact: true }).click();
   await expect(page.locator('.code-pane')).toHaveCount(0);
+});
+
+test('Terminal opens a new shell at once when there is nothing to pick', async ({ page }) => {
+  const harness = await mount(page);
+  await page.getByRole('tab', { name: /^Idle/u }).click();
+  const terminal = toolbar(page).getByRole('button', { name: 'Open a terminal' });
+  await terminal.click();
+  await expect.poll(harness.shells).toHaveLength(1);
+  await expect(terminal).toHaveClass(/\bpanel-open\b/u);
+  await expect(page.getByRole('menu', { name: 'Open a terminal' })).toHaveCount(0);
 });
 
 test('the toolbar fits a 1440px desktop on one row', async ({ page }) => {
