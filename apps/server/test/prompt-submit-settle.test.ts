@@ -1,9 +1,11 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PromptService } from '../src/prompts/service.js';
 import { QueuedPromptService } from '../src/prompts/queue.js';
+import { PromptHistoryService } from '../src/prompt-history/service.js';
+import { codexAdapter } from '../src/adapters/codex.js';
 import { stated } from './helpers/agent.js';
 
 const socket = { fingerprint: 'socket', path: '/tmp/sock', device: 1, inode: 1 };
@@ -21,6 +23,116 @@ const composerRow = (text: string) => `${composerBackground}${text}${resetBackgr
 // before pressing the submit key, and holds the scope so a quick second submit
 // queues behind the first instead of double-pasting during the settle.
 describe('interactive submit settle', () => {
+  // trust fresh structured receipts through hidden composers and stale redraws
+  it.each([['hidden', false], ['stale', false], ['stale', true]] as const)('records an accepted prompt with a %s composer and delayed receipt=%s instead of recovering it to Notes', async (redraw, delayed) => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-submit-receipt-'));
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const history = new PromptHistoryService(join(directory, 'history.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/tmp/release', title: 'Ready' });
+    const scope = `agent:${agent.id}`;
+    const prompt = 'yes, fix it';
+    const baseline = { rollout: join(directory, 'rollout.jsonl'), ordinal: 7 };
+    const sent: string[][] = [];
+    const drained: string[] = [];
+    let submitted = false;
+    let postSubmitCaptures = 0;
+    // publish one exact durable user receipt
+    const recordReceipt = async () => writeFile(baseline.rollout, `${JSON.stringify({ type: 'response_item', ordinal: 8, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] } })}\n`);
+    // expose the exact pane for the pre-submit baseline
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }), paneProcessId: () => 123 };
+    const tmux = {
+      // accept the original paste
+      pastePrompt: async () => true,
+      // hide the live composer or retain its last frame after real acceptance
+      capture: async () => {
+        // make a delayed receipt available before the first retry boundary
+        if (submitted && delayed && ++postSubmitCaptures === 3) await recordReceipt();
+        return submitted && redraw === 'hidden' ? `› ${prompt}\n\n• Working` : `› ${prompt} `;
+      },
+      // mark the receipt only after the submit key
+      sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => {
+        sent.push(keys);
+        submitted = true;
+        // allow the initial receipt check to precede the durable log write
+        if (!delayed) await recordReceipt();
+        return true;
+      }
+    };
+    const adapter = { ...codexAdapter, completion: {
+      ...codexAdapter.completion,
+      // capture before delivering this turn
+      baseline: async () => baseline,
+      // finish the submitted turn without waiting for terminal chrome
+      since: async () => ({ kind: 'completed', ordinal: 10, answer: 'Fixed.' })
+    } };
+    // record accidental recovery of already-sent work
+    const drain = async (_scope: string, queued: { text: string }) => { drained.push(queued.text); return true; };
+    const service = new PromptService(discovery as never, tmux as never, history, queue, drain as never, () => adapter as never);
+    // release each independent durable store
+    try {
+      await expect(service.submit(agent.id, prompt)).resolves.toBe(true);
+      expect(sent).toEqual([['Enter']]);
+      await expect(history.list(scope)).resolves.toMatchObject([{ text: prompt }]);
+      await expect(service.listQueued(agent.id)).resolves.toEqual([]);
+      await service.observe(agent);
+      expect(drained).toEqual([]);
+      await expect(history.list(scope)).resolves.toMatchObject([{ text: prompt, answer: 'Fixed.' }]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  // preserve durable recovery when no fresh exact receipt exists
+  it.each(['missing', 'unreadable', 'unresolved'])('does not record a prompt with %s structured acknowledgement and no cleared composer', async receipt => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-submit-no-receipt-'));
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const history = new PromptHistoryService(join(directory, 'history.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/tmp/release', title: 'Ready' });
+    const scope = `agent:${agent.id}`;
+    const prompt = 'yes, fix it';
+    let submitted = false;
+    let receiptQueries = 0;
+    const sent: string[][] = [];
+    // expose a stable pane but no accepted user record
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }), paneProcessId: () => 123 };
+    const tmux = {
+      // preserve a durable paste
+      pastePrompt: async () => true,
+      // model an inconclusive redraw without a receipt
+      capture: async () => submitted ? `› ${prompt}\n\n• Working` : `› ${prompt} `,
+      // never acknowledge through tmux delivery alone
+      sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
+    };
+    const adapter = { ...codexAdapter, completion: {
+      // snapshot earlier conversation state
+      baseline: async () => receipt === 'unresolved' ? undefined : { rollout: join(directory, 'rollout.jsonl'), ordinal: 7 },
+      // no exact new user record was written
+      accepted: async () => {
+        receiptQueries += 1;
+        // retain durable input when the log cannot be read
+        if (receipt === 'unreadable') throw new Error('receipt unavailable');
+        return false;
+      },
+      // unrelated completion cannot acknowledge this prompt
+      since: async () => ({ kind: 'completed', ordinal: 10, answer: 'An earlier task finished.' })
+    } };
+    const service = new PromptService(discovery as never, tmux as never, history, queue, undefined, () => adapter as never);
+    // release each independent durable store
+    try {
+      await expect(service.submit(agent.id, prompt)).resolves.toBe(true);
+      expect(sent).toEqual([['Enter']]);
+      // avoid rollout reads without an exact baseline
+      if (receipt === 'unresolved') expect(receiptQueries).toBe(0);
+      else {
+        // retain the read budget without pinning polling cadence
+        expect(receiptQueries).toBeGreaterThan(0);
+        expect(receiptQueries).toBeLessThanOrEqual(4);
+      }
+      await expect(history.list(scope)).resolves.toEqual([]);
+      await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: prompt }]);
+      await service.observe(agent);
+      await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: prompt }]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it('waits for the pasted prompt to render in the composer before submitting', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-submit-settle-'));
     const queue = new QueuedPromptService(join(directory, 'queue.json'));

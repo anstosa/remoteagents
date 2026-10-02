@@ -488,7 +488,7 @@ export class PromptService {
     const resetBefore = paneSnapshot(submitTarget.agent);
     let submitted = await this.tmux.sendKeys(submitTarget.socket, submitTarget.agent.paneId, keys);
     // require adapter acknowledgement before consuming durable queue state
-    if (submitted && settle) submitted = await this.waitForSubmissionAccepted(submitTarget, composed.text, observeDraft, keys);
+    if (submitted && settle) submitted = await this.waitForSubmissionAccepted(submitTarget, composed.text, observeDraft, keys, adapter.completion, rolloutBaseline, attachmentPrompt);
     // confirm the server-owned prompt left the composer
     if (submitted && submission === 'confirmed-enter') submitted = await this.waitForUpdateAdvisorStart(agentId, submitTarget, attachmentPrompt);
     if (!submitted) {
@@ -608,14 +608,18 @@ export class PromptService {
     return false;
   }
 
-  // confirm that the Adapter no longer sees the server-owned draft
-  private async waitForSubmissionAccepted(target: DiscoveredTarget, prompt: string, observeDraft: (capture: string, prompt: string) => SubmissionDraftState, keys: readonly TmuxKey[]): Promise<boolean> {
+  // acknowledge a cleared composer or fresh exact structured receipt
+  private async waitForSubmissionAccepted(target: DiscoveredTarget, prompt: string, observeDraft: (capture: string, prompt: string) => SubmissionDraftState, keys: readonly TmuxKey[], completion?: Adapter['completion'], baseline?: CompletionBaseline, receiptPrompt = prompt): Promise<boolean> {
     // poll through transient redraws and retry only while the server-owned draft remains visible
     for (let attempt = 0; attempt < submissionAcceptAttempts; attempt += 1) {
       const captured = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
       const draft = captured === undefined ? undefined : observeDraft(captured, prompt);
       // only a structurally cleared composer acknowledges acceptance
       if (draft === 'cleared') return true;
+      // bound rollout reads while checking before retries and final recovery
+      const checkReceipt = attempt === 0 || submissionRetryAttempts.has(attempt) || attempt === submissionAcceptAttempts - 1;
+      // preserve original whitespace when checking hidden or stale composer frames
+      if (checkReceipt && baseline !== undefined && completion?.accepted !== undefined && await completion.accepted(baseline, receiptPrompt).catch(() => false)) return true;
       // recover submit keys swallowed while the previous turn finishes
       if (submissionRetryAttempts.has(attempt) && draft === 'visible') {
         // stop when tmux itself rejects the retry

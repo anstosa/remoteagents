@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { codexDraftState, failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
 import { parseChoiceQuestion } from './codex-questions.js';
-import { codexConversationName, codexConversationSummaries, codexHome, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
+import { codexConversationName, codexConversationSummaries, codexHome, codexPromptAccepted, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
 import type { Adapter, AttentionState, PromptCommand } from './types.js';
 
 // The new-conversation reset lives in its own module; both the Codex and OMX Adapters
@@ -142,5 +142,7 @@ export const codexConversations: NonNullable<Adapter['conversations']> = {
 
 export const codexCompletion: NonNullable<Adapter['completion']> = {
   baseline: (pane, resetAt, followReset) => codexRolloutBaseline(pane, resetAt, followReset),
+  // confirm durable prompt receipt
+  accepted: (baseline, prompt) => codexPromptAccepted(baseline, prompt),
   since: (baseline) => codexTurnSince(baseline),
 };

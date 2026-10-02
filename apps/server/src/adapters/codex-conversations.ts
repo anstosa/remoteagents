@@ -2,6 +2,7 @@ import { open, readFile, readdir, readlink, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readFileTail } from './bounded-file.js';
+import { queueReadyPrompt } from './codex-turns.js';
 import type { CompletionBaseline, CompletionEvent, Conversation, ConversationSummary } from './types.js';
 
 /**
@@ -419,19 +420,47 @@ export function maxOrdinalFromRecords(lines: Iterable<string>): number | undefin
   return max;
 }
 
+// compare one exact submitted prompt with durable user-message receipts
+export function promptAcceptedFromRecords(lines: Iterable<string>, sinceOrdinal: number, prompt: string): boolean {
+  const transported = queueReadyPrompt(prompt);
+  // inspect each bounded rollout record
+  for (const line of lines) {
+    let parsed: unknown;
+    // reject unparseable or truncated records
+    try { parsed = JSON.parse(line) as unknown; } catch { continue; }
+    // reject non-record json values
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    const record = parsed as { type?: unknown; ordinal?: unknown; payload?: unknown };
+    // require a response recorded after the pre-send baseline
+    if (record.type !== 'response_item' || typeof record.ordinal !== 'number' || !Number.isFinite(record.ordinal) || record.ordinal <= sinceOrdinal) continue;
+    // require one record payload
+    if (record.payload === null || typeof record.payload !== 'object') continue;
+    const payload = record.payload as { type?: unknown; role?: unknown; content?: unknown };
+    // require one structured user message
+    if (payload.type !== 'message' || payload.role !== 'user' || !Array.isArray(payload.content) || payload.content.length !== 1) continue;
+    const [content] = payload.content;
+    // reject tool, instruction, and malformed content
+    if (content === null || typeof content !== 'object') continue;
+    const input = content as { type?: unknown; text?: unknown };
+    // require one text input
+    if (input.type !== 'input_text' || typeof input.text !== 'string') continue;
+    // accept exact text or the known transport suffix
+    if (input.text === prompt || input.text === transported) return true;
+  }
+  return false;
+}
+
 // read one rollout's current ordinal without leaking filesystem failures
 async function rolloutOrdinal(file: string): Promise<number | undefined> {
   const lines = await readFileTail(file, maxCompletionScanBytes).catch(() => undefined);
   return lines === undefined ? undefined : maxOrdinalFromRecords(lines);
 }
 
-// the newest terminal turn recorded past the baseline's ordinal. A resolved
-// baseline reads the exact file it pinned, so it never drifts to a sibling pane's
-// rollout mid-turn; a deferred baseline resolves the post-reset thread first (the
-// newest cwd-matching rollout created after the reset), staying `pending` until it
-// appears.
-export async function codexTurnSince(baseline: CompletionBaseline): Promise<CompletionEvent | undefined> {
-  let rollout: string;
+// share receipt and completion rollout resolution
+type BaselineRollout = { kind: 'pending' } | { kind: 'resolved'; file: string };
+
+// resolve the rollout named by one completion baseline
+async function rolloutForBaseline(baseline: CompletionBaseline): Promise<BaselineRollout> {
   // a resolved external-reset baseline follows its exact pane once
   if ('rollout' in baseline) {
     const resetPane = baseline.resetPane;
@@ -442,15 +471,33 @@ export async function codexTurnSince(baseline: CompletionBaseline): Promise<Comp
       baseline.ordinal = 0;
       delete baseline.resetPane;
     }
-    rollout = baseline.rollout;
-  } else {
-    const resolved = await rolloutByCwd(baseline.cwd, baseline.resetAt).catch(() => undefined);
-    // Codex opens the new thread's rollout only at its first turn; keep polling
-    if (resolved === undefined) return { kind: 'pending' };
-    rollout = resolved.file;
+    return { kind: 'resolved', file: baseline.rollout };
   }
-  const lines = await readFileTail(rollout, maxCompletionScanBytes).catch(() => undefined);
+  const resolved = await rolloutByCwd(baseline.cwd, baseline.resetAt).catch(() => undefined);
+  // Codex opens the new thread's rollout only at its first turn
+  return resolved === undefined ? { kind: 'pending' } : { kind: 'resolved', file: resolved.file };
+}
+
+// the newest terminal turn recorded past the baseline's ordinal. A resolved
+// baseline reads the exact file it pinned, so it never drifts to a sibling pane's
+// rollout mid-turn; a deferred baseline resolves the post-reset thread first (the
+// newest cwd-matching rollout created after the reset), staying `pending` until it
+// appears.
+export async function codexTurnSince(baseline: CompletionBaseline): Promise<CompletionEvent | undefined> {
+  const rollout = await rolloutForBaseline(baseline);
+  // keep polling until a deferred rollout appears
+  if (rollout.kind === 'pending') return { kind: 'pending' };
+  const lines = await readFileTail(rollout.file, maxCompletionScanBytes).catch(() => undefined);
   return lines === undefined ? undefined : completionFromRecords(lines, baseline.ordinal);
+}
+
+// confirm Codex durably recorded the submitted prompt after its baseline
+export async function codexPromptAccepted(baseline: CompletionBaseline, prompt: string): Promise<boolean> {
+  const rollout = await rolloutForBaseline(baseline);
+  // a deferred rollout cannot contain a receipt until it exists
+  if (rollout.kind === 'pending') return false;
+  const lines = await readFileTail(rollout.file, maxCompletionScanBytes).catch(() => undefined);
+  return lines === undefined ? false : promptAcceptedFromRecords(lines, baseline.ordinal, prompt);
 }
 
 // resolve the pane's rollout and snapshot its current max ordinal before a turn

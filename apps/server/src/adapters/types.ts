@@ -280,6 +280,8 @@ export interface Adapter {
    */
   readonly completion?: {
     baseline(pane: { pid: number; cwd?: string }, resetAt?: number, followReset?: boolean): Promise<CompletionBaseline | undefined>;
+    /** confirm the exact prompt was durably recorded after its pre-send baseline */
+    accepted?(baseline: CompletionBaseline, prompt: string): Promise<boolean>;
     since(baseline: CompletionBaseline): Promise<CompletionEvent | undefined>;
   };
   /**

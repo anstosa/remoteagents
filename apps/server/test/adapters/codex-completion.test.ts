@@ -1,8 +1,8 @@
-import { mkdir, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { codexRolloutBaseline, codexTurnSince, completionFromRecords, maxOrdinalFromRecords } from '../../src/adapters/codex-conversations.js';
+import { codexPromptAccepted, codexRolloutBaseline, codexTurnSince, completionFromRecords, maxOrdinalFromRecords, promptAcceptedFromRecords } from '../../src/adapters/codex-conversations.js';
 import { codexHome, fakeProc, tempDir } from '../helpers/codex-fixtures.js';
 
 type Record = { type: string; ordinal: number; payload: unknown };
@@ -31,6 +31,13 @@ async function writeRollout(home: string, id: string, records: Record[], cwd = '
 }
 
 const lines = (records: Record[]): string[] => records.map(record => JSON.stringify(record));
+
+// build one durable Codex user-prompt receipt
+const promptRecord = (ordinal: number, prompt: string): Record => ({
+  type: 'response_item',
+  ordinal,
+  payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] }
+});
 
 describe('Codex rollout completion', () => {
   it('reads a completed turn and its answer from the task_complete event', () => {
@@ -74,6 +81,48 @@ describe('Codex rollout completion', () => {
     expect(maxOrdinalFromRecords([])).toBeUndefined();
   });
 
+  // preserve prompt bytes except documented transport padding
+  it('accepts exact prompt text and the known trailing transport space', () => {
+    expect(promptAcceptedFromRecords(lines([promptRecord(5, 'yes, fix it')]), 4, 'yes, fix it')).toBe(true);
+    expect(promptAcceptedFromRecords(lines([promptRecord(5, 'yes, fix it ')]), 4, 'yes, fix it')).toBe(true);
+  });
+
+  // distinguish meaningful whitespace changes
+  it('rejects differences in internal spaces, newlines, and indentation', () => {
+    expect(promptAcceptedFromRecords(lines([promptRecord(5, 'yes,  fix it')]), 4, 'yes, fix it')).toBe(false);
+    expect(promptAcceptedFromRecords(lines([promptRecord(5, 'yes,\nfix it')]), 4, 'yes, fix it')).toBe(false);
+    expect(promptAcceptedFromRecords(lines([promptRecord(5, 'line one\n code')]), 4, 'line one\n  code')).toBe(false);
+  });
+
+  // preserve authored trailing whitespace
+  it('rejects deletion of user-authored trailing whitespace', () => {
+    expect(promptAcceptedFromRecords(lines([promptRecord(5, 'yes, fix it')]), 4, 'yes, fix it ')).toBe(false);
+    expect(promptAcceptedFromRecords(lines([promptRecord(5, 'yes, fix it')]), 4, 'yes, fix it\n')).toBe(false);
+  });
+
+  // exclude old and unrelated receipts
+  it('rejects prompt receipts at the baseline or with different text', () => {
+    const records = [promptRecord(4, 'yes, fix it'), promptRecord(5, 'no, leave it')];
+    expect(promptAcceptedFromRecords(lines(records), 4, 'yes, fix it')).toBe(false);
+  });
+
+  // accept only one user text record
+  it('rejects assistant, tool, instruction, and mixed-content records', () => {
+    const records: Record[] = [
+      { type: 'response_item', ordinal: 5, payload: { type: 'message', role: 'assistant', content: [{ type: 'input_text', text: 'yes, fix it' }] } },
+      { type: 'response_item', ordinal: 6, payload: { type: 'function_call', role: 'user', content: [{ type: 'input_text', text: 'yes, fix it' }] } },
+      { type: 'response_item', ordinal: 7, payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'yes, fix it' }] } },
+      { type: 'response_item', ordinal: 8, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'yes, fix it' }, { type: 'tool_result', text: 'extra' }] } }
+    ];
+    expect(promptAcceptedFromRecords(lines(records), 4, 'yes, fix it')).toBe(false);
+  });
+
+  // fail closed on invalid rollout records
+  it('rejects malformed and truncated prompt records', () => {
+    const malformed = JSON.stringify({ type: 'response_item', ordinal: 5, payload: { type: 'message', role: 'user', content: [{ type: 'input_text' }] } });
+    expect(promptAcceptedFromRecords(['null', '[]', '7', '"text"', malformed, '{"type":"response_item","ordinal":6'], 4, 'yes, fix it')).toBe(false);
+  });
+
   it('resolves the pane rollout by fd-walk and reads its baseline and newest completion', async () => {
     const home = await codexHome();
     const id = '0198d100-0000-7000-8000-000000000001';
@@ -85,6 +134,27 @@ describe('Codex rollout completion', () => {
     await expect(codexRolloutBaseline({ pid: 321 })).resolves.toEqual({ rollout: file, ordinal: 4 });
     await expect(codexTurnSince({ rollout: file, ordinal: 0 })).resolves.toEqual({ kind: 'completed', ordinal: 4, answer: 'Reader added.' });
     await expect(codexTurnSince({ rollout: file, ordinal: 4 })).resolves.toEqual({ kind: 'pending' });
+  });
+
+  // acknowledge only fresh input in the original rollout
+  it('reads prompt acceptance from the pinned pre-send rollout baseline', async () => {
+    const home = await codexHome();
+    const cwd = '/home/ubuntu/cora';
+    const file = await writeRollout(home, '0198d100-0000-7000-8000-000000000011', turnRecords(1, 'old', 'Earlier', 'Earlier answer.'), cwd);
+    process.env.CODEX_HOME = home;
+    process.env.RAC_HOST_PROC = await fakeProc(321, [file]);
+    const baseline = await codexRolloutBaseline({ pid: 321, cwd });
+    expect(baseline).toEqual({ rollout: file, ordinal: 4 });
+
+    await appendFile(file, `${JSON.stringify(promptRecord(5, 'yes, fix it'))}\n`);
+    await expect(codexPromptAccepted(baseline!, 'yes, fix it')).resolves.toBe(true);
+    await expect(codexPromptAccepted({ rollout: file, ordinal: 5 }, 'yes, fix it')).resolves.toBe(false);
+  });
+
+  // retain recovery without readable receipt evidence
+  it('returns false when the pinned rollout cannot be read', async () => {
+    const missing = join(tmpdir(), `rac-missing-rollout-${Date.now()}.jsonl`);
+    await expect(codexPromptAccepted({ rollout: missing, ordinal: 0 }, 'yes, fix it')).resolves.toBe(false);
   });
 
   it('falls back to the working-directory match when the fd-walk is blocked', async () => {
@@ -150,6 +220,21 @@ describe('Codex rollout completion', () => {
     await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'completed', ordinal: 4, answer: 'Fresh answer.' });
   });
 
+  // follow the fresh post-reset conversation
+  it('finds a prompt receipt when a deferred reset rollout appears', async () => {
+    const home = await codexHome();
+    const cwd = '/home/ubuntu/cora';
+    const resetAt = Date.parse('2026-08-30T15:30:00.000Z');
+    process.env.CODEX_HOME = home;
+    process.env.RAC_HOST_PROC = await fakeProc(321, []);
+    const baseline = await codexRolloutBaseline({ pid: 321, cwd }, resetAt);
+    expect(baseline).toEqual({ cwd, resetAt, ordinal: 0 });
+    await expect(codexPromptAccepted(baseline!, 'yes, fix it')).resolves.toBe(false);
+
+    await writeRollout(home, '0198d100-0000-7000-8000-0000000000a4', [promptRecord(1, 'yes, fix it')], cwd, '2026-08-30T16:00:00.000Z');
+    await expect(codexPromptAccepted(baseline!, 'yes, fix it')).resolves.toBe(true);
+  });
+
   it('pins an already-open post-reset rollout after an external first turn', async () => {
     const home = await codexHome();
     const cwd = '/home/ubuntu/cora';
@@ -205,6 +290,21 @@ describe('Codex rollout completion', () => {
     const replacementFile = await writeRollout(home, '0198d100-0000-7000-8000-0000000000e2', turnRecords(1, 'new', 'After', 'Wrong answer.'), cwd, '2026-08-30T16:00:00.000Z');
     process.env.RAC_HOST_PROC = await fakeProc(321, [replacementFile]);
     await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'pending' });
+    expect(baseline).toEqual({ rollout: pinnedFile, ordinal: 4 });
+  });
+
+  // isolate receipts from sibling conversations
+  it('does not accept a matching receipt from a sibling rollout', async () => {
+    const home = await codexHome();
+    const cwd = '/home/ubuntu/cora';
+    const pinnedFile = await writeRollout(home, '0198d100-0000-7000-8000-0000000000e3', turnRecords(1, 'old', 'Earlier', 'Earlier answer.'), cwd, '2026-08-30T14:00:00.000Z');
+    process.env.CODEX_HOME = home;
+    process.env.RAC_HOST_PROC = await fakeProc(321, [pinnedFile]);
+    const baseline = await codexRolloutBaseline({ pid: 321, cwd });
+
+    const siblingFile = await writeRollout(home, '0198d100-0000-7000-8000-0000000000e4', [promptRecord(1, 'yes, fix it')], cwd, '2026-08-30T16:00:00.000Z');
+    process.env.RAC_HOST_PROC = await fakeProc(321, [siblingFile]);
+    await expect(codexPromptAccepted(baseline!, 'yes, fix it')).resolves.toBe(false);
     expect(baseline).toEqual({ rollout: pinnedFile, ordinal: 4 });
   });
 
