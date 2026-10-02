@@ -373,7 +373,9 @@ within a tick — no config edit or restart.
   cannot sit beside `start`, `stop`, `restart`, or `status`; `build`,
   `migrate`, and `setup` stay available beside them. There is no separate
   working-directory setting: to run from a subdirectory, write
-  `{ "dev": "cd web && pnpm dev" }`.
+  `{ "dev": "cd web && pnpm dev" }`. [Writing a stack helper](stack-helpers.md)
+  sets out what these commands are given and what the console expects of them,
+  for a program that runs a stack on the console's behalf.
 - Preview configuration selects one of two mutually exclusive modes. `port` +
   `hostname` (both or neither) provide `https://<hostname>` proxied to
   `127.0.0.1:<port>`. Alternatively, `externalUrl` names an existing canonical
