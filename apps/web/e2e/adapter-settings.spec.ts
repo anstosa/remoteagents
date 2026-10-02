@@ -378,6 +378,7 @@ test('polls queued Codex and OMX updates through completion', async ({ page }) =
   await page.clock.install();
   const posts: Record<string, number> = { codex: 0, omx: 0 };
   const polls: Record<string, number> = { codex: 0, omx: 0 };
+  const starts: Record<string, { contentType?: string; body: string | null }> = {};
   const complete = new Set<string>();
   await page.route('**/api/agents/**', async route => {
     const request = route.request();
@@ -387,7 +388,12 @@ test('polls queued Codex and OMX updates through completion', async ({ page }) =
     if (start !== null && request.method() === 'POST') {
       const kind = start[1]!;
       posts[kind] = (posts[kind] ?? 0) + 1;
-      expect(request.headers().prefer).toBe('respond-async');
+      const headers = await request.allHeaders();
+      const body = request.postData();
+      starts[kind] = { contentType: headers['content-type'], body };
+      expect(headers.prefer).toBe('respond-async');
+      // model the server's json media-type gate
+      if (headers['content-type'] !== 'application/json' || body !== '{}') return route.fulfill({ status: 415, json: { error: 'Unsupported Media Type: application/json required' } });
       return route.fulfill({ status: 202, json: { update: { id: `update-${kind}`, kind, state: 'running' } } });
     }
     const poll = /^\/api\/agents\/(codex|omx)\/update\/([^/]+)$/u.exec(url.pathname);
@@ -406,6 +412,8 @@ test('polls queued Codex and OMX updates through completion', async ({ page }) =
   const codexUpdate = menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' });
   const omxUpdate = menu.getByRole('menuitem', { name: 'Update OMX to 0.22.0' });
   await codexUpdate.click();
+  await expect.poll(() => starts.codex).toMatchObject({ contentType: 'application/json', body: '{}' });
+  await expect(menu.getByRole('alert')).toHaveCount(0);
   await expect.poll(() => polls.codex).toBeGreaterThan(0);
   await expect(codexUpdate).toContainText('Updating…');
   await expect(codexUpdate).toBeDisabled();
@@ -422,6 +430,7 @@ test('polls queued Codex and OMX updates through completion', async ({ page }) =
   await expect(codexUpdate).toHaveCount(0);
 
   await omxUpdate.click();
+  await expect.poll(() => starts.omx).toMatchObject({ contentType: 'application/json', body: '{}' });
   await expect.poll(() => polls.omx).toBeGreaterThan(0);
   await expect(omxUpdate).toContainText('Updating…');
   expect(posts.omx).toBe(1);
@@ -429,6 +438,7 @@ test('polls queued Codex and OMX updates through completion', async ({ page }) =
   await page.clock.runFor(1_001);
   await expect(menu.getByRole('group', { name: 'OMX agent' }).getByText('v0.22.0', { exact: true })).toBeVisible();
   await expect(omxUpdate).toHaveCount(0);
+  await expect(menu.getByRole('alert')).toHaveCount(0);
   expect(posts).toEqual({ codex: 1, omx: 1 });
 });
 

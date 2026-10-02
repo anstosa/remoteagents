@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { AgentUpdateService, type AgentUpdateJob, type AgentUpdateServiceLike } from '../src/agent-updates/service.js';
@@ -50,6 +51,34 @@ describe('agent update API', () => {
     const headers = await authenticatedHeaders(app);
     const unknown = await app.inject({ method: 'POST', url: '/api/agents/not-real/update', headers });
     expect(unknown.statusCode).toBe(404);
+    expect(update).not.toHaveBeenCalled();
+  }, 15_000);
+
+  // carry an explicit media type through chunked tunnel requests
+  it('accepts JSON update starts with chunked proxy framing', async () => {
+    const job: AgentUpdateJob = { id: 'chunked-update', kind: 'codex', state: 'running' };
+    const startUpdate = vi.fn<AgentUpdateServiceLike['startUpdate']>(() => ({ outcome: 'started', job }));
+    const update = vi.fn<AgentUpdateServiceLike['update']>(async () => ({ outcome: 'unavailable' }));
+    app = await buildApp(testConfig(), { auth: await testAuthService(), agentUpdates: { statuses: async () => [], update, startUpdate, updateStatus: () => undefined } });
+    const framing: Array<{ transferEncoding?: string; contentLength?: string }> = [];
+    // inspect the actual request framing before body parsing
+    app.addHook('onRequest', async request => {
+      // leave authentication traffic out of the update fixture
+      if (request.url !== '/api/agents/codex/update') return;
+      framing.push({ transferEncoding: request.headers['transfer-encoding'], contentLength: request.headers['content-length'] });
+    });
+    const headers = { ...await authenticatedHeaders(app), prefer: 'respond-async', 'transfer-encoding': 'chunked' };
+
+    const bodyless = await app.inject({ method: 'POST', url: '/api/agents/codex/update', headers });
+    expect(bodyless.statusCode).toBe(415);
+    expect(startUpdate).not.toHaveBeenCalled();
+
+    // preserve chunked framing without a synthetic content-length header
+    const started = await app.inject({ method: 'POST', url: '/api/agents/codex/update', headers: { ...headers, 'content-type': 'application/json' }, payload: Readable.from(['{}']) });
+    expect(framing).toEqual([{ transferEncoding: 'chunked', contentLength: undefined }, { transferEncoding: 'chunked', contentLength: undefined }]);
+    expect(started.statusCode).toBe(202);
+    expect(started.json()).toEqual({ update: job });
+    expect(startUpdate).toHaveBeenCalledExactlyOnceWith('codex');
     expect(update).not.toHaveBeenCalled();
   }, 15_000);
 

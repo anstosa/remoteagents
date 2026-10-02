@@ -8675,7 +8675,8 @@ function App() {
   const updateAgent = useCallback(async (kind: AgentKind): Promise<{ agent?: AgentUpdateStatus; error?: string }> => {
     const path = `/api/agents/${encodeURIComponent(kind)}/update`;
     const unknownStatus = 'Update status is unavailable. The update may still be running; check installed versions before retrying.';
-    const response = await request(path, { method: 'POST', headers: { Prefer: 'respond-async' }, signal: AbortSignal.timeout(10_000) }, false);
+    // declare a json payload so chunked tunnel framing cannot reject an empty post
+    const response = await request(path, { method: 'POST', headers: { 'content-type': 'application/json', Prefer: 'respond-async' }, body: JSON.stringify({}), signal: AbortSignal.timeout(10_000) }, false);
     const payload = await response.json().catch(() => undefined) as { agent?: unknown; update?: unknown; error?: unknown } | undefined;
     // never replay an installer after an ambiguous start response
     if (response.status >= 500) return { error: unknownStatus };
