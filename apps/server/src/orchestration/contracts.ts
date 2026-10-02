@@ -49,7 +49,7 @@ export type StackStateV1 = {
   transition?: 'starting' | 'migrating';
   operation?: StackAction;
   tunnel?: boolean;
-  processes?: Omit<StackProcessState, 'notices'>[];
+  processes?: Pick<StackProcessState, 'name' | 'state' | 'exitCode' | 'operation'>[];
 };
 
 export type WorktreeStatusV1 = {

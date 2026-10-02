@@ -3,11 +3,12 @@ import { dirname, join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
-import { stackActions, type ProcessNotice, type StackAction, type StackProcessState, type Worktree } from '../domain/models.js';
+import { stackActions, type ProcessNotice, type ProcessUse, type StackAction, type StackProcessState, type Worktree } from '../domain/models.js';
 import { declaredProcesses, dependenciesOf, startOrder, type StackProcess } from '../domain/stack-processes.js';
 import { worktreeById, worktreeHostPath, worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { serverCheckout, serverCheckoutOnHost } from '../workspaces/server-checkout.js';
 import { ProcessNoticeFiles, type ReportedNotice } from './process-notices.js';
+import { ProcessUseFiles, type ReportedUse } from './process-uses.js';
 import { run, tmuxLiteralArg, tmuxFormatLiteral, tmuxTimeFormatLiteral } from '../tmux/command.js';
 import { probeHolderSession, processNameOption, processPaneRole, processWorktreeOption } from '../tmux/stack-sessions.js';
 import { availableSessionName, worktreeSessionName } from '../tmux/session-name.js';
@@ -68,6 +69,10 @@ const warnWithoutLog = (worktree: Worktree, name: string, reason: string) => con
 // the command in RAC_PROCESS_NOTICES and removes it on every Start and Stop, so a notice lasts
 // from its process writing it until that process next starts or stops.
 const noticesFile = (name: string) => `${name}.notices.json`;
+// Beside it, the file a Stack process reports the processes it uses in other Worktrees in, named
+// to the command in RAC_PROCESS_USES. Every Start removes it, but a Stop leaves it, so a stopped
+// process still shows what it used last time.
+const usesFile = (name: string) => `${name}.uses.json`;
 // how long a dashboard build remembers the git directory it reads notices under, or that git
 // could not name one: a checkout's git directory stays put, and a Worktree made again at the same
 // path is found within this
@@ -132,9 +137,13 @@ export class WorktreeCommandService {
   // one `list-panes` answers every Worktree's state during a dashboard build
   private processListing: Promise<ListedPane[] | undefined> | undefined;
   private readonly noticeFiles = new ProcessNoticeFiles();
-  private readonly gitDirectories = new Map<string, { value: GitDirectory; expiresAt: number }>();
+  private readonly useFiles = new ProcessUseFiles();
+  // each Project's label by id, which labels a process used in another Worktree
+  private readonly projectLabels: ReadonlyMap<string, string>;
+  private readonly gitDirectories = new Map<string, { value: Promise<GitDirectory>; expiresAt: number }>();
 
   constructor(config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly command: Command = run, private readonly checkout: string = serverCheckout(), private readonly setupTiming: { timeoutMs: number; pollMs: number } = defaultSetupTiming, private readonly statusTiming: { timeoutMs: number; pollMs: number } = defaultStatusTiming, private readonly stopTiming: { timeoutMs: number; pollMs: number } = defaultStopTiming) {
+    this.projectLabels = new Map(config.projects.map(project => [project.id, project.label]));
     // status and log files live under the server's own checkout (see server-checkout.ts). A
     // native deployment runs commands on its own host, so that checkout is already the host
     // view; only a bridged one translates through the Project declared at the checkout.
@@ -319,12 +328,13 @@ export class WorktreeCommandService {
     const withProcess = stackProcesses(worktree).length > 0;
     // one listing answers both the processes' states and those of the processes their notices name
     const listing = withProcess ? this.stackPanes() : undefined;
-    const [listed, notices, probed, tunnel, operation] = await Promise.all([listing === undefined ? undefined : this.processStates(worktree, listing), listing === undefined ? undefined : this.processNotices(worktree, listing), withProcess ? undefined : this.running(worktree), this.tunnel(worktree), this.operation(worktree)]);
-    // a process action in flight, and the notices a process reported, show on that process
+    const [listed, notices, uses, probed, tunnel, operation] = await Promise.all([listing === undefined ? undefined : this.processStates(worktree, listing), listing === undefined ? undefined : this.processNotices(worktree, listing), listing === undefined ? undefined : this.processUses(worktree, listing), withProcess ? undefined : this.running(worktree), this.tunnel(worktree), this.operation(worktree)]);
+    // a process action in flight, and the notices and uses a process reported, show on that process
     const targeted = this.processOperations.get(worktree.id);
     const processes = listed?.map(entry => {
       const shown = notices?.get(entry.name);
-      return { ...entry, ...(entry.name === targeted?.process ? { operation: targeted.action } : {}), ...(shown === undefined ? {} : { notices: shown }) };
+      const used = uses?.get(entry.name);
+      return { ...entry, ...(entry.name === targeted?.process ? { operation: targeted.action } : {}), ...(shown === undefined ? {} : { notices: shown }), ...(used === undefined ? {} : { uses: used }) };
     });
     const runningCount = processes?.filter(entry => entry.state === 'running').length;
     const running = withProcess ? processes === undefined ? undefined : runningCount === processes.length ? true : runningCount === 0 ? false : undefined : probed;
@@ -347,7 +357,7 @@ export class WorktreeCommandService {
     if (declared.length === 0) return undefined;
     const panes = await (listing ?? this.stackPanes());
     if (panes === undefined) return undefined;
-    return declared.map(({ name }) => this.processState(panes, worktree, name));
+    return declared.map(({ name, dependsOn }) => ({ ...this.processState(panes, worktree, name), ...(dependsOn.length === 0 ? {} : { dependsOn }) }));
   }
 
   // one Stack process's state, as its tagged window in the listing shows it
@@ -370,6 +380,40 @@ export class WorktreeCommandService {
       const shown = notices.flatMap(notice => this.shownNotice(notice, worktrees, panes) ?? []);
       return shown.length === 0 ? [] : [[name, shown] as const];
     }));
+  }
+
+  // Each of a Worktree's Stack processes' uses, by process name, in the order reported; a process
+  // that reported none is left out. Nothing when the directory the files are in is missing, or is
+  // not one Start would write to.
+  private async processUses(worktree: Worktree, listing: PaneListing): Promise<Map<string, ProcessUse[]>> {
+    const files = await this.processFiles(worktree, { cached: true });
+    if ('failure' in files) return new Map();
+    const reported = await Promise.all(stackProcesses(worktree).map(async ({ name }) => [name, await this.useFiles.read(join(files.directory, usesFile(name)), reason => console.warn(`[stack] ${worktree.identity}: ${name}'s uses are ignored, as ${reason}`))] as const));
+    if (reported.every(([, used]) => used.length === 0)) return new Map();
+    const [panes, worktrees] = [await listing, this.discovery.worktreesNow()];
+    return new Map(reported.flatMap(([name, used]) => used.length === 0 ? [] : [[name, used.map(entry => this.shownUse(entry, worktrees, panes))] as const]));
+  }
+
+  // A reported use as the dashboard shows it: its checkout matched to a Worktree of any Project
+  // that declares the process, as a notice's is, with that process's state, running or not (when
+  // tmux can answer); anything else is shown by its path alone.
+  private shownUse(use: ReportedUse, worktrees: readonly Worktree[], panes: ListedPane[] | undefined): ProcessUse {
+    const target = worktrees.find(candidate => worktreeMatchesWorkspace(candidate, use.worktree));
+    if (target === undefined || !stackProcesses(target).some(declared => declared.name === use.process)) return { label: use.worktree, process: use.process };
+    const shown = { worktreeId: target.id, label: this.worktreeLabel(target), process: use.process };
+    if (panes === undefined) return shown;
+    const { state, exitCode } = this.processState(panes, target, use.process);
+    return { ...shown, state, ...(exitCode === undefined ? {} : { exitCode }) };
+  }
+
+  // "<Project> / <Worktree>": the Main worktree is Main, a custom label is kept as written, and a
+  // generated one sheds its Project prefix for the branch it names
+  private worktreeLabel(worktree: Worktree): string {
+    const project = this.projectLabels.get(worktree.projectId);
+    if (project === undefined) return worktree.label;
+    const prefix = `${project} · `;
+    const name = worktree.customLabel === true ? worktree.label : worktree.main ? 'Main' : worktree.label.startsWith(prefix) ? worktree.label.slice(prefix.length) : worktree.branch ?? worktree.label;
+    return `${project} / ${name}`;
   }
 
   // A reported notice as the dashboard shows it, or undefined while the process it names runs.
@@ -568,9 +612,9 @@ export class WorktreeCommandService {
     const logs = await this.processFiles(worktree, { make: true });
     if ('failure' in logs) warnWithoutLog(worktree, declared.name, logs.failure);
     const log = 'failure' in logs ? undefined : join(logs.host, `${declared.name}.log`);
-    // a new run starts with no notices, and is told where to write its own
-    if (!('failure' in logs)) await unlink(join(logs.directory, noticesFile(declared.name))).catch(() => {});
-    const notices = 'failure' in logs ? '' : `export RAC_PROCESS_NOTICES=${quote(join(logs.host, noticesFile(declared.name)))}; `;
+    // a new run starts with no notices and no uses, and is told where to write its own
+    if (!('failure' in logs)) await Promise.all([noticesFile, usesFile].map(file => unlink(join(logs.directory, file(declared.name))).catch(() => {})));
+    const reports = 'failure' in logs ? '' : `export RAC_PROCESS_NOTICES=${quote(join(logs.host, noticesFile(declared.name)))}; export RAC_PROCESS_USES=${quote(join(logs.host, usesFile(declared.name)))}; `;
     let pane = existing?.paneId;
     if (pane === undefined) {
       const workspace = panes.find(candidate => candidate.place === worktree.id)?.sessionId;
@@ -593,7 +637,7 @@ export class WorktreeCommandService {
       const piped = await this.tmux(['pipe-pane', '-t', pane, pipeToLog(log)]);
       if (piped.code !== 0) warnWithoutLog(worktree, declared.name, `tmux could not pipe it: ${piped.stderr?.trim() ?? ''}`);
     }
-    const script = `${hostPathExport()}${notices}( cd -- ${quote(directory)} && { ${declared.command}; } )`;
+    const script = `${hostPathExport()}${reports}( cd -- ${quote(directory)} && { ${declared.command}; } )`;
     const respawned = await this.tmux(['respawn-pane', '-k', '-t', pane, '-c', tmuxFormatLiteral(directory), '/bin/bash', '-lc', script]);
     // a window left on its placeholder would read as a running process, so remove it
     if (respawned.code !== 0) { if (existing === undefined || log !== undefined) await this.tmux(['kill-window', '-t', pane]); return false; }
@@ -632,13 +676,13 @@ export class WorktreeCommandService {
   }
 
   // the git directory as `gitDirectory` last named it, or that it could not, asked again once
-  // that is a while old
+  // that is a while old; the notices and the uses of one dashboard build share one asking
   private async cachedGitDirectory(worktree: Worktree): Promise<GitDirectory> {
     const cached = this.gitDirectories.get(worktree.id);
-    if (cached !== undefined && cached.expiresAt > Date.now()) return cached.value;
-    const value = await this.gitDirectory(worktree);
+    if (cached !== undefined && cached.expiresAt > Date.now()) return await cached.value;
+    const value = this.gitDirectory(worktree);
     this.gitDirectories.set(worktree.id, { value, expiresAt: Date.now() + gitDirectoryTtlMs });
-    return value;
+    return await value;
   }
 
   // remove a Stack process's notices file once its process has stopped; nothing to remove when

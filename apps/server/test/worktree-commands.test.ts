@@ -1428,7 +1428,7 @@ describe('Stack processes ordered by dependsOn', () => {
     tmux.seedWorkspace('ivy', ivy.id);
     for (const name of processes) tmux.seedProcess('ivy', '/worktrees/ivy', name);
   };
-  const allStopped = [{ name: 'web', state: 'stopped' }, { name: 'api', state: 'stopped' }, { name: 'sync', state: 'stopped' }, { name: 'docs', state: 'stopped' }];
+  const allStopped = [{ name: 'web', state: 'stopped', dependsOn: ['api'] }, { name: 'api', state: 'stopped', dependsOn: ['sync'] }, { name: 'sync', state: 'stopped' }, { name: 'docs', state: 'stopped' }];
   beforeEach(() => { delete process.env.RAC_HOST_TMUX_DIR; delete process.env.RAC_HOST_PATH; seen.clear(); });
 
   it('starts the whole stack dependencies first, and lists it in config order', async () => {
@@ -1460,7 +1460,7 @@ describe('Stack processes ordered by dependsOn', () => {
     const service = stackService(tmux);
     await expect(service.start(ivy.id, 'start', 'web')).resolves.toBe('started');
     expect(names(tmux)).toEqual(['sync', 'api', 'web']);
-    await expect(service.state(ivy)).resolves.toEqual({ transition: 'starting', processes: [{ name: 'web', state: 'running' }, { name: 'api', state: 'running' }, { name: 'sync', state: 'running' }, { name: 'docs', state: 'stopped' }] });
+    await expect(service.state(ivy)).resolves.toEqual({ transition: 'starting', processes: [{ name: 'web', state: 'running', dependsOn: ['api'] }, { name: 'api', state: 'running', dependsOn: ['sync'] }, { name: 'sync', state: 'running' }, { name: 'docs', state: 'stopped' }] });
   });
 
   // `api` runs, but `sync` beneath it does not: only `sync` and `web` start
@@ -1963,6 +1963,142 @@ describe('Stack process notices', () => {
     await expect(statesOf(instance, cora)).resolves.toEqual([{ name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped' }]);
     expect(warn()).toHaveBeenCalledTimes(1);
     expect(warn()).toHaveBeenCalledWith(expect.stringContaining('api'));
+  });
+});
+
+describe('Stack process uses', () => {
+  quietWarnings();
+  const stopTiming = { timeoutMs: 60, pollMs: 5 };
+  const repositories: string[] = [];
+  beforeEach(() => { delete process.env.RAC_HOST_TMUX_DIR; delete process.env.RAC_HOST_PATH; });
+  afterEach(async () => { for (const root of repositories.splice(0)) await rm(root, { recursive: true, force: true }); });
+  // a real checkout, so git names its git directory, where each process's uses file goes
+  const checkout = async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'rac-process-uses-')));
+    repositories.push(root);
+    execFileSync('/usr/bin/git', ['init', '-q', root]);
+    return root;
+  };
+  const usesFile = (root: string, name: string) => join(root, '.git', 'rac', 'processes', `${name}.uses.json`);
+  const report = async (root: string, name: string, uses: unknown) => {
+    await mkdir(dirname(usesFile(root, name)), { recursive: true });
+    await writeFile(usesFile(root, name), JSON.stringify(uses));
+  };
+  const projects = [testProject({ id: 'proj', label: 'Obsidian' }), testProject({ id: 'site', label: 'Static Site', path: '/worktrees/static' })];
+  const service = (tmux: ReturnType<typeof fakeTmux>, worktrees: Worktree[]) => new WorktreeCommandService(testConfig({ projects }), { worktreesNow: () => worktrees } as never, tmux.command, undefined, undefined, undefined, stopTiming);
+  const processWindow = (tmux: ReturnType<typeof fakeTmux>, name: string) => tmux.windows.find(entry => entry.options.get('@rac_process') === name);
+  // the Worktree whose `web` needs its `api`, and uses another Project's `static`
+  const reporter = (root: string) => testWorktree({ id: `proj:${root}`, projectId: 'proj', label: 'Obsidian · testing', main: false, branch: 'testing', path: root, commands: { processes: { api: 'ods exec api', web: { command: 'ods exec web', dependsOn: ['api'] } } } });
+  const peer = testWorktree({ id: 'site:/worktrees/static', projectId: 'site', label: 'Static Site', path: '/worktrees/static', commands: { processes: { static: 'ods exec static' } } });
+  const statesOf = async (instance: WorktreeCommandService, worktree: Worktree) => (await instance.state(worktree)).processes;
+
+  it("clears a process's uses file and names it in RAC_PROCESS_USES on every Start", async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    await report(root, 'api', [{ worktree: peer.path, process: 'static' }]);
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    // whether the file was still there when the command started, which could then write its own
+    const leftForCommand: boolean[] = [];
+    const command = async (binary: string, args: string[]) => {
+      if (args[0] === 'respawn-pane' && args.includes('/bin/bash')) leftForCommand.push(existsSync(usesFile(root, 'api')));
+      return await tmux.command(binary, args);
+    };
+
+    await expect(new WorktreeCommandService(config, { worktreesNow: () => [cora] } as never, command).start(cora.id, 'start', 'api')).resolves.toBe('started');
+
+    expect(leftForCommand).toEqual([false]);
+    expect(processWindow(tmux, 'api')?.command.at(-1)).toContain(`export RAC_PROCESS_USES='${usesFile(root, 'api')}'; `);
+    expect(processWindow(tmux, 'api')?.command.at(-1)).toContain('export RAC_PROCESS_NOTICES=');
+  });
+
+  it('keeps the uses file of a process that stops, so it still shows what it used', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    tmux.seedProcess('cora', root, 'api');
+    await report(root, 'api', [{ worktree: peer.path, process: 'static' }]);
+
+    await expect(service(tmux, [cora, peer]).start(cora.id, 'stop', 'api')).resolves.toBe('started');
+
+    expect(existsSync(usesFile(root, 'api'))).toBe(true);
+    await expect(statesOf(service(tmux, [cora, peer]), cora)).resolves.toMatchObject([{ name: 'api', state: 'stopped', uses: [{ worktreeId: peer.id, process: 'static' }] }, { name: 'web' }]);
+  });
+
+  it('gives a one-shot command no uses file', async () => {
+    const root = await checkout();
+    const cora = testWorktree({ id: `proj:${root}`, projectId: 'proj', path: root, commands: { processes: { dev: 'pnpm dev' }, build: 'pnpm build' } });
+    const tmux = fakeTmux();
+
+    await expect(service(tmux, [cora]).start(cora.id, 'build')).resolves.toBe('started');
+
+    expect(tmux.windows.find(entry => entry.session.endsWith('-exclusive'))?.command.at(-1)).not.toContain('RAC_PROCESS_USES');
+  });
+
+  it('serves what each process needs, omitted when it needs nothing', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+
+    await expect(statesOf(service(fakeTmux(), [cora]), cora)).resolves.toEqual([{ name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped', dependsOn: ['api'] }]);
+  });
+
+  it('serves each process used with its Worktree, labelled by Project and Worktree, and its state, running or not', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const tmux = fakeTmux();
+    tmux.seedProcess('cora', root, 'api');
+    const instance = service(tmux, [cora, peer]);
+    await report(root, 'api', [{ worktree: peer.path, process: 'static' }]);
+    const static_ = { worktreeId: peer.id, label: 'Static Site / Main', process: 'static' };
+
+    await expect(statesOf(instance, cora)).resolves.toEqual([{ name: 'api', state: 'running', uses: [{ ...static_, state: 'stopped' }] }, { name: 'web', state: 'stopped', dependsOn: ['api'] }]);
+
+    const running = tmux.seedProcess('static', peer.path, 'static');
+    await expect(statesOf(instance, cora)).resolves.toMatchObject([{ uses: [{ ...static_, state: 'running' }] }, {}]);
+
+    Object.assign(running, { dead: true, status: 0 });
+    await expect(statesOf(instance, cora)).resolves.toMatchObject([{ uses: [{ ...static_, state: 'exited', exitCode: 0 }] }, {}]);
+  });
+
+  it("labels a linked Worktree used by its Project and branch, and one of this Worktree's Project too", async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    const linked = testWorktree({ id: 'site:/worktrees/static-feature', projectId: 'site', label: 'Static Site · feature', main: false, branch: 'feature', path: '/worktrees/static-feature', commands: { processes: { static: 'ods exec static' } } });
+    const main = testWorktree({ id: 'proj:/worktrees/obsidian', projectId: 'proj', label: 'Obsidian', path: '/worktrees/obsidian', commands: { processes: { api: 'ods exec api' } } });
+    await report(root, 'api', [{ worktree: linked.path, process: 'static' }, { worktree: main.path, process: 'api' }]);
+
+    await expect(statesOf(service(fakeTmux(), [cora, linked, main]), cora)).resolves.toMatchObject([{ uses: [{ worktreeId: linked.id, label: 'Static Site / feature' }, { worktreeId: main.id, label: 'Obsidian / Main' }] }, {}]);
+  });
+
+  it('shows a process used where no Worktree declares it by its path alone', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    await report(root, 'api', [{ worktree: '/nowhere/known', process: 'static' }, { worktree: peer.path, process: 'preview' }]);
+
+    await expect(statesOf(service(fakeTmux(), [cora, peer]), cora)).resolves.toMatchObject([{ uses: [{ label: '/nowhere/known', process: 'static' }, { label: peer.path, process: 'preview' }] }, {}]);
+    const [api] = (await statesOf(service(fakeTmux(), [cora, peer]), cora))!;
+    expect(api!.uses!.every(use => use.worktreeId === undefined && use.state === undefined)).toBe(true);
+  });
+
+  it('matches a process used to a bridged Worktree by its host path', async () => {
+    const root = await checkout();
+    const cora = reporter(root);
+    await report(root, 'api', [{ worktree: '/host/static', process: 'static' }]);
+
+    await expect(statesOf(service(fakeTmux(), [cora, { ...peer, hostPath: '/host/static' }]), cora)).resolves.toMatchObject([{ uses: [{ worktreeId: peer.id, process: 'static', state: 'stopped' }] }, {}]);
+  });
+
+  it('ignores a malformed uses file, and says so once', async () => {
+    const warn = vi.mocked(console.warn);
+    const root = await checkout();
+    const cora = reporter(root);
+    const instance = service(fakeTmux(), [cora]);
+    await report(root, 'api', [{ worktree: 'relative', process: 'static' }]);
+
+    await expect(statesOf(instance, cora)).resolves.toEqual([{ name: 'api', state: 'stopped' }, { name: 'web', state: 'stopped', dependsOn: ['api'] }]);
+    await instance.state(cora);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('uses'))).toHaveLength(1);
   });
 });
 

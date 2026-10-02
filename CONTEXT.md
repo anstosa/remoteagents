@@ -119,7 +119,7 @@ The set of Panels open at one Place, and the console's unit of navigation: one p
 _Avoid_: Tab (the selector entry), session, worktree (a kind of Place)
 
 **Panel**:
-One of the five things a Workspace shows side by side: agent, terminal, notes, browser, code. All share one header whose buttons and text vary by kind; the agent panel holds the composer and switches between the Agents at its Place.
+One of the six things a Workspace shows side by side: agent, terminal, notes, browser, code, stack. All share one header whose buttons and text vary by kind; the agent panel holds the composer and switches between the Agents at its Place.
 _Avoid_: Pane (tmux's word), split, view
 
 **Terminal**:
@@ -163,6 +163,14 @@ _Avoid_: Dev server, daemon, service, background job
 **Process notice**:
 A short message a Stack process reports to the console about its own run, by writing JSON to the file the console names in `RAC_PROCESS_NOTICES`, optionally naming a process in another Worktree that it needs. It shows under its process in the stack menu, a warning marks the stack badge, and one naming a process hides while that process runs. One naming another Worktree offers Open, which switches to it, and, for a declared process there that is not running, Start, which the operator clicks; the console never starts it on its own. It lasts until its process next starts or stops.
 _Avoid_: Alert, health check, status message
+
+**Uses**:
+The processes in other Worktrees that a Stack process reports relying on, by writing JSON to the file the console names in `RAC_PROCESS_USES`: each a checkout path and a process name, which the console resolves to a Worktree as it does a notice's, showing that process's live state there, running or not. Every Start replaces them and a Stop leaves them, so a stopped process still shows what it used last. A used process counts as down only when it is not running and a process here that uses it is running or starting. The stack menu gathers them as "Other worktrees".
+_Avoid_: Peers, external dependencies
+
+**Stack panel**:
+The Panel showing one Worktree's Stack processes and the processes they use: a list on the left, and the selected one's actions, what it needs, what needs it, what it uses and its live output on the right. Acting on a used process acts on its own Worktree, and only ever on the operator's click.
+_Avoid_: Stack view, process manager
 
 ### Reviewing changes
 

@@ -1,7 +1,7 @@
 import { createElement, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ProjectOpen } from '../src/project-open.js';
-import { isStackProcessOutput, type ProcessNotice, type ProcessNoticeTarget, type StackAction, type StackProcessState, type StartableNoticeTarget } from '../src/stack-operations.js';
+import type { ProcessNotice, ProcessUse, StackAction, StackProcessState, StackSelection, StartableNoticeTarget } from '../src/stack-operations.js';
 
 // render controls during an active operation
 export const renderProjectOpen = (root: HTMLElement) => {
@@ -111,11 +111,11 @@ export const renderExitedProcessStatuses = (root: HTMLElement) => {
   ));
 };
 
-// the Terminals "Open as Terminal" asked for, for a spec to read back
-type OpenedTerminals = { openedTerminals?: { paneId: string; name: string }[] };
-const recordOpenedTerminal = (paneId: string, name: string) => {
-  const record = window as unknown as OpenedTerminals;
-  record.openedTerminals = [...record.openedTerminals ?? [], { paneId, name }];
+// the Stack panel openings the menu asked for (`null` for one on no process), for a spec to read back
+type OpenedPanels = { openedPanels?: (StackSelection | null)[] };
+const recordOpenedPanel = (selection?: StackSelection) => {
+  const record = window as unknown as OpenedPanels;
+  record.openedPanels = [...record.openedPanels ?? [], selection ?? null];
 };
 
 // render a Stack process stopped on purpose, beside what its tunnel still says (a check from
@@ -132,22 +132,15 @@ export const renderStoppedProcessStatuses = (root: HTMLElement) => {
   ));
 };
 
-// render a Stack process Worktree that also has a one-shot `build`: its process output grows a
-// line on every read, so the dialog's polling shows as new lines. Its pane is `%17`, read through
-// the same check the console's fetch applies.
+// render a Stack process Worktree that also has a one-shot `build`, whose last output the dialog shows
 export const renderProcessOutputControls = (root: HTMLElement) => {
-  let reads = 0;
   createRoot(root).render(createElement(ProjectOpen, {
+    title: 'Main',
     stack: { actions: ['start', 'stop', 'build', 'restart'], running: true, processes: [{ name: 'dev', state: 'running' }] },
     onStackAction: () => {},
+    onProcessAction: () => {},
     onStackLog: async () => ({ action: 'build', active: false, startedAt: '2026-09-26T10:00:00.000Z', completedAt: '2026-09-26T10:01:00.000Z', output: 'built in 3s' }),
-    onOpenTerminal: recordOpenedTerminal,
-    onProcessOutput: async () => {
-      reads += 1;
-      const payload: unknown = { name: 'dev', state: 'running', paneId: '%17', output: ['ready in 120ms', ...Array.from({ length: 80 }, (_, index) => `compiled module ${index + 1}`), ...Array.from({ length: reads }, (_, index) => `request ${index + 1}`)].join('\n') };
-      if (!isStackProcessOutput(payload)) throw new Error('invalid process output');
-      return payload;
-    }
+    onOpenStackPanel: recordOpenedPanel
   }));
 };
 
@@ -157,21 +150,19 @@ export const renderExitedProcessOutputControls = (root: HTMLElement) => {
     stack: { actions: ['start', 'stop', 'restart'], running: false, processes: [{ name: 'dev', state: 'exited', exitCode: 127 }] },
     onStackAction: () => {},
     onStackLog: async () => undefined,
-    onOpenTerminal: recordOpenedTerminal,
-    onProcessOutput: async () => ({ name: 'dev', state: 'exited', exitCode: 127, output: 'bash: line 1: pnpm: command not found' })
+    onOpenStackPanel: recordOpenedPanel
   }));
 };
 
 // render a stack of several Stack processes: partly running with a healthy tunnel (the partial
-// count wins), and with one crashed (exited wins, naming it). The first reads each process's
-// output by the name it is asked for.
+// count wins), and with one crashed (exited wins, naming it). The first opens the Stack panel.
 export const renderSeveralProcessStatuses = (root: HTMLElement) => {
   const processActions: StackAction[] = ['start', 'stop', 'restart'];
   createRoot(root).render(createElement('div', {},
     createElement(ProjectOpen, {
       stack: { actions: processActions, tunnel: true, processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'stopped' }, { name: 'web', state: 'running' }] },
       onStackAction: () => {},
-      onProcessOutput: async (name: string) => ({ name, state: name === 'api' ? 'stopped' : 'running', output: name === 'api' ? '' : `${name} ready` })
+      onOpenStackPanel: recordOpenedPanel
     }),
     createElement(ProjectOpen, { stack: { actions: processActions, tunnel: false, processes: [{ name: 'sync', state: 'running' }, { name: 'api', state: 'exited', exitCode: 1 }, { name: 'web', state: 'exited', exitCode: 2 }] }, onStackAction: () => {} })
   ));
@@ -181,20 +172,22 @@ export const renderSeveralProcessStatuses = (root: HTMLElement) => {
 type ProcessActions = { processActions?: { name: string; action: StackAction }[] };
 
 // render a stack of several Stack processes whose menu acts on each one: every action is held
-// briefly, as the console holds the request until it is done, then lands in the process's state
+// briefly, as the console holds the request until it is done, then lands in the process's state.
+// `api` needs `sync`, and `web` needs `api`; `docs` needs nothing and nothing needs it.
 export const renderProcessSectionControls = (root: HTMLElement) => {
   const Controls = () => {
-    const [processes, setProcesses] = useState<StackProcessState[]>([{ name: 'sync', state: 'running' }, { name: 'api', state: 'running' }, { name: 'web', state: 'exited', exitCode: 1 }]);
+    const [processes, setProcesses] = useState<StackProcessState[]>([{ name: 'sync', state: 'running' }, { name: 'api', state: 'running', dependsOn: ['sync'] }, { name: 'web', state: 'exited', exitCode: 1, dependsOn: ['api'] }, { name: 'docs', state: 'stopped' }]);
     return createElement(ProjectOpen, {
+      title: 'testing',
       stack: { actions: ['start', 'stop', 'build', 'restart'], processes },
       onStackAction: () => {},
       onStackLog: async () => undefined,
-      onProcessOutput: async (name: string) => ({ name, state: 'running', output: `${name} ready` }),
+      onOpenStackPanel: recordOpenedPanel,
       onProcessAction: async (name: string, action: StackAction) => {
         const record = window as unknown as ProcessActions;
         record.processActions = [...record.processActions ?? [], { name, action }];
         await new Promise(resolve => window.setTimeout(resolve, 300));
-        setProcesses(current => current.map(process => process.name === name ? { name, state: action === 'stop' ? 'stopped' : 'running' } : process));
+        setProcesses(current => current.map(process => process.name === name ? { name, state: action === 'stop' ? 'stopped' : 'running', ...(process.dependsOn === undefined ? {} : { dependsOn: process.dependsOn }) } : process));
       }
     });
   };
@@ -238,6 +231,43 @@ export const renderProcessNoticeControls = (root: HTMLElement) => {
   ));
 };
 
+// render a Worktree whose processes use processes in other Worktrees: `api` runs and uses Static's
+// `static`, which is stopped, and a `docs` the console could not place; `web` is stopped and uses
+// `static` too, and Search's `search`, which runs; `worker` runs and uses Queue's `queue`, which has
+// exited. Stopping `api` and starting `static` land in the next state, and `startWeb()` puts a Start
+// in flight on `web`; every used process's Start or Stop, and every Open, is recorded.
+type UseActions = { useActions?: string[]; openedWorktrees?: string[]; startWeb?: () => void };
+export const renderUsesControls = (root: HTMLElement) => {
+  const Controls = () => {
+    const [apiState, setApiState] = useState<'running'|'stopped'>('running');
+    const [staticState, setStaticState] = useState<'running'|'stopped'>('stopped');
+    const [webStarting, setWebStarting] = useState(false);
+    const record = window as unknown as UseActions;
+    record.startWeb = () => setWebStarting(true);
+    const staticUse: ProcessUse = { worktreeId: 'site:/code/static', label: 'Static Site / Main', process: 'static', state: staticState };
+    const processes: StackProcessState[] = [
+      { name: 'api', state: apiState, uses: [staticUse, { label: '/code/elsewhere', process: 'docs' }] },
+      { name: 'web', state: 'stopped', ...(webStarting ? { operation: 'start' as const } : {}), dependsOn: ['api'], uses: [staticUse, { worktreeId: 'search:/code/search', label: 'Search / Main', process: 'search', state: 'running' }] },
+      { name: 'worker', state: 'running', uses: [{ worktreeId: 'queue:/code/queue', label: 'Queue / Main', process: 'queue', state: 'exited', exitCode: 1 }] }
+    ];
+    return createElement(ProjectOpen, {
+      worktreeId: 'app:/code/app',
+      title: 'Main',
+      stack: { actions: ['start', 'stop', 'restart'], processes },
+      onStackAction: () => {},
+      onProcessAction: async (name: string, action: StackAction) => { if (name === 'api') setApiState(action === 'stop' ? 'stopped' : 'running'); },
+      onUseAction: async (worktreeId: string, process: string, action: 'start'|'stop'|'restart') => {
+        record.useActions = [...record.useActions ?? [], `${action} ${worktreeId} ${process}`];
+        await new Promise(resolve => window.setTimeout(resolve, 200));
+        if (process === 'static') setStaticState(action === 'stop' ? 'stopped' : 'running');
+      },
+      onOpenWorktree: (worktreeId: string) => { record.openedWorktrees = [...record.openedWorktrees ?? [], worktreeId]; },
+      onOpenStackPanel: recordOpenedPanel
+    });
+  };
+  createRoot(root).render(createElement(Controls));
+};
+
 // what a notice's Open and Start asked for, the error the next Start fails with, and how a spec
 // lets a successful Start land in the next state
 type NoticeActions = { openedTargets?: string[]; noticeStarts?: string[]; noticeStartError?: string; releaseNoticeStart?: () => void };
@@ -260,8 +290,8 @@ export const renderNoticeTargetControls = (root: HTMLElement) => {
       { level: 'info', message: 'using the cached schema' },
       { level: 'info', message: 'reloading the config', target: { worktreeId: 'app:/code/app', label: 'App · main' } }
     ];
-    const onOpenNoticeTarget = (target: ProcessNoticeTarget) => {
-      record.openedTargets = [...record.openedTargets ?? [], target.worktreeId];
+    const onOpenWorktree = (worktreeId: string) => {
+      record.openedTargets = [...record.openedTargets ?? [], worktreeId];
       setShown('static');
     };
     const onStartNoticeTarget = async (target: StartableNoticeTarget) => {
@@ -272,7 +302,7 @@ export const renderNoticeTargetControls = (root: HTMLElement) => {
       record.releaseNoticeStart = () => setStaticState('running');
     };
     return shown === 'app'
-      ? createElement(ProjectOpen, { key: 'app', worktreeId: 'app:/code/app', stack: { actions: processActions, running: true, processes: [{ name: 'api', state: 'running', notices }, { name: 'web', state: 'running' }] }, onStackAction: () => {}, onProcessAction: () => {}, onOpenNoticeTarget, onStartNoticeTarget })
+      ? createElement(ProjectOpen, { key: 'app', worktreeId: 'app:/code/app', stack: { actions: processActions, running: true, processes: [{ name: 'api', state: 'running', notices }, { name: 'web', state: 'running' }] }, onStackAction: () => {}, onProcessAction: () => {}, onOpenWorktree, onStartNoticeTarget })
       : createElement(ProjectOpen, { key: 'static', stack: { actions: processActions, running: staticState === 'running', processes: [{ name: 'static', state: staticState }] }, onStackAction: () => {}, menuRequested: true });
   };
   createRoot(root).render(createElement(Controls));

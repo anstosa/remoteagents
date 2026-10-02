@@ -310,9 +310,12 @@ within a tick — no config edit or restart.
   all the same way, keeping their windows, and reruns each command in start
   order in its own pane, so a Terminal open on it stays attached. A step that
   fails ends the Start, Stop or Restart there and reports it failed; processes already
-  started keep running. With several processes the stack menu also gives each
-  its own section, listed in the order written, with its state and its own
-  Start, Stop and Restart, which act on that process alone and leave the rest
+  started keep running. The stack menu lists the processes as rows, in the
+  order written, each with its state; with several, clicking a row expands it
+  (one at a time) to its notices, its own Start, Stop and Restart, what it
+  needs and what needs it here, and what it uses elsewhere (below), and a lone
+  process's row shows already expanded. A process's own actions act on it
+  alone and leave the rest
   running, except that Start (and a Restart's rerun) first starts every process
   it transitively depends on that is not already running; a running dependency
   is left alone, and stopping a process leaves its dependants running (the MCP
@@ -321,11 +324,15 @@ within a tick — no config edit or restart.
   a command that needs one to be listening checks for it itself. One action runs per
   Worktree at a time, whether it is on the whole stack or one process. Each
   process belongs to tmux, so it keeps running across a console restart and is found again by the tags on its window, and its pane
-  scrolls back as far as that session's `history-limit`. The stack menu's
-  "Show `<name>` output", one per process, opens that history in the log
-  dialog and keeps it refreshing; while the process runs, that
-  dialog's "Open as Terminal" opens its pane as a live Terminal panel, where
-  dev-server hotkeys such as Vite's `r` work. The pane is also in the Place's
+  scrolls back as far as that session's `history-limit`. A row's "Show
+  output", and the menu's "Open Stack panel", open the **Stack panel**, a Panel
+  beside the agent (and a ⋮ row on a phone) that lists the processes on its
+  left and shows the selected one's actions, what it needs, what needs it and
+  what it uses on its right, above that history, kept refreshing; while the
+  process runs, its "Open as Terminal" opens its pane as a live Terminal panel, where
+  dev-server hotkeys such as Vite's `r` work. Its header starts, stops and
+  restarts the whole stack, and the browser remembers it open per Worktree.
+  The pane is also in the Place's
   Terminal switcher, named for the process. A process's output is also
   written to `rac/processes/<name>.log` in the Worktree's own git directory
   (`.git/` for the Main worktree, `.git/worktrees/<id>/` for a Linked one), so
@@ -365,6 +372,28 @@ within a tick — no config edit or restart.
   checkout can write that file as well as the process can, so a notice is
   plain text the console shows, never markup, and is only as trustworthy as
   whatever can write the Worktree's git directory.
+  A process can also report the processes it **uses** in other Worktrees:
+  every Start exports `RAC_PROCESS_USES`, the host path of
+  `rac/processes/<name>.uses.json`, after removing that file, but a Stop
+  leaves it, so a stopped process still shows what it used last time. The
+  process writes a JSON array to it:
+  `[{ "worktree": "/code/static", "process": "static" }]`, where `worktree` is
+  the absolute path (at most 4096 characters) of a checkout of any configured
+  Project and `process` a Stack process that checkout declares, named as the
+  config names one; the file is read, and refused, as the notices file is. Each one shows, labelled `<Project> / <Worktree>`, with its
+  live state there, under its user's row and in an "Other worktrees" row of
+  its own, which lists what uses each and counts those that are down, and the
+  Stack panel lists them too, with each one's output read from its own
+  Worktree. A used process counts as **down** only when it is not running and
+  a process here that uses it is running or starting; then its user's row,
+  the Other worktrees row and the stack badge warn. Start, Stop and Open on a
+  used process act on its own Worktree (Open switches to it, with its stack
+  menu open; a refused Start or Stop says why), and only on the operator's click: stopping a used process stops
+  nothing here, and the console never starts or stops one on its own. One
+  whose checkout the console does not know, or that its Worktree does not
+  declare, shows by its path alone, with nothing to act on. A tool that
+  reports uses has no need of "is not running" notices, which the down rule
+  covers.
   "Show last command output" is the
   latest `build` or `migrate` run. Remove stops every running process before it
   removes the checkout, and its confirmation lists them. A process name is

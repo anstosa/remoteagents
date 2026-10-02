@@ -214,7 +214,7 @@ test('shows an exited Stack process with its exit code, ahead of a down tunnel',
 
 // a stack of several processes counts the running ones, names each exited one, and offers each
 // process's own output
-test("summarises several Stack processes on the badge and offers each one's output", async ({ page }) => {
+test("summarises several Stack processes on the badge, and opens the Stack panel on one", async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
@@ -229,18 +229,17 @@ test("summarises several Stack processes on the badge and offers each one's outp
   await expect(exited.locator('.project-stack-status-text')).toHaveText('exited');
 
   await partial.click();
-  await expect(page.locator('.stack-log-menu-button')).toHaveText(['Show sync output', 'Show api output', 'Show web output']);
-  await page.getByRole('button', { name: 'Show web output' }).click();
-  const dialog = page.getByRole('dialog', { name: 'web output' });
-  await expect(dialog.locator('pre')).toHaveText('web ready');
-  await dialog.getByRole('button', { name: 'Close stack output' }).click();
-  await partial.click();
-  await page.getByRole('button', { name: 'Show api output' }).click();
-  await expect(page.getByRole('dialog', { name: 'api output' }).locator('pre')).toHaveText('The process is not running.');
+  const menu = page.locator('.stack-menu');
+  await expect(menu.locator('.stack-menu-heading .stack-process-state')).toHaveText('2 of 3 running');
+  await expect(menu.locator('.stack-row-name')).toHaveText(['sync', 'api', 'web']);
+  await menu.locator('[aria-label="web process"] > .stack-row').click();
+  await page.getByRole('button', { name: 'Show web output', exact: true }).click();
+  await expect(menu).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { openedPanels?: unknown }).openedPanels)).toEqual([{ kind: 'process', name: 'web' }]);
 });
 
-// the process's own output and the last one-shot command's output are separate menu entries
-test("shows a Stack process's output in the log dialog, refreshing while it is open", async ({ page }) => {
+// the last one-shot command's output shows in the log dialog; a process's own is the Stack panel's
+test("shows the last one-shot command's output in the log dialog, and opens the Stack panel from the menu", async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
@@ -250,43 +249,18 @@ test("shows a Stack process's output in the log dialog, refreshing while it is o
 
   const toggle = page.getByRole('button', { name: 'Stack controls: running' });
   await toggle.click();
-  await page.getByRole('button', { name: 'Show dev output' }).click();
-  const dialog = page.getByRole('dialog', { name: 'dev output' });
-  await expect(dialog.locator('pre')).toContainText('ready in 120ms');
-  await expect(dialog.locator('footer')).toHaveText('Running');
-  // it keeps polling while open, following new output from the bottom
-  const output = dialog.locator('pre');
-  await expect(output).toContainText('request 3');
-  await expect.poll(() => output.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(2);
-  // until the operator scrolls up to read, where new output leaves them
-  await output.evaluate(element => { element.scrollTop = 0; });
-  await expect(output).toContainText('request 6');
-  expect(await output.evaluate(element => element.scrollTop)).toBe(0);
-  await dialog.getByRole('button', { name: 'Close stack output' }).click();
-  await expect(dialog).toHaveCount(0);
-
-  await toggle.click();
   await page.getByRole('button', { name: 'Show last command output' }).click();
   const commandDialog = page.getByRole('dialog', { name: 'Stack output' });
   await expect(commandDialog.locator('pre')).toHaveText('built in 3s');
   await expect(commandDialog.locator('header strong')).toHaveText('Build stack output');
-});
+  await commandDialog.getByRole('button', { name: 'Close stack output' }).click();
+  await expect(commandDialog).toHaveCount(0);
 
-test("opens a running Stack process's own pane as a Terminal from its output dialog", async ({ page }) => {
-  await page.goto('/');
-  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
-  await page.evaluate(async () => {
-    const { renderProcessOutputControls } = await import('/e2e/project-open-fixture.tsx');
-    renderProcessOutputControls(document.querySelector<HTMLElement>('#control-root')!);
-  });
-
-  await page.getByRole('button', { name: 'Stack controls: running' }).click();
-  await page.getByRole('button', { name: 'Show dev output' }).click();
-  const dialog = page.getByRole('dialog', { name: 'dev output' });
-  await dialog.getByRole('button', { name: 'Open as Terminal' }).click();
-  // it asks for the process pane, named for the process, and gets out of the way
-  await expect(dialog).toHaveCount(0);
-  expect(await page.evaluate(() => (window as unknown as { openedTerminals?: unknown }).openedTerminals)).toEqual([{ paneId: '%17', name: 'dev' }]);
+  await toggle.click();
+  await page.getByRole('button', { name: 'Open Stack panel', exact: true }).click();
+  await expect(page.locator('.stack-menu')).toHaveCount(0);
+  // on its first process
+  expect(await page.evaluate(() => (window as unknown as { openedPanels?: unknown }).openedPanels)).toEqual([{ kind: 'process', name: 'dev' }]);
 });
 
 test('offers no last command output without one-shot commands, and shows an exited process with its code', async ({ page }) => {
@@ -299,17 +273,12 @@ test('offers no last command output without one-shot commands, and shows an exit
 
   await page.getByRole('button', { name: 'Stack controls: dev exited (127)' }).click();
   await expect(page.getByRole('button', { name: 'Show last command output' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Show dev output' }).click();
-  const dialog = page.getByRole('dialog', { name: 'dev output' });
-  await expect(dialog.locator('pre')).toHaveText('bash: line 1: pnpm: command not found');
-  await expect(dialog.locator('footer')).toHaveText('Exited (127)');
-  // a dead pane is no live Terminal
-  await expect(dialog.getByRole('button', { name: 'Open as Terminal' })).toHaveCount(0);
+  await expect(page.locator('.stack-menu .stack-row .stack-process-state')).toHaveText('exited 127');
 });
 
-// each process gets its own section: its state, its own Start/Stop/Restart and its output; the
-// whole-stack actions stay at the top
-test('gives each of several Stack processes a menu section with its own actions', async ({ page }) => {
+// each process is a row that expands to its own Start/Stop/Restart, its relations and its output;
+// the whole-stack actions stay at the top
+test('lists several Stack processes as rows that expand one at a time, each with its own actions', async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
@@ -319,45 +288,70 @@ test('gives each of several Stack processes a menu section with its own actions'
 
   await page.getByRole('button', { name: 'Stack controls: web exited (1)', exact: true }).click();
   const menu = page.locator('.stack-menu');
+  await expect(menu.locator('.stack-menu-title')).toHaveText('testing');
+  await expect(menu.locator('.stack-menu-heading .stack-process-state')).toHaveText('2 of 4 running');
   await expect(menu.getByRole('button', { name: 'Start stack', exact: true })).toBeEnabled();
   await expect(menu.getByRole('button', { name: 'Restart stack', exact: true })).toBeEnabled();
-  const sections = menu.locator('.stack-process');
-  await expect(sections.locator('.stack-process-name')).toHaveText(['sync', 'api', 'web']);
-  await expect(sections.locator('.stack-process-state')).toHaveText(['Running', 'Running', 'Exited (1)']);
-  const api = menu.getByRole('group', { name: 'api process' });
-  // a running process has nothing to start; an exited one can still be cleared with Stop
+  const rows = menu.locator('.stack-process > .stack-row');
+  await expect(rows.locator('.stack-row-name')).toHaveText(['sync', 'api', 'web', 'docs']);
+  await expect(rows.locator('.stack-process-state')).toHaveText(['running', 'running', 'exited 1', 'stopped']);
+  const row = (name: string) => menu.locator(`[aria-label="${name} process"] > .stack-row`);
+  const group = (name: string) => menu.getByRole('group', { name: `${name} process` });
+
+  // collapsed until clicked, then one at a time
+  await expect(menu.locator('.stack-row-body')).toHaveCount(0);
+  await row('api').click();
+  await expect(row('api')).toHaveAttribute('aria-expanded', 'true');
+  const api = group('api');
   await expect(api.getByRole('button', { name: 'Start api', exact: true })).toBeDisabled();
   await expect(api.getByRole('button', { name: 'Stop api', exact: true })).toBeEnabled();
-  const web = menu.getByRole('group', { name: 'web process' });
+  await expect(api.getByRole('button', { name: 'Restart api', exact: true })).toBeEnabled();
+  await expect(api.getByRole('group', { name: 'Needs' }).getByRole('button')).toHaveText(['sync']);
+  await expect(api.getByRole('group', { name: 'Needed by' }).getByRole('button')).toHaveText(['web']);
+  await row('web').click();
+  await expect(row('api')).toHaveAttribute('aria-expanded', 'false');
+  await expect(menu.locator('.stack-row-body')).toHaveCount(1);
+  const web = group('web');
+  // an exited process can be started again, or cleared with Stop
   await expect(web.getByRole('button', { name: 'Start web', exact: true })).toBeEnabled();
   await expect(web.getByRole('button', { name: 'Stop web', exact: true })).toBeEnabled();
+  await expect(web.getByRole('group', { name: 'Needed by' })).toHaveCount(0);
+  // a chip expands the process it names, and clicking an expanded row collapses it
+  await web.getByRole('group', { name: 'Needs' }).getByRole('button', { name: 'api' }).click();
+  await expect(row('api')).toHaveAttribute('aria-expanded', 'true');
+  await row('api').click();
+  await expect(menu.locator('.stack-row-body')).toHaveCount(0);
+  // a process that needs nothing, and that nothing needs, shows neither
+  await row('docs').click();
+  const docs = group('docs');
+  await expect(docs.getByRole('group', { name: 'Needs' })).toHaveCount(0);
+  await expect(docs.getByRole('group', { name: 'Needed by' })).toHaveCount(0);
+  await expect(docs.getByRole('button', { name: 'Stop docs', exact: true })).toBeDisabled();
 
-  // the action in flight shows on its own process, holds every other action, and keeps the menu open
+  // the action in flight shows on its own row, holds every other action, and keeps the menu open
+  await row('api').click();
   await api.getByRole('button', { name: 'Restart api', exact: true }).click();
-  await expect(api.locator('.stack-process-state')).toHaveText('Restarting…');
+  await expect(row('api').locator('.stack-process-state')).toHaveText('Restarting…');
   await expect(api).toHaveAttribute('aria-busy', 'true');
   await expect(api.getByRole('button', { name: 'Restart api', exact: true })).toBeDisabled();
-  await expect(web.getByRole('button', { name: 'Start web', exact: true })).toBeDisabled();
   await expect(menu.getByRole('button', { name: 'Stop stack', exact: true })).toBeDisabled();
-  await expect(api.locator('.stack-process-state')).toHaveText('Running');
+  await expect(row('api').locator('.stack-process-state')).toHaveText('running');
   await expect(api.getByRole('button', { name: 'Restart api', exact: true })).toBeEnabled();
   await expect(menu).toBeVisible();
   expect(await page.evaluate(() => (window as unknown as { processActions?: unknown }).processActions)).toEqual([{ name: 'api', action: 'restart' }]);
 
   // one process's Stop leaves the rest running
-  await web.getByRole('button', { name: 'Start web', exact: true }).click();
-  await expect(web.locator('.stack-process-state')).toHaveText('Running');
   await api.getByRole('button', { name: 'Stop api', exact: true }).click();
-  await expect(api.locator('.stack-process-state')).toHaveText('Stopped');
+  await expect(row('api').locator('.stack-process-state')).toHaveText('stopped');
   await expect(api.getByRole('button', { name: 'Stop api', exact: true })).toBeDisabled();
-  await expect(sections.locator('.stack-process-state')).toHaveText(['Running', 'Stopped', 'Running']);
-  await expect(page.getByRole('button', { name: 'Stack controls: 2 of 3 running', exact: true })).toBeVisible();
+  await expect(rows.locator('.stack-process-state')).toHaveText(['running', 'stopped', 'exited 1', 'stopped']);
 
-  await web.getByRole('button', { name: 'Show web output', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: 'web output' }).locator('pre')).toHaveText('web ready');
+  // Show output opens the Stack panel on the process
+  await api.getByRole('button', { name: 'Show api output', exact: true }).click();
+  expect(await page.evaluate(() => (window as unknown as { openedPanels?: unknown }).openedPanels)).toEqual([{ kind: 'process', name: 'api' }]);
 });
 
-test("shows a process action in flight elsewhere on that process's section", async ({ page }) => {
+test("shows a process action in flight elsewhere on that process's row", async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
@@ -367,20 +361,23 @@ test("shows a process action in flight elsewhere on that process's section", asy
 
   await page.getByRole('button', { name: 'Stack controls: running', exact: true }).click();
   const api = page.getByRole('group', { name: 'api process' });
-  await expect(api.locator('.stack-process-state')).toHaveText('Restarting…');
+  await expect(api.locator('.stack-row .stack-process-state')).toHaveText('Restarting…');
+  await api.locator('.stack-row').click();
   await expect(api.getByRole('button', { name: 'Restart api', exact: true })).toBeDisabled();
-  await expect(page.getByRole('group', { name: 'sync process' }).getByRole('button', { name: 'Stop sync', exact: true })).toBeDisabled();
+  const sync = page.getByRole('group', { name: 'sync process' });
+  await sync.locator('.stack-row').click();
+  await expect(sync.getByRole('button', { name: 'Stop sync', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Restart stack', exact: true })).toBeDisabled();
   await page.keyboard.press('Escape');
 
   // a lone process's action shows as the stack's own
   await page.getByRole('button', { name: 'Stack controls: working', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Stopping…', exact: true })).toBeDisabled();
-  await expect(page.locator('.stack-menu .stack-process')).toHaveCount(0);
+  await expect(page.getByRole('group', { name: 'dev process' }).locator('.stack-row .stack-process-state')).toHaveText('Stopping…');
 });
 
-// a single process is the whole stack, so the stack's own actions already act on it
-test('keeps the menu of a single Stack process compact, without a process section', async ({ page }) => {
+// a single process is the whole stack: its row shows already expanded, with nothing to relate to
+test('shows a single Stack process as its row, already expanded, without a chevron or relations', async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
@@ -389,12 +386,18 @@ test('keeps the menu of a single Stack process compact, without a process sectio
   });
 
   await page.getByRole('button', { name: 'Stack controls: running', exact: true }).click();
-  await expect(page.locator('.stack-menu .stack-process')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Show dev output', exact: true })).toBeVisible();
+  const dev = page.getByRole('group', { name: 'dev process' });
+  await expect(dev.locator('.stack-row-body')).toBeVisible();
+  await expect(dev.locator('button.stack-row')).toHaveCount(0);
+  await expect(dev.locator('.stack-row-chevron')).toHaveCount(0);
+  await expect(dev.getByRole('group', { name: 'Needs' })).toHaveCount(0);
+  await expect(dev.getByRole('button', { name: 'Start dev', exact: true })).toBeDisabled();
+  await expect(dev.getByRole('button', { name: 'Stop dev', exact: true })).toBeEnabled();
+  await expect(dev.getByRole('button', { name: 'Show dev output', exact: true })).toBeVisible();
 });
 
-// a process's notices show in its own section, and a warning marks the badge on top of its state
-test("shows a Stack process's notices in its menu section, and a warning marker on the badge", async ({ page }) => {
+// a process's notices show in its own row, and a warning marks the row and the badge on top of its state
+test("shows a Stack process's notices in its menu row, and a warning marker on the badge", async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
@@ -410,16 +413,19 @@ test("shows a Stack process's notices in its menu section, and a warning marker 
 
   await warned.click();
   const api = page.getByRole('group', { name: 'api process' });
+  // the row warns, and shows its notices once expanded
+  await expect(api.locator('.stack-row-warning')).toBeVisible();
+  await api.locator('.stack-row').click();
   await expect(api.getByRole('listitem')).toHaveText(['static is not running (obsidian-static master)', 'using the cached schema']);
   await expect(api.locator('.stack-process-notice.level-warning')).toHaveCount(1);
   await expect(page.getByRole('group', { name: 'web process' }).getByRole('listitem')).toHaveCount(0);
   await page.keyboard.press('Escape');
 
-  // a lone process has no section; its notices show in the compact menu, and info marks nothing
+  // a lone process's row is already expanded with its notices, and info marks nothing
   const lone = page.getByRole('button', { name: 'Stack controls: dev exited (1)', exact: true });
   await expect(lone.locator('.project-stack-warning')).toHaveCount(0);
   await lone.click();
-  await expect(page.locator('.stack-menu .stack-process')).toHaveCount(0);
+  await expect(page.locator('.stack-menu .stack-row-warning')).toHaveCount(0);
   await expect(page.getByRole('list', { name: 'dev notices' }).getByRole('listitem')).toHaveText(['waiting for the database']);
 });
 
@@ -435,6 +441,7 @@ test("starts a notice's process in another Worktree from the stack menu, showing
 
   await page.getByRole('button', { name: /^Stack controls: running, warning/u }).click();
   const menu = page.locator('.stack-menu');
+  await menu.locator('[aria-label="api process"] > .stack-row').click();
   const notices = menu.getByRole('list', { name: 'api notices' }).getByRole('listitem');
   const down = notices.filter({ hasText: 'static is not running' });
   // a resolved target offers Open, and Start only for a declared process that is not running
@@ -484,8 +491,86 @@ test("opens a notice's Worktree with its stack menu open", async ({ page }) => {
   });
 
   await page.getByRole('button', { name: /^Stack controls: running, warning/u }).click();
+  await page.locator('.stack-menu [aria-label="api process"] > .stack-row').click();
   await page.getByRole('list', { name: 'api notices' }).getByRole('listitem').filter({ hasText: 'static is not running' }).getByRole('button', { name: 'Open Static · master', exact: true }).click();
   expect(await page.evaluate(() => (window as unknown as { openedTargets?: string[] }).openedTargets)).toEqual(['site:/code/static']);
   await expect(page.getByRole('button', { name: 'Stack controls: stopped', exact: true })).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('.stack-menu').getByRole('button', { name: 'Start stack', exact: true })).toBeEnabled();
+});
+
+// The down rule: a used process that is not running (stopped or exited) counts as down only while
+// a process here that uses it runs or is starting, on its row, on the Other worktrees row and on
+// the badge; another process here running does not count
+test('warns of a used process that is down only while a process using it runs', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderUsesControls } = await import('/e2e/project-open-fixture.tsx');
+    renderUsesControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  const badge = page.getByRole('button', { name: 'Stack controls: 2 of 3 running, warning: static in Static Site / Main is not running; queue in Queue / Main is not running', exact: true });
+  await expect(badge.locator('.project-stack-warning')).toBeVisible();
+  await badge.click();
+  const menu = page.locator('.stack-menu');
+  const api = menu.getByRole('group', { name: 'api process' });
+  const web = menu.getByRole('group', { name: 'web process' });
+  const worker = menu.getByRole('group', { name: 'worker process' });
+  await expect(api.locator('.stack-row-warning')).toBeVisible();
+  await expect(web.locator('.stack-row-warning')).toHaveCount(0);
+  await expect(worker.locator('.stack-row-warning')).toBeVisible();
+  const others = menu.getByRole('group', { name: 'Other worktrees' });
+  const othersState = others.locator('.stack-row .stack-process-state');
+  await expect(others.locator('.stack-row .stack-row-name')).toHaveText('Other worktrees');
+  await expect(othersState).toHaveText('2 down');
+  await expect(othersState).toHaveClass(/warn/u);
+  await expect(others.locator('.stack-others-dots .stack-process-dot')).toHaveCount(4);
+
+  // once api stops, nothing here that uses static runs, though worker still does
+  await api.locator('.stack-row').click();
+  await api.getByRole('button', { name: 'Stop api', exact: true }).click();
+  await expect(othersState).toHaveText('1 down');
+  await expect(api.locator('.stack-row-warning')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Stack controls: 1 of 3 running, warning: queue in Queue / Main is not running', exact: true })).toBeVisible();
+
+  // a Start on its way to web, which uses static, makes static matter again
+  await page.evaluate(() => (window as unknown as { startWeb: () => void }).startWeb());
+  await expect(othersState).toHaveText('2 down');
+  await expect(web.locator('.stack-row-warning')).toBeVisible();
+});
+
+test("lists a process's uses in its row, and starts, stops and opens them in their own Worktree", async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderUsesControls } = await import('/e2e/project-open-fixture.tsx');
+    renderUsesControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+  const recorded = (key: 'useActions'|'openedWorktrees') => page.evaluate(name => (window as unknown as Record<string, unknown>)[name], key);
+
+  await page.getByRole('button', { name: /^Stack controls/u }).click();
+  const menu = page.locator('.stack-menu');
+  const api = menu.getByRole('group', { name: 'api process' });
+  await api.locator('.stack-row').click();
+  const uses = api.getByRole('group', { name: 'Uses' });
+  const staticLine = uses.getByRole('group', { name: 'static in Static Site / Main' });
+  await expect(staticLine.locator('.stack-use-where')).toHaveText('Static Site / Main');
+  // one the console could not place shows by its path, with nothing to act on
+  await expect(uses.getByRole('group', { name: 'docs in /code/elsewhere' }).getByRole('button')).toHaveCount(0);
+  await staticLine.getByRole('button', { name: 'Start static in Static Site / Main', exact: true }).click();
+  // a running used process offers no Start in a row, only Open
+  await expect(staticLine.getByRole('button', { name: /^Start static/u })).toHaveCount(0);
+  await staticLine.getByRole('button', { name: 'Open Static Site / Main', exact: true }).click();
+
+  // the Other worktrees row lists each used process with what uses it, and stops a running one
+  const others = menu.getByRole('group', { name: 'Other worktrees' });
+  await others.locator('.stack-row').click();
+  const staticOther = others.getByRole('group', { name: 'static in Static Site / Main' });
+  await expect(staticOther.locator('.stack-use-users')).toHaveText('used by api, web');
+  await expect(others.getByRole('group', { name: 'search in Search / Main' }).locator('.stack-use-users')).toHaveText('used by web');
+  await staticOther.getByRole('button', { name: 'Stop static in Static Site / Main', exact: true }).click();
+  await expect(staticOther.getByRole('button', { name: 'Start static in Static Site / Main', exact: true })).toBeVisible();
+  await expect(menu).toBeVisible();
+  expect(await recorded('useActions')).toEqual(['start site:/code/static static', 'stop site:/code/static static']);
+  expect(await recorded('openedWorktrees')).toEqual(['site:/code/static']);
 });

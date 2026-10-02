@@ -76,7 +76,8 @@ runs in Docker). That means:
 
 The console starts a process as a window of the Worktree's Workspace session,
 named for the process. On top of the environment above, it exports
-`RAC_PROCESS_NOTICES` (see [Process notices](#process-notices)).
+`RAC_PROCESS_USES` (see [Uses](#uses)) and `RAC_PROCESS_NOTICES` (see
+[Process notices](#process-notices)).
 
 The command must **stay in the foreground** for as long as the service runs.
 The console reads the state straight from the pane: a live pane is running, a
@@ -127,13 +128,58 @@ A process belongs to tmux, not to the console. It keeps running across a
 console restart, and the console finds it again by tags on its window. The
 helper needs to do nothing for this.
 
+## Uses
+
+A process can report the processes it relies on in other Worktrees, such as
+an API another repository's checkout serves. The console shows each one, with
+its live state there, under the process that uses it, in an "Other worktrees"
+row of the stack menu, and in the Stack panel, which also reads its output from
+its own Worktree. The operator can start, stop or open it there; the console
+never does on its own.
+
+A used process counts as **down** only when it is not running and a process
+here that uses it is running or starting. Then the user's row, the Other
+worktrees row and the stack badge warn, so a helper has no need of "is not
+running" notices: report every peer, running or not, and let the console tell
+which are down.
+
+### The file
+
+`RAC_PROCESS_USES` holds the absolute path of `rac/processes/<name>.uses.json`
+in the Worktree's git directory. The console removes the file before each
+Start, but **a Stop leaves it**, so a stopped process still shows what it used
+last time. Write it at the start of every run. The variable is absent when the
+console could not set up that directory.
+
+The helper writes a JSON array:
+
+```json
+[
+  { "worktree": "/code/backend", "process": "api" },
+  { "worktree": "/code/static", "process": "static" }
+]
+```
+
+| Field      | Required | Meaning |
+|------------|----------|---------|
+| `worktree` | yes      | Absolute path, of at most 4096 characters, of a checkout of any configured Project. The console resolves symlinks and matches it to a Worktree. |
+| `process`  | yes      | A Stack process that checkout declares, by the name its Project's config gives it: letters, digits, `_` and `-`, at most 40. |
+
+An entry whose checkout the console does not know, or whose process that
+Worktree does not declare, still shows, by its path alone, with nothing to act
+on. The file is read and refused as the notices file is: reread only when it
+changes, ignored whole (and logged) when it is over 64 KB, not a regular file,
+not valid JSON, or has an entry that does not match the table, and only its
+first 20 entries are read.
+
 ## Process notices
 
 A process can report short messages about its own run, which the stack menu
-shows under that process. A `warning` also marks the stack badge. The typical
-use is a peer in another checkout that is not running: the notice offers
-**Open** for that Worktree and, when it names a process the Worktree declares,
-**Start** for it. Only the operator's click starts it.
+shows under that process. A `warning` also marks the stack badge. A notice can
+name a checkout, for which it offers **Open**, and a process the Worktree
+there declares, for which it offers **Start** while that process is not
+running. Only the operator's click starts it. For a peer the process relies
+on, report a use instead.
 
 ### The file
 
@@ -165,16 +211,17 @@ included), is not valid JSON, or has a notice that does not match the table.
 Only the first 20 notices are read. To avoid a half-written file being read,
 write a temporary file beside it and rename it into place.
 
-### Do not pass the variable on
+## Do not pass the variables on
 
-The file belongs to the helper. **Unset `RAC_PROCESS_NOTICES` before
-`exec`-ing the service**, so a service that happens to use the same variable,
-or a nested helper, cannot overwrite the helper's notices.
+The files belong to the helper. **Unset `RAC_PROCESS_USES` and
+`RAC_PROCESS_NOTICES` before `exec`-ing the service**, so a service that
+happens to use the same variables, or a nested helper, cannot overwrite the
+helper's reports.
 
-### Naming processes in other Worktrees
+## Naming processes in other Worktrees
 
-For **Start** to appear, `process` must be the name the *other* Project's
-config gives that service. A helper that keeps its own service registry has
+For a used process, or a notice's **Start**, to be acted on, `process` must be
+the name the *other* Project's config gives that service. A helper that keeps its own service registry has
 to keep those names in step with the console config. `ods` does this by
 generating the `commands` block from its registry (`ods console-config`).
 
@@ -182,7 +229,7 @@ generating the `commands` block from its registry (`ods console-config`).
 
 `setup`, `build`, `migrate`, and in the daemon-style shape `start`, `stop`
 and `restart`, run to completion in a tmux session of their own, with the
-environment above and no `RAC_PROCESS_NOTICES`.
+environment above and neither `RAC_PROCESS_USES` nor `RAC_PROCESS_NOTICES`.
 
 - **`setup`** runs once, when the console creates a Worktree, before any
   agent launches. Exit 0 lets the launch go ahead; anything else, or running
@@ -229,14 +276,12 @@ case "${1:-}" in
     ;;
   exec)
     name="${2:?usage: mystack exec <name>}"
-    notices="${RAC_PROCESS_NOTICES:-}"
-    unset RAC_PROCESS_NOTICES
-    if [[ $name == web ]] && ! curl -fsS -o /dev/null http://127.0.0.1:4000/health; then
-      echo "mystack: the backend api is not answering on :4000" >&2
-      if [[ -n $notices ]]; then
-        printf '[{"level":"warning","message":"the backend api is not running","worktree":"%s","process":"api"}]' "$backend" > "$notices.tmp"
-        mv "$notices.tmp" "$notices"
-      fi
+    uses="${RAC_PROCESS_USES:-}"
+    unset RAC_PROCESS_USES RAC_PROCESS_NOTICES
+    # web relies on the backend checkout's api, running or not
+    if [[ $name == web && -n $uses ]]; then
+      printf '[{"worktree":"%s","process":"api"}]' "$backend" > "$uses.tmp"
+      mv "$uses.tmp" "$uses"
     fi
     case "$name" in
       db) exec postgres -D .data/postgres -p 5433 ;;
@@ -251,12 +296,13 @@ case "${1:-}" in
 esac
 ```
 
-It runs every service in the foreground through `exec`, keeps the notices
-file to itself, writes the file whole, and still starts `web` when the peer is
-down, so the service can fail in its own words. The `printf` does not escape
-the path for JSON; a real helper builds the notice with a JSON encoder.
+It runs every service in the foreground through `exec`, keeps the report files
+to itself, writes the uses file whole, and reports the backend's `api` whether
+or not it runs, leaving the console to warn while it is down. The `printf`
+does not escape the path for JSON; a real helper builds the file with a JSON
+encoder.
 
 Run it by hand before configuring it: from a checkout, `mystack exec web`
 should run in the foreground and stop on Ctrl+C, and
-`RAC_PROCESS_NOTICES=/tmp/n.json mystack exec web` should leave a valid file
-in `/tmp/n.json` while the backend is down.
+`RAC_PROCESS_USES=/tmp/u.json mystack exec web` should leave a valid file in
+`/tmp/u.json`.

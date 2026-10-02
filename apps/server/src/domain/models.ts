@@ -27,10 +27,16 @@ export type StackCommands = Partial<Record<StackAction | 'status' | 'setup', str
 // run, and, when it names a discovered Worktree, that Worktree as the dashboard labels it, with
 // the process it names there and that process's state when the Worktree declares it
 export type ProcessNotice = { level: 'warning' | 'info'; message: string; target?: { worktreeId: string; label: string; process?: string; state?: 'exited' | 'stopped' } };
+// A process in another Worktree that a Stack process reported it uses, as the dashboard serves
+// it: when its checkout is a discovered Worktree that declares it, that Worktree, labelled
+// "<Project> / <Worktree>", and the process's state there, running or not; otherwise only the
+// checkout path as its label, with nothing to act on
+export type ProcessUse = { worktreeId?: string; label: string; process: string; state?: 'running' | 'exited' | 'stopped'; exitCode?: number };
 // one Stack process as tmux shows it: its pane live, dead with the exit status tmux kept
 // (absent after a signal), or no window at all; `operation` is an action on it alone in flight,
-// and `notices` the Process notices it reported that are showing, absent when there are none
-export type StackProcessState = { name: string; state: 'running' | 'exited' | 'stopped'; exitCode?: number; operation?: StackAction; notices?: ProcessNotice[] };
+// `notices` the Process notices it reported that are showing, `dependsOn` the processes here it
+// needs and `uses` those in other Worktrees it last reported using, each absent when empty
+export type StackProcessState = { name: string; state: 'running' | 'exited' | 'stopped'; exitCode?: number; operation?: StackAction; notices?: ProcessNotice[]; dependsOn?: string[]; uses?: ProcessUse[] };
 // canonical checkout settings with project defaults already resolved
 export type WorktreeOverride = { path: string; commands?: StackCommands; projectUrl?: string; projectPort?: number };
 export type PromptAction = { label: string; prompt: string };

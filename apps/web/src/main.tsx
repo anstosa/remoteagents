@@ -20,7 +20,9 @@ import { ProjectOpen } from './project-open.js';
 import type { CodePanelReview } from './code-panel/code-panel.js';
 import { savedCodeOpen, saveCodeOpen, supportingChange, useCodePanel, type CodePanelController, type CodePanelMode } from './code-panel/comparison.js';
 import { PullRequestCard, PullRequestFixup, PullRequestIndicators, type PullRequestSummary } from './pull-request-card.js';
-import { isStackOperationLog, isStackProcessOutput, type StackAction, type StackOperationLog, type StackProcessOutput, type StackProcessState, type StartableNoticeTarget } from './stack-operations.js';
+import { isStackOperationLog, isStackProcessOutput, type StackAction, type StackOperationLog, type StackProcessOutput, type StackProcessState, type StackSelection, type StartableNoticeTarget } from './stack-operations.js';
+import { StackPanel } from './stack-panel.js';
+import { StackIcon, stackGlyphs, type ProcessAction, type StackHandlers } from './stack-controls.js';
 import { SyntaxHighlightedCode } from './syntax-highlight.js';
 import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigation.js';
 import { defaultTerminalFontSize, maxTerminalFontSize, minTerminalFontSize, resetTerminalFontSize, stepTerminalFontSize, useTerminalFontSize } from './terminal-font-size.js';
@@ -122,6 +124,15 @@ const launcherRowLabel = (worktree: Worktree, project: Project): string => {
   // remove a redundant generated project prefix
   if (worktree.label.startsWith(prefix)) return worktree.label.slice(prefix.length);
   return worktree.label;
+};
+// a Worktree's stack as the stack controls name it: its Project, and the Worktree, Main or as its
+// launcher row names it (the server names a process used in another Worktree the same way)
+const stackPlaceName = (worktreeId: string | undefined, projects: readonly Project[]): { project: string; worktree: string } | undefined => {
+  for (const project of projects) {
+    const worktree = project.worktrees.find(candidate => candidate.id === worktreeId);
+    if (worktree !== undefined) return { project: project.label, worktree: worktree.main && worktree.customLabel !== true ? 'Main' : launcherRowLabel(worktree, project) };
+  }
+  return undefined;
 };
 // reproduce discovery's label when an operator clears a custom Worktree name
 const generatedWorktreeLabel = (worktree: Worktree, project: Project): string => {
@@ -641,12 +652,22 @@ const processOutput = async (worktreeId: string, name: string): Promise<StackPro
 const processActionUrl = (worktreeId: string, name: string, action: StackAction) => `/api/worktrees/${encodeURIComponent(worktreeId)}/processes/${encodeURIComponent(name)}/${action}`;
 // start the process a notice names in its own Worktree, as that Worktree's menu would, throwing
 // the console's reason when it refuses (busy) or fails
-const startNoticeProcess = async (target: StartableNoticeTarget) => {
-  const response = await request(processActionUrl(target.worktreeId, target.process, 'start'), { method: 'POST' });
+const startNoticeProcess = (target: StartableNoticeTarget) => sendUseAction(target.worktreeId, target.process, 'start');
+// start or stop a process another Worktree declares, as that Worktree's own stack menu would,
+// throwing the console's reason when it refuses (busy) or fails
+const sendUseAction = async (worktreeId: string, name: string, action: ProcessAction) => {
+  const response = await request(processActionUrl(worktreeId, name, action), { method: 'POST' });
   if (response.ok) return;
   const payload = await response.json().catch(() => undefined) as { error?: unknown } | undefined;
-  throw new Error(typeof payload?.error === 'string' ? payload.error : `Unable to start ${target.process}.`);
+  throw new Error(typeof payload?.error === 'string' ? payload.error : `Unable to ${action} ${name}.`);
 };
+// the actions one Worktree's stack controls send: the whole stack, one of its processes, and a
+// process it uses in another Worktree
+const stackHandlers = (worktreeId: string): StackHandlers => ({
+  onStackAction: action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' }),
+  onProcessAction: (name, action) => request(processActionUrl(worktreeId, name, action), { method: 'POST' }),
+  onUseAction: sendUseAction
+});
 // The stack menu a notice's Open asked a Worktree's toolbar to show once it mounts, as switching
 // to that Worktree's tab does (each tab's card is keyed by its Place, so it mounts afresh). It
 // lapses unshown if the tab never comes.
@@ -794,6 +815,8 @@ const voiceHoldDelayMs = 450;
 const ServerContext = createContext<ServerInfo | undefined>(undefined);
 const ServerStatusContext = createContext<Readonly<Record<string, InstanceAttention>>>({});
 const VoiceTriggerContext = createContext<{ open: () => void; active: boolean; visible: boolean; name: string } | undefined>(undefined);
+// the dashboard's Projects and their Worktrees, which name a Worktree's stack "<Project> / <Worktree>"
+const ProjectsContext = createContext<readonly Project[]>([]);
 // refresh open schedules on dashboard advances and closed badges on queued-note additions
 const DashboardGenerationContext = createContext<{ generation?: number; notesRevision?: number; serverStartedAt?: number }>({});
 type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
@@ -4393,6 +4416,28 @@ const saveBrowserSplit = (worktreeId: string | undefined, open: boolean) => {
   try { localStorage.setItem(browserSplitKey(worktreeId), open ? 'open' : 'closed'); }
   catch { /* browser storage is optional */ }
 };
+// Whether a Worktree's Stack panel is open, remembered per Worktree like the browser split, and
+// what it shows, which is not
+const stackPanelKey = (worktreeId: string) => `rac.stack-panel:${worktreeId}`;
+const savedStackPanel = (worktreeId: string) => {
+  try { return localStorage.getItem(stackPanelKey(worktreeId)) === 'open'; }
+  catch { return false; }
+};
+const saveStackPanel = (worktreeId: string, open: boolean) => {
+  try { localStorage.setItem(stackPanelKey(worktreeId), open ? 'open' : 'closed'); }
+  catch { /* browser storage is optional */ }
+};
+function useStackPanel(worktreeId: string | undefined) {
+  const [open, setOpen] = useState(() => worktreeId !== undefined && savedStackPanel(worktreeId));
+  const [selection, setSelection] = useState<StackSelection>();
+  const save = (value: boolean) => {
+    setOpen(value);
+    if (worktreeId !== undefined) saveStackPanel(worktreeId, value);
+  };
+  // open the panel on `next`, or on its first process when nothing is named
+  const openOn = (next?: StackSelection) => { setSelection(next); save(true); };
+  return { open: open && worktreeId !== undefined, selection, select: setSelection, openOn, close: () => save(false) };
+}
 // retain browser state for one worktree
 function useProjectBrowser(homeUrl?: string, worktreeId?: string, projectProxied?: boolean) {
   const proxied = projectProxied !== false;
@@ -4744,14 +4789,14 @@ type SplitSizes = Record<string, number>;
 type SplitStyle = React.CSSProperties & { '--agent-split': string; '--note-split': string; '--browser-split': string; '--split-cols': string };
 type SplitDrag = { pointerId: number; startX: number; left: string; right: string; leftWidth: number; rightWidth: number; sizes: SplitSizes; resized?: SplitSizes };
 // the fixed panels' selectors; a Terminal column carries its pane id as `data-panel-key`
-const splitPanelSelector = (key: string): string => key === 'agent' ? '.log-output' : key === 'note' ? '.note-pane' : key === 'browser' ? '.browser-pane' : key === 'code' ? '.code-pane' : `.terminal-pane[data-panel-key="${key}"]`;
+const splitPanelSelector = (key: string): string => key === 'agent' ? '.log-output' : key === 'note' ? '.note-pane' : key === 'browser' ? '.browser-pane' : key === 'code' ? '.code-pane' : key === 'stack' ? '.stack-pane' : `.terminal-pane[data-panel-key="${key}"]`;
 const browserMobileWidth = 390;
 const minimumSplitPanelWidth = browserMobileWidth;
 // the panel kind for a key: the fixed panels are themselves, every Terminal is "terminal".
 // Drives the mobile view class, the phone dot's tint and a resizer's aria-label alike.
-const splitPanelKind = (key: string): string => key === 'agent' || key === 'note' || key === 'browser' || key === 'code' ? key : 'terminal';
+const splitPanelKind = (key: string): string => key === 'agent' || key === 'note' || key === 'browser' || key === 'code' || key === 'stack' ? key : 'terminal';
 // name the fixed splits in the phone chooser
-const splitPanelTitles: Record<string, string> = { agent: 'Agent output', note: 'Note', browser: 'Project browser', code: 'Code changes' };
+const splitPanelTitles: Record<string, string> = { agent: 'Agent output', note: 'Note', browser: 'Project browser', code: 'Code changes', stack: 'Stack' };
 // scope split layouts to one browser client and workspace composition
 const splitSizesKey = (worktreeId: string, signature: string) => `rac.split-sizes:${worktreeId}:${signature}`;
 // one panel weight is valid when finite, positive and not absurd
@@ -4788,11 +4833,11 @@ function CodePane({ controller, prAvailable, branch, review }: { controller: Cod
   </Suspense>;
 }
 // render ordered resizable output panels: the agent (when one runs or is starting), any Terminals,
-// then note, browser and code; with none open it shows `empty`
+// then note, browser, code and stack; with none open it shows `empty`
 // `expansion` is the Workspace's expanded panel; a split without a Workspace keeps its own.
 // On a phone the panels sit in a swipe carousel, one per screen; `onCarousel` hears its panels and
 // the one in view, for the toolbar's dots.
-function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, terminals, terminalSelectionActions, onCarousel, initialPanelsReady, expansion: workspaceExpansion }: { worktreeId?: string; output?: ReactNode; empty?: ReactNode; note?: ReactNode; browser?: ReactNode; code?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onCarousel?: (carousel: PanelCarousel) => void; initialPanelsReady?: boolean; expansion?: PanelExpansion }) {
+function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, stack, terminals, terminalSelectionActions, onCarousel, initialPanelsReady, expansion: workspaceExpansion }: { worktreeId?: string; output?: ReactNode; empty?: ReactNode; note?: ReactNode; browser?: ReactNode; code?: ReactNode; stack?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onCarousel?: (carousel: PanelCarousel) => void; initialPanelsReady?: boolean; expansion?: PanelExpansion }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const ownExpansion = usePanelExpansion();
   const expansion = workspaceExpansion ?? ownExpansion;
@@ -4800,6 +4845,7 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
   const hasNote = note !== undefined && note !== null;
   const hasBrowser = browser !== undefined && browser !== null;
   const hasCode = code !== undefined && code !== null;
+  const hasStack = stack !== undefined && stack !== null;
   const termCols = terminals ?? [];
   const hasTerminals = termCols.length > 0;
   const hasAgent = output !== undefined && output !== null;
@@ -4809,7 +4855,8 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
     ...termCols.map(col => ({ key: col.key, node: col.node })),
     ...(hasNote ? [{ key: 'note', node: note }] : []),
     ...(hasBrowser ? [{ key: 'browser', node: browser }] : []),
-    ...(hasCode ? [{ key: 'code', node: code }] : [])
+    ...(hasCode ? [{ key: 'code', node: code }] : []),
+    ...(hasStack ? [{ key: 'stack', node: stack }] : [])
   ];
   const keys = columns.map(column => column.key);
   // one layout per open-panel composition (the ordered keys), so opening or closing a panel
@@ -4949,7 +4996,7 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
     return index === 0 ? [node] : [resizer(columns[index - 1].key, column.key), node];
   });
   const mobileView = carousel.visibleKey !== undefined ? ` mobile-${splitPanelKind(carousel.visibleKey)}-view` : '';
-  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasAgent ? '' : ' no-agent'}${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown} onPointerDown={startContentSwipe} onPointerUp={contentSwipe.onPointerUp} onPointerCancel={contentSwipe.onPointerCancel} onTouchStart={startContentTouchSwipe} onTouchEnd={contentSwipe.onTouchEnd} onTouchCancel={contentSwipe.onTouchCancel} onClickCapture={contentSwipe.onClickCapture}>{columns.length === 0 ? empty : laidOut}</div></PanelExpandContext.Provider>;
+  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasAgent ? '' : ' no-agent'}${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasStack ? ' has-stack' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown} onPointerDown={startContentSwipe} onPointerUp={contentSwipe.onPointerUp} onPointerCancel={contentSwipe.onPointerCancel} onTouchStart={startContentTouchSwipe} onTouchEnd={contentSwipe.onTouchEnd} onTouchCancel={contentSwipe.onTouchCancel} onClickCapture={contentSwipe.onClickCapture}>{columns.length === 0 ? empty : laidOut}</div></PanelExpandContext.Provider>;
 }
 
 // One pane of a Worktree the picker can show as a Terminal (the wire shape of
@@ -4992,6 +5039,7 @@ const saveTerminals = (worktreeId: string | undefined, open: OpenTerminal[]) => 
 const forgetOpenPanels = (placeId: string) => {
   saveTerminals(placeId, []);
   saveBrowserSplit(placeId, false);
+  saveStackPanel(placeId, false);
   clearWorktreeNoteView(placeId);
 };
 // a Place's live panes, or undefined when they could not be listed
@@ -5671,6 +5719,7 @@ type WorkspaceNotesOptions = { agentWorking?: boolean; latestAssistantMessage?: 
 function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNavigateWorktree, onOperationFeedback }: { agentId?: string; noteOptions: WorkspaceNotesOptions; onNavigateWorktree?: (worktreeId: string) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
   const browser = useProjectBrowser(place.projectUrl, place.id, place.projectProxied);
   const code = useCodePanel(place.worktreeId, request, comparisonChangeSignal(place.gitStatus, place.gitPrStatus, place.attention));
+  const stackPanel = useStackPanel(place.worktreeId);
   const terminals = useTerminalViews(place.id);
   // keep the toolbar dots aligned with the visible phone panel
   const [carousel, setCarousel] = useState<PanelCarousel>();
@@ -5705,6 +5754,7 @@ function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNa
         if (placeNotes.active) placeNotes.close();
         browser.close();
         code.close();
+        stackPanel.close();
         terminals.closeAll();
         expansion.restore();
         // retain a restore action only when an agent or draft was actually visible
@@ -5723,7 +5773,9 @@ function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNa
   });
   // restore and reveal a minimized agent without creating a new session
   const showAgent = () => { pendingWorkspaceJumps.set(key, 'agent'); setAgentSplitHidden(key, false); };
-  return { place, browser, code, terminals, carousel, setCarousel, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded, agentHidden, showAgent, viewKey: key };
+  // open the Stack panel (on `selection`, when given) and bring it into view
+  const openStackPanel = (selection?: StackSelection) => { stackPanel.openOn(selection); pendingWorkspaceJumps.set(key, 'stack'); };
+  return { place, browser, code, stackPanel, openStackPanel, terminals, carousel, setCarousel, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded, agentHidden, showAgent, viewKey: key };
 }
 type WorkspaceState = ReturnType<typeof useWorkspace>;
 // The git actions only an Agent offers (push, fixup, guided review); an agentless Workspace passes
@@ -5739,10 +5791,12 @@ function WorkspaceGitStatus({ workspace, actions, onToggle }: { workspace: Works
 }
 
 // Render one Place's panels in the resizable split: the agent panel first (while an Agent runs or
-// is starting here), then Terminals, note, browser and code. With no panel open the Workspace
+// is starting here), then Terminals, note, browser, code and stack. With no panel open the Workspace
 // shows `empty` instead. With no agent panel the Workspace is idle.
-function Workspace({ workspace, output, empty, git, onAddToPrompt }: { workspace: WorkspaceState; output?: ReactNode; empty?: ReactNode; git?: WorkspaceGitActions; onAddToPrompt?: (text: string) => void }) {
-  const { place, browser, code, notes, expansion } = workspace;
+// `onOpenWorktreeStack` is a used process's Open in the Stack panel, which switches to its Worktree.
+function Workspace({ workspace, output, empty, git, onAddToPrompt, onOpenWorktreeStack }: { workspace: WorkspaceState; output?: ReactNode; empty?: ReactNode; git?: WorkspaceGitActions; onAddToPrompt?: (text: string) => void; onOpenWorktreeStack?: (worktreeId: string) => void }) {
+  const { place, browser, code, stackPanel, notes, expansion } = workspace;
+  const projects = useContext(ProjectsContext);
   const visibleOutput = workspace.agentHidden ? undefined : output;
   const idle = visibleOutput === undefined || visibleOutput === null;
   // With no Agent there is no output to split against, so the Code panel opens filling the Workspace.
@@ -5770,7 +5824,11 @@ function Workspace({ workspace, output, empty, git, onAddToPrompt }: { workspace
   const browserPane = browser.url === undefined || browser.homeUrl === undefined ? null : <ProjectBrowserPane url={browser.url} homeUrl={browser.homeUrl} proxied={browser.proxied} worktreeId={place.id} navigationRequest={browser.navigationRequest} onNavigate={browser.navigate} onClose={browser.close} />;
   const review = git === undefined || (git.onReview === undefined && git.reviewUnavailable === undefined) ? undefined : { onReview: git.onReview, open: git.review !== undefined, unavailable: git.reviewUnavailable };
   const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} branch={place.branch} review={review} /> : null;
-  return <SelectionActionsContext.Provider value={selectionActions}><section className="log-shell" data-workspace-key={workspace.viewKey}><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={visibleOutput} empty={empty} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onCarousel={workspace.setCarousel} initialPanelsReady={notes.initialNotesLoaded} /></div><ClientSettingsPane /></section></SelectionActionsContext.Provider>;
+  const stackName = stackPlaceName(place.worktreeId, projects);
+  const placeId = place.id;
+  // the Stack panel shows only for a Worktree whose stack has processes to show
+  const stackPane = !stackPanel.open || place.worktreeId === undefined || (place.stack?.processes?.length ?? 0) === 0 ? null : <StackPanel worktreeId={place.worktreeId} title={stackName === undefined ? 'this worktree' : `${stackName.project} / ${stackName.worktree}`} stack={place.stack} selection={stackPanel.selection} onSelect={stackPanel.select} onClose={stackPanel.close} handlers={stackHandlers(place.worktreeId)} onOpenWorktree={onOpenWorktreeStack} onOpenTerminal={placeId === undefined ? undefined : (paneId, name) => { /* on a phone an already-open panel is scrolled to; a new one comes into view as it opens */ workspace.carousel?.show(paneId); requestTerminalFocus(placeId, { paneId, name }); }} readOutput={processOutput} />;
+  return <SelectionActionsContext.Provider value={selectionActions}><section className="log-shell" data-workspace-key={workspace.viewKey}><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={visibleOutput} empty={empty} note={notes.pane} browser={browserPane} code={codePane} stack={stackPane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onCarousel={workspace.setCarousel} initialPanelsReady={notes.initialNotesLoaded} /></div><ClientSettingsPane /></section></SelectionActionsContext.Provider>;
 }
 
 type LogProps = { id: string; embedded?: boolean; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined, overflow: boolean) => void; header?: (connection: string) => ReactNode; composer?: ReactNode; notes?: WorktreeNotes; onAddToPrompt?: (text: string) => void; onOpenUrl?: (url: string) => boolean; onOpenFile?: (path: string) => void; processingLabel?: string; processingDetail?: string };
@@ -6453,7 +6511,7 @@ function AgentPlaceCard({ agent, agents, onSelectAgent, active, tabBar, renderNo
   const addToPrompt = (text: string) => setPromptDraft(agent.id, current => appendTextBlock(current, text));
   // the panel is keyed by Agent, so a switch swaps its output, draft, queue and pending actions
   const output = <AgentPanel key={agent.id} agent={agent} agents={agents} onSelectAgent={onSelectAgent} active={active} displayLabel={displayLabel} workspace={workspace} promptHistory={promptHistory} historyOpen={historyOpen} onHistoryOpenChange={changeHistoryOpen} latestAssistantMessage={latestAssistantMessage} onMetadata={reportMetadata} onAddToPrompt={addToPrompt} onOpenFile={openFileInCode} onOpenUrl={openOutputUrl} onDeleted={onDeleted} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} />;
-  return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}{renderNotifications(upstreamRebase)}<WorkspaceToolbar workspace={workspace} hasAgent launch={launch} onOpenWorktreeStack={onOpenWorktreeStack} git={gitActions} onGitToggle={() => setHistoryOpen(false)} cleanupControl={cleanupControl} menu={{ agentId: agent.id, worktreeId: agent.worktreeId, git: agent.worktreeId !== undefined || agent.placeId === undefined, pinned, onTogglePin, onRemoveWorktree, removeDisabledReason }} /></article>;
+  return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onAddToPrompt={addToPrompt} onOpenWorktreeStack={onOpenWorktreeStack} />{tabBar}{renderNotifications(upstreamRebase)}<WorkspaceToolbar workspace={workspace} hasAgent launch={launch} onOpenWorktreeStack={onOpenWorktreeStack} git={gitActions} onGitToggle={() => setHistoryOpen(false)} cleanupControl={cleanupControl} menu={{ agentId: agent.id, worktreeId: agent.worktreeId, git: agent.worktreeId !== undefined || agent.placeId === undefined, pinned, onTogglePin, onRemoveWorktree, removeDisabledReason }} /></article>;
 }
 
 // One Agent's panel inside its Place's Workspace: the live output under the floating header (the
@@ -6699,8 +6757,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, onOpenWorktreeS
   const visibleLaunch = launch ?? globalLaunch;
   const place = workspace?.place;
   const worktreeId = place?.worktreeId;
-  // the Place whose Terminals a Stack process's "Open as Terminal" joins
-  const placeId = place?.id;
+  const projects = useContext(ProjectsContext);
   // a notice's Open in another Worktree asks this one's stack menu to open
   const stackMenuRequested = useRequestedStackMenu(worktreeId);
   // a Worktree shows its git status, a directory-Project or Scratch Place its path; an Agent the
@@ -6711,6 +6768,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, onOpenWorktreeS
   if (phone && workspace !== undefined) {
     const { browser, code, carousel } = workspace;
     menuPanels.push({ key: 'browser', label: 'Browser', icon: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{browserGlyph}</svg>, title: browser.homeUrl === undefined ? 'No project URL is configured here' : 'Show the project in the browser panel', disabled: browser.homeUrl === undefined, onSelect: () => browser.open ? carousel?.show('browser') : browser.toggle() });
+    if (worktreeId !== undefined && (place?.stack?.processes?.length ?? 0) > 0) menuPanels.push({ key: 'stack', label: 'Stack', icon: <StackIcon path={stackGlyphs.panel} className="more-menu-icon" />, title: 'Show the Stack panel', onSelect: () => workspace.openStackPanel() });
     if (worktreeId !== undefined) menuPanels.push({ key: 'code', label: 'Code', icon: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{codeGlyph}</svg>, title: 'Show the working changes in the Code panel', onSelect: () => code.open ? carousel?.show('code') : code.openChanges('working') });
   }
   // a phone toolbar action replaces the settings panel with its chosen workspace view
@@ -6725,7 +6783,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, onOpenWorktreeS
     {phone && !settingsSplit?.open && workspace?.carousel !== undefined && workspace.carousel.panels.length > 1 ? <PanelDots carousel={workspace.carousel} /> : <span className="toolbar-spacer" aria-hidden="true" />}
     {cleanupControl}
     {workspace !== undefined && (hasGit ? <WorkspaceGitStatus workspace={workspace} actions={git} onToggle={onGitToggle} /> : place?.path !== undefined && <span className="toolbar-path" title={place.path}>{place.path}</span>)}
-    {workspace !== undefined && <ProjectOpen url={place?.projectUrl} stack={place?.stack} browserOpen={workspace.browser.open} onBrowserToggle={workspace.browser.toggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} onProcessOutput={worktreeId === undefined ? undefined : name => processOutput(worktreeId, name)} onProcessAction={worktreeId === undefined ? undefined : (name, action) => request(processActionUrl(worktreeId, name, action), { method: 'POST' })} onOpenTerminal={placeId === undefined ? undefined : (paneId, name) => { /* on a phone an already-open panel is scrolled to; a new one comes into view as it opens */ workspace.carousel?.show(paneId); requestTerminalFocus(placeId, { paneId, name }); }} worktreeId={worktreeId} onOpenNoticeTarget={onOpenWorktreeStack === undefined ? undefined : target => onOpenWorktreeStack(target.worktreeId)} onStartNoticeTarget={startNoticeProcess} menuRequested={stackMenuRequested} />}
+    {workspace !== undefined && <ProjectOpen url={place?.projectUrl} title={stackPlaceName(worktreeId, projects)?.worktree} stack={place?.stack} browserOpen={workspace.browser.open} onBrowserToggle={workspace.browser.toggle} {...(worktreeId === undefined ? {} : stackHandlers(worktreeId))} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} onOpenStackPanel={worktreeId === undefined ? undefined : workspace.openStackPanel} worktreeId={worktreeId} onOpenWorktree={onOpenWorktreeStack} onStartNoticeTarget={startNoticeProcess} menuRequested={stackMenuRequested} />}
     {menu !== undefined && <PlaceMenu {...menu} panels={menuPanels} />}
   </div></section>;
 }
@@ -6931,7 +6989,7 @@ function WorktreeCard({ worktree, tabBar, renderNotifications, cleanupControl, t
   };
   // preserve the same dismissal when an agent starts or stops in this worktree
   const upstreamNotificationKey = JSON.stringify([worktree.id, worktree.branch, worktree.gitUpstream?.upstream]);
-  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}{renderNotifications(<UpstreamRebaseNotification key={upstreamNotificationKey} notificationKey={upstreamNotificationKey} summary={worktree.gitUpstream} />)}{error && <p className="launch-error" role="alert">{error}</p>}<WorkspaceToolbar workspace={workspace} launch={launch} onOpenWorktreeStack={onOpenWorktreeStack} conversations={workspace.conversations.control} git={gitActions} cleanupControl={cleanupControl} menu={{ worktreeId: worktree.id, git: true, onRemoveWorktree: onRemove, removeDisabledReason: processing ? 'An agent is starting or stopping here' : removeDisabledReason }} /></article>;
+  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} git={gitActions} onAddToPrompt={addToPrompt} onOpenWorktreeStack={onOpenWorktreeStack} />{tabBar}{renderNotifications(<UpstreamRebaseNotification key={upstreamNotificationKey} notificationKey={upstreamNotificationKey} summary={worktree.gitUpstream} />)}{error && <p className="launch-error" role="alert">{error}</p>}<WorkspaceToolbar workspace={workspace} launch={launch} onOpenWorktreeStack={onOpenWorktreeStack} conversations={workspace.conversations.control} git={gitActions} cleanupControl={cleanupControl} menu={{ worktreeId: worktree.id, git: true, onRemoveWorktree: onRemove, removeDisabledReason: processing ? 'An agent is starting or stopping here' : removeDisabledReason }} /></article>;
 }
 
 // The agent panel before its Agent exists: the kind, the Place and a state pill in the header,
@@ -8637,6 +8695,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       if (savedBrowserSplit(placeId) && (entry.worktree?.projectUrl ?? entry.agents[0]?.projectUrl) !== undefined) splits.push({ key: 'browser', label: 'Project browser' });
       // include retained code views
       if (savedCodeOpen(placeId)) splits.push({ key: 'code', label: 'Code changes' });
+      // a Stack panel shows only for a stack with processes
+      if (savedStackPanel(placeId) && ((entry.worktree?.stack ?? entry.agents[0]?.stack)?.processes?.length ?? 0) > 0) splits.push({ key: 'stack', label: 'Stack' });
     }
     const selectedAgent = currentAgentOf(entry);
     const noteViewId = placeId ?? (selectedAgent === undefined ? undefined : `agent:${selectedAgent.id}`);
@@ -8668,7 +8728,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       terminal: <LauncherRowIcon name="terminal" />,
       note: <PanelIcon path="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM15 21v-6h6" />,
       browser: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{browserGlyph}</svg>,
-      code: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{codeGlyph}</svg>
+      code: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{codeGlyph}</svg>,
+      stack: <StackIcon path={stackGlyphs.panel} className="more-menu-icon" />
     };
     const menu: ContextMenuItem[] = [
       { type: 'action', id: 'pin', label: place?.pinned ? 'Unpin workspace' : 'Pin workspace', icon: place?.pinned ? <LauncherRowIcon name="pin" /> : undefined, mode: 'checkbox', checked: place?.pinned ?? false, disabled: place === undefined, onSelect: () => { /* require a pinnable discovered place */ if (place !== undefined) void togglePin(place); } },
@@ -8695,8 +8756,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${className}`} title={label} aria-label={`${entry.label} — ${label}`} aria-busy={transition !== undefined} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => workspaceContextMenu(event, entry)} onClick={() => select(index)}><TabKindStack entry={entry} />{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
   })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} data-context-flyout aria-expanded={launcherOpen} onClick={() => { /* toggle the launcher */ if (launcherOpen) closeLauncher(); else setLauncherOpen(true); }}><span className="flyout-caret" aria-hidden="true" />{creatingAgent ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}</button></span>{launcherOpen && <FlyoutPortal onDismiss={closeLauncher}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}{launcherPlaceSplit('~ Scratch', scratchPlace, data.scratchLaunch, '/api/agents/launch', choice => void createAgent(choice))}</div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}{clientSettings && <ClientSettingsTrigger />}</nav>{agent === undefined && item?.worktree === undefined && renderNotifications()}</>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
-  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><OptionalClientSettingsLayout settings={clientSettings}><GlobalLaunchContext.Provider value={globalLaunch}><main className={consoleClass}>{voiceDialog}<article className="agent-view cleanup-empty-view"><section className="log-shell"><div className="log inactive-log"><div className="empty-workspace"><h2>No sessions</h2></div></div><ClientSettingsPane /></section>{tabBar}<WorkspaceToolbar cleanupControl={cleanupControl} />{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></GlobalLaunchContext.Provider></OptionalClientSettingsLayout></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
-  return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><OptionalClientSettingsLayout settings={clientSettings}><GlobalLaunchContext.Provider value={globalLaunch}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item !== undefined && agent !== undefined && <AgentPlaceCard key={item.key} agent={agent} agents={item.agents} onSelectAgent={agentId => select(visibleActive, agentId)} active={agentState(agent) === 'working'} tabBar={tabBar} renderNotifications={renderNotifications} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onOpenWorktreeStack={openWorktreeStack} onPromptFocus={() => viewAgent(agent)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} launch={activeLaunch} {...(activeWorktree !== undefined || activePlace === undefined ? {} : { pinned: activePlace.pinned, onTogglePin: () => void togglePin(activePlace) })} {...(activeWorktree === undefined ? {} : { worktreeLabel: activeWorktree.label, ...(activeWorktree.main ? {} : { onRemoveWorktree: () => setRemoveWorktreeId(activeWorktree.id), removeDisabledReason: 'Turn off the agents here before removing this worktree' }) })} />}{item?.worktree !== undefined && agent === undefined && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} renderNotifications={renderNotifications} cleanupControl={cleanupControl} transient={item.transient === true} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onOpenWorktreeStack={openWorktreeStack} onTogglePin={() => void togglePin(item.worktree!)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place !== undefined && agent === undefined && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} transient={item.transient === true} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></GlobalLaunchContext.Provider></OptionalClientSettingsLayout></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
+  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><ProjectsContext.Provider value={data.projects}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><OptionalClientSettingsLayout settings={clientSettings}><GlobalLaunchContext.Provider value={globalLaunch}><main className={consoleClass}>{voiceDialog}<article className="agent-view cleanup-empty-view"><section className="log-shell"><div className="log inactive-log"><div className="empty-workspace"><h2>No sessions</h2></div></div><ClientSettingsPane /></section>{tabBar}<WorkspaceToolbar cleanupControl={cleanupControl} />{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></GlobalLaunchContext.Provider></OptionalClientSettingsLayout></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></ProjectsContext.Provider></AdaptersContext.Provider>;
+  return <AdaptersContext.Provider value={data.adapters}><ProjectsContext.Provider value={data.projects}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><OptionalClientSettingsLayout settings={clientSettings}><GlobalLaunchContext.Provider value={globalLaunch}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item !== undefined && agent !== undefined && <AgentPlaceCard key={item.key} agent={agent} agents={item.agents} onSelectAgent={agentId => select(visibleActive, agentId)} active={agentState(agent) === 'working'} tabBar={tabBar} renderNotifications={renderNotifications} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onOpenWorktreeStack={openWorktreeStack} onPromptFocus={() => viewAgent(agent)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} launch={activeLaunch} {...(activeWorktree !== undefined || activePlace === undefined ? {} : { pinned: activePlace.pinned, onTogglePin: () => void togglePin(activePlace) })} {...(activeWorktree === undefined ? {} : { worktreeLabel: activeWorktree.label, ...(activeWorktree.main ? {} : { onRemoveWorktree: () => setRemoveWorktreeId(activeWorktree.id), removeDisabledReason: 'Turn off the agents here before removing this worktree' }) })} />}{item?.worktree !== undefined && agent === undefined && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} renderNotifications={renderNotifications} cleanupControl={cleanupControl} transient={item.transient === true} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onOpenWorktreeStack={openWorktreeStack} onTogglePin={() => void togglePin(item.worktree!)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place !== undefined && agent === undefined && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} transient={item.transient === true} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></GlobalLaunchContext.Provider></OptionalClientSettingsLayout></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></ProjectsContext.Provider></AdaptersContext.Provider>;
 }
 
 // coordinate console session and update lifecycle
