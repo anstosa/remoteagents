@@ -3,6 +3,8 @@ import { instanceIconSvg } from '../../server/src/instance-icon.js';
 import { installPaneMock, pushBytes, seedPaneSize } from './pane-stream-mock.js';
 
 test('keeps the active tab, output, and prompt controls inside a narrow viewport', async ({ page }) => {
+  // opt in for marker geometry checks
+  await page.addInitScript(() => localStorage.setItem('rac.flyout-markers', 'enabled'));
   await page.setViewportSize({ width: 428, height: 952 });
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -220,6 +222,8 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
 
 // keep desktop flyout affordances directional without covering button content
 test('desktop flyout triggers show edge carets and remain clickable', async ({ page }, testInfo) => {
+  // opt in for marker geometry checks
+  await page.addInitScript(() => localStorage.setItem('rac.flyout-markers', 'enabled'));
   await page.setViewportSize({ width: 1400, height: 900 });
   await installPaneMock(page);
   // serve the bundled server artwork instead of Vite's html fallback

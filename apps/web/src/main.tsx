@@ -27,6 +27,7 @@ import { defaultTerminalFontSize, maxTerminalFontSize, minTerminalFontSize, rese
 import { applyColorTheme, setColorTheme, useColorTheme } from './color-theme.js';
 import { setDynamicWorktrees, useDynamicWorktrees } from './dynamic-worktrees.js';
 import { applyReducedMotion, setReducedMotion, useReducedMotion } from './reduced-motion.js';
+import { applyFlyoutMarkers, setFlyoutMarkers, useFlyoutMarkers } from './flyout-markers.js';
 import { UpstreamRebaseNotification, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
@@ -1367,8 +1368,10 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
   const colorTheme = useColorTheme();
   const dynamicWorktrees = useDynamicWorktrees();
   const reducedMotion = useReducedMotion();
+  const flyoutMarkers = useFlyoutMarkers();
   const terminalFontIsDefault = terminalFontSize === defaultTerminalFontSize();
-  const [open, setOpen] = useState(false);
+  // open settings from the initial authenticated destination
+  const [open, setOpen] = useState(() => location.hash === '#settings');
   const [accountsVisible, setAccountsVisible] = useState(false);
   const [dialog, setDialog] = useState<'client' | 'server' | 'account-login' | 'account-rename'>();
   const [name, setName] = useState(settings.deviceName);
@@ -1784,6 +1787,8 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
   const themeSetting = <div className="client-settings-setting client-settings-color-theme" role="group" aria-label="Theme"><header><small>THEME</small></header><div className="client-settings-segmented" role="radiogroup" aria-label="Theme">{/* render each theme choice */}{([['mocha', 'Dark'], ['latte', 'Light']] as const).map(([theme, label]) => <button key={theme} type="button" role="radio" aria-checked={colorTheme === theme} aria-label={`${label} theme`} className={colorTheme === theme ? 'active' : undefined} onClick={() => setColorTheme(theme)}>{label}</button>)}</div></div>;
   // switch the persisted browser motion preference
   const reducedMotionSetting = <div className="client-settings-setting client-settings-reduced-motion" role="group" aria-label="Reduced motion setting"><header><small>MOTION</small><label className="client-settings-toggle"><input aria-label="Reduced motion" role="switch" type="checkbox" checked={reducedMotion} onChange={event => setReducedMotion(event.currentTarget.checked)} /><span className="client-settings-switch-state">{reducedMotion ? 'On' : 'Off'}</span><span className="client-settings-switch-track" aria-hidden="true" /></label></header><strong>Reduced motion</strong><span>Keep status colours but stop shimmers and pulses.</span></div>;
+  // switch the persisted flyout marker preference
+  const flyoutMarkersSetting = <div className="client-settings-setting client-settings-flyout-markers" role="group" aria-label="Flyout markers setting"><header><small>FLYOUTS</small><label className="client-settings-toggle"><input aria-label="Flyout markers" role="switch" type="checkbox" checked={flyoutMarkers} onChange={event => { /* update this browser's markers */ setFlyoutMarkers(event.currentTarget.checked); }} /><span className="client-settings-switch-state">{flyoutMarkers ? 'On' : 'Off'}</span><span className="client-settings-switch-track" aria-hidden="true" /></label></header><strong>Flyout markers</strong><span>Show little carets on buttons that open flyouts.</span></div>;
   // switch the persisted worktree launcher mode
   const dynamicWorktreesSetting = <div className="client-settings-setting client-settings-dynamic-worktrees" role="group" aria-label="Dynamic worktrees setting"><header><small>WORKTREES</small><label className="client-settings-toggle"><input aria-label="Dynamic worktrees" role="switch" type="checkbox" checked={dynamicWorktrees} onChange={event => setDynamicWorktrees(event.currentTarget.checked)} /><span className="client-settings-switch-state">{dynamicWorktrees ? 'On' : 'Off'}</span><span className="client-settings-switch-track" aria-hidden="true" /></label></header><strong>Dynamic worktrees</strong><span>Create and manage multiple worktrees from the launcher.</span></div>;
   // render each general setting without a card container
@@ -1792,7 +1797,7 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
       <header><small>CLIENT</small><span className="client-settings-setting-actions">{settings.clientUpdateAvailable && <button className="client-settings-reload" type="button" aria-label="Reload local update" onClick={settings.reloadClient}>Reload</button>}<button type="button" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header>
       <strong>{settings.deviceName}</strong><span>This browser</span>
     </div>
-    {terminalFontSetting}{themeSetting}{reducedMotionSetting}{dynamicWorktreesSetting}
+    {terminalFontSetting}{themeSetting}{reducedMotionSetting}{flyoutMarkersSetting}{dynamicWorktreesSetting}
   </div>;
   // configure the optional voice surface without an outer card
   const davoTitle = davoDraft.name.trim() || 'Davo';
@@ -9150,4 +9155,5 @@ if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js'
 // moves this ahead of first paint with an inline head script.
 applyColorTheme();
 applyReducedMotion();
+applyFlyoutMarkers();
 createRoot(document.getElementById('root')!).render(<ConsoleBoundary><App /></ConsoleBoundary>);

@@ -49,6 +49,8 @@ test('launches the resolved kind in one click and lists every configured kind in
 
 // a phone has one full-size Launch target; choosing a row, not tapping the target, starts an Agent
 test('mobile Launch is one menu button in the toolbar and empty Workspace', async ({ page }) => {
+  // opt in for marker geometry checks
+  await page.addInitScript(() => localStorage.setItem('rac.flyout-markers', 'enabled'));
   await page.setViewportSize({ width: 390, height: 844 });
   const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }] });
   const trigger = toolbar(page).locator('.launch-menu-only button');
@@ -79,6 +81,8 @@ test('mobile Launch is one menu button in the toolbar and empty Workspace', asyn
 
 // even without a resolved default, the phone Launch target opens the configured-agent chooser
 test('mobile Launch opens its menu without a resolved default', async ({ page }) => {
+  // opt in for marker visibility checks
+  await page.addInitScript(() => localStorage.setItem('rac.flyout-markers', 'enabled'));
   await page.setViewportSize({ width: 700, height: 844 });
   const posts = await mount(page, { generation: 1, adapters: { codex }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree(undefined)] }] });
   const trigger = toolbar(page).locator('.launch-menu-only button');

@@ -89,6 +89,8 @@ const switchWorkspace = async (page: Page, name: string) => {
 };
 
 test.beforeEach(async ({ page }) => {
+  // opt in before loading split controls
+  await page.addInitScript(() => localStorage.setItem('rac.flyout-markers', 'enabled'));
   await installPaneMock(page);
   await page.route('https://project.example.com/**', route => route.fulfill({ contentType: 'text/html', body: '<main>Phone preview</main>' }));
   await routeApi(page);
