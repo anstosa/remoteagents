@@ -6442,7 +6442,8 @@ function AgentPanel({ agent, agents, onSelectAgent, active, displayLabel, worksp
     const label = displayLabel;
     onOperationFeedback({ tone: 'pending', message: `Turning off ${label}…`, detail: 'The session is being stopped and removed from the console.' });
     try {
-      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}`, { method: 'DELETE' });
+      // keep shutdown parseable when the tunnel uses chunked framing
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
       // surface failed closure
       if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: await launchError(response) });
       await onDeleted();
@@ -6458,7 +6459,8 @@ function AgentPanel({ agent, agents, onSelectAgent, active, displayLabel, worksp
     const label = displayLabel;
     onOperationFeedback({ tone: 'pending', message: `Turning off ${label}…`, detail: 'Stopping the agent while keeping the worktree available to start again.', worktreeId: agent.worktreeId });
     try {
-      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/deactivate`, { method: 'POST' });
+      // keep shutdown parseable when the tunnel uses chunked framing
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/deactivate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
       // surface failed deactivation
       if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: await launchError(response), worktreeId: agent.worktreeId });
       await onDeleted();
