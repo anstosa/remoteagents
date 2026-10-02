@@ -191,12 +191,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const secureOrigin = config.publicOrigin.protocol === 'https:';
   const cookieName = secureOrigin ? '__Host-rac' : 'rac-local';
   const websocketScheme = secureOrigin ? 'wss' : 'ws';
-  // allow defaults and independent checkout previews in split view
-  const projectFrameSources = [...new Set(config.projects.flatMap(project => {
-    // include effective overrides without allowing disabled preview origins
-    return [project, ...(project.worktreeOverrides ?? [])].flatMap(preview => preview.projectUrl === undefined ? [] : [new URL(preview.projectUrl).origin]);
-  }))];
-  const frameSourcePolicy = `frame-src 'self'${projectFrameSources.length === 0 ? '' : ` ${projectFrameSources.join(' ')}`}`;
+  // allow direct http(s) navigation inside the browser split
+  const frameSourcePolicy = "frame-src 'self' http: https:";
   const forbidden = () => Object.assign(new Error('forbidden'), { statusCode: 403 });
   const unauthorized = () => Object.assign(new Error('unauthorized'), { statusCode: 401 });
   const inactiveClient = () => Object.assign(new Error('another client is active'), { statusCode: 423 });

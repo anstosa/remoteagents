@@ -141,8 +141,6 @@ type PanelHeaderProps = {
   panelKey: string;
   // names the panel in the expand control's label ("Expand note", "Restore terminal build")
   label: string;
-  // the left pill: the panel's title, picker or address field
-  title: ReactNode;
   // always-visible actions, before the secondary ones
   actions?: ReactNode;
   // actions that fold into the ⋮ when the panel is narrow
@@ -153,12 +151,17 @@ type PanelHeaderProps = {
   // own (the agent panel's power menu)
   close?: PanelAction | ReactElement;
   expandDisabled?: boolean;
-};
+} & (
+  // preserve the default left pill without accepting a second representation
+  { title: ReactNode; titleControl?: never }
+  // require the full control when replacing the default pill
+  | { title?: never; titleControl: ReactNode }
+);
 
 // The floating header every panel shares: a title pill top-left and an action pill top-right,
 // over the panel's content. No bar sits behind them. The action pill ends with expand (which
 // fills the Workspace with this panel) and the panel's close.
-export function PanelHeader({ panelKey, label, title, actions, secondary = [], menuContent, close, expandDisabled = false }: PanelHeaderProps) {
+export function PanelHeader({ panelKey, label, title, titleControl, actions, secondary = [], menuContent, close, expandDisabled = false }: PanelHeaderProps) {
   const expand = usePanelExpand(panelKey);
   const phone = usePhoneLayout();
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -184,7 +187,7 @@ export function PanelHeader({ panelKey, label, title, actions, secondary = [], m
   // keep custom menu controls available at every panel width
   const showMore = menuContent !== undefined || folded && secondary.length > 0;
   return <div ref={wrapRef} className="panel-header">
-    <div className="panel-header-pill panel-header-title">{title}</div>
+    {titleControl ?? <div className="panel-header-pill panel-header-title">{title}</div>}
     <div className="panel-header-pill panel-header-actions" role="toolbar" aria-label={`${label[0].toUpperCase()}${label.slice(1)} actions`}>
       {actions}
       {!folded && secondary.map(action => actionButton(action))}

@@ -57,6 +57,130 @@ const executeBridge = (source: string, lockUserAgent = false) => {
   return { messages, navigator };
 };
 
+type ThemeMeta = { content: string; media?: string; name: string };
+type ThemeMessage = { color?: string | null; type?: string };
+
+// execute one injected bridge against a mutable document theme
+const executeThemeBridge = (source: string, initial: { dark?: boolean; metas?: ThemeMeta[]; rootBackground?: string } = {}) => {
+  let dark = initial.dark ?? false;
+  let metas = initial.metas ?? [];
+  let rootBackground = initial.rootBackground ?? 'rgba(0, 0, 0, 0)';
+  const messages: Array<{ message: ThemeMessage; target: string }> = [];
+  const events = new Map<string, Array<(event?: unknown) => void>>();
+  const mediaQueries: Array<{ listeners: Set<() => void>; matches: boolean; query: string }> = [];
+  const head = {};
+  const documentElement = {
+    // attach a temporary CSS color probe
+    append: (node: { connected?: boolean }) => { node.connected = true; }
+  };
+  const cssColor = (value: string) => {
+    const normalized = value.trim().toLowerCase();
+    const named: Record<string, string> = { black: 'rgb(0, 0, 0)', navy: 'rgb(0, 0, 128)', red: 'rgb(255, 0, 0)', transparent: 'rgba(0, 0, 0, 0)' };
+    // resolve supported named test colors
+    if (named[normalized] !== undefined) return named[normalized];
+    const shortHex = /^#([\da-f])([\da-f])([\da-f])$/u.exec(normalized);
+    // expand a short hexadecimal color
+    if (shortHex !== null) return `rgb(${parseInt(`${shortHex[1]}${shortHex[1]}`, 16)}, ${parseInt(`${shortHex[2]}${shortHex[2]}`, 16)}, ${parseInt(`${shortHex[3]}${shortHex[3]}`, 16)})`;
+    const hex = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/u.exec(normalized);
+    // resolve a hexadecimal test color
+    if (hex !== null) return `rgb(${parseInt(hex[1], 16)}, ${parseInt(hex[2], 16)}, ${parseInt(hex[3], 16)})`;
+    return /^rgba?\([^)]+\)$/u.test(normalized) ? normalized : undefined;
+  };
+  const document = {
+    documentElement,
+    head,
+    // create one validating CSS color probe
+    createElement: () => {
+      let color = '';
+      // model values accepted by an inline color property
+      const accepted = (value: string) => cssColor(value) !== undefined || /^(?:inherit|initial|unset|revert(?:-layer)?|var\(|env\()/iu.test(value);
+      const style = {
+        // expose the accepted source color
+        get color() { return color; },
+        // model direct browser color assignment
+        set color(value: string) { color = accepted(value) ? value : ''; },
+        // expose one retained style property
+        getPropertyValue: (name: string) => name === 'color' ? color : '',
+        // model important inline style assignment
+        setProperty: (name: string, value: string) => { color = name === 'color' && accepted(value) ? value : color; }
+      };
+      return { connected: false, remove: () => undefined, style };
+    },
+    // return metadata in document order
+    querySelectorAll: () => metas.map(meta => ({
+      // expose metadata attributes
+      getAttribute: (name: string) => name === 'name' ? meta.name : name === 'content' ? meta.content : name === 'media' ? meta.media ?? null : null
+    }))
+  };
+  class MutationObserver {
+    private target?: object;
+    // retain one mutation callback
+    constructor(private readonly callback: () => void) { observers.push(this); }
+    // observe one theme-bearing node
+    observe(target: object) { this.target = target; }
+    // notify matching document mutations
+    notify(target: object) { if (this.target === target) this.callback(); }
+  }
+  const observers: MutationObserver[] = [];
+  const parent = { postMessage: (message: ThemeMessage, target: string) => messages.push({ message, target }) };
+  const window = {
+    // retain bridge lifecycle listeners
+    addEventListener: (name: string, callback: (event?: unknown) => void) => { events.set(name, [...events.get(name) ?? [], callback]); },
+    // resolve CSS colors and the HTML background
+    getComputedStyle: (node: { style?: { color?: string } }) => {
+      // expose the HTML background separately
+      if (node === documentElement) return { backgroundColor: rootBackground };
+      const source = node.style?.color ?? '';
+      const inherited = /^(?:inherit|initial|unset|revert(?:-layer)?|var\(|env\()/iu.test(source) ? 'rgb(99, 99, 99)' : '';
+      return { color: cssColor(source) ?? inherited };
+    },
+    history: { pushState: () => undefined, replaceState: () => undefined },
+    location: { href: 'https://project.example.com/dashboard' },
+    matchMedia: (query: string) => {
+      const matches = query.includes('prefers-color-scheme: dark') ? dark : query.includes('prefers-color-scheme: light') ? !dark : true;
+      const media = { listeners: new Set<() => void>(), matches, query };
+      mediaQueries.push(media);
+      return {
+        matches,
+        // retain modern media listeners
+        addEventListener: (_name: string, callback: () => void) => media.listeners.add(callback),
+        // retain legacy media listeners
+        addListener: (callback: () => void) => media.listeners.add(callback),
+        // remove modern media listeners
+        removeEventListener: (_name: string, callback: () => void) => media.listeners.delete(callback),
+        // remove legacy media listeners
+        removeListener: (callback: () => void) => media.listeners.delete(callback)
+      };
+    },
+    navigator: {},
+    parent,
+    queueMicrotask: (callback: () => void) => callback()
+  };
+  runInNewContext(source, { document, MutationObserver, window });
+  return {
+    messages,
+    // dispatch one parent theme request with controlled authority
+    requestTheme: (origin: string, trusted = true) => { for (const listener of events.get('message') ?? []) listener({ data: { type: 'rac-browser-theme-request' }, origin, source: trusted ? parent : {} }); },
+    // replace metadata and notify the head observer
+    replaceMetas: (next: ThemeMeta[]) => { metas = next; for (const observer of observers) observer.notify(head); },
+    // replace the HTML background and notify the root observer
+    setRootBackground: (color: string) => { rootBackground = color; for (const observer of observers) observer.notify(documentElement); },
+    // toggle color scheme and notify changed media listeners
+    setDark: (next: boolean) => {
+      dark = next;
+      // notify only queries whose match state changed
+      for (const media of mediaQueries) {
+        const matches = media.query.includes('prefers-color-scheme: dark') ? dark : media.query.includes('prefers-color-scheme: light') ? !dark : true;
+        // skip stable media queries
+        if (matches === media.matches) continue;
+        media.matches = matches;
+        // notify every retained listener
+        for (const listener of [...media.listeners]) listener();
+      }
+    }
+  };
+};
+
 afterEach(async () => {
   // close every ephemeral listener
   for (const server of servers.splice(0)) await new Promise<void>(resolve => server.close(() => resolve()));
@@ -98,6 +222,73 @@ describe('project browser proxy', () => {
     expect(bridge.body).toContain("type: 'rac-browser-refresh'");
     expect(bridge.body).toContain("window.addEventListener('keydown', refresh)");
     expect(bridge.body).toContain('"https://agents.example.com"');
+
+    const theme = executeThemeBridge(bridge.body, {
+      dark: true,
+      metas: [
+        { name: 'theme-color', content: '#eeeeee', media: '(prefers-color-scheme: light)' },
+        { name: 'theme-color', content: '#102030', media: '(prefers-color-scheme: dark)' },
+        { name: 'msapplication-navbutton-color', content: 'navy' },
+        { name: 'apple-mobile-web-app-capable', content: 'yes' },
+        { name: 'apple-mobile-web-app-status-bar-style', content: 'black' }
+      ],
+      rootBackground: 'rgb(4, 5, 6)'
+    });
+    expect(theme.messages).toContainEqual({ message: { type: 'rac-browser-theme', color: 'rgb(16, 32, 48)' }, target: 'https://agents.example.com' });
+    const reportCount = theme.messages.length;
+    theme.replaceMetas([
+      { name: 'theme-color', content: 'var(--brand)' },
+      { name: 'msapplication-navbutton-color', content: 'navy' }
+    ]);
+    expect(theme.messages.at(-1)).toEqual({ message: { type: 'rac-browser-theme', color: 'rgb(0, 0, 128)' }, target: 'https://agents.example.com' });
+    // fall through transparent metadata to the next visible color
+    theme.replaceMetas([
+      { name: 'theme-color', content: 'transparent' },
+      { name: 'msapplication-navbutton-color', content: 'navy' }
+    ]);
+    expect(theme.messages.at(-1)?.message).toEqual({ type: 'rac-browser-theme', color: 'rgb(0, 0, 128)' });
+    // preserve the HTML fallback for zero-alpha metadata
+    theme.replaceMetas([{ name: 'theme-color', content: 'rgba(4, 5, 6, 0)' }]);
+    expect(theme.messages.at(-1)?.message).toEqual({ type: 'rac-browser-theme', color: 'rgb(4, 5, 6)' });
+    theme.replaceMetas([
+      { name: 'apple-mobile-web-app-capable', content: 'yes' },
+      { name: 'apple-mobile-web-app-status-bar-style', content: 'black-translucent' }
+    ]);
+    expect(theme.messages.at(-1)?.message).toEqual({ type: 'rac-browser-theme', color: 'rgb(0, 0, 0)' });
+    theme.replaceMetas([{ name: 'apple-mobile-web-app-status-bar-style', content: 'black' }]);
+    expect(theme.messages.at(-1)?.message).toEqual({ type: 'rac-browser-theme', color: 'rgb(4, 5, 6)' });
+    theme.replaceMetas([]);
+    expect(theme.messages.at(-1)?.message).toEqual({ type: 'rac-browser-theme', color: 'rgb(4, 5, 6)' });
+    theme.setRootBackground('rgb(7, 8, 9)');
+    expect(theme.messages.at(-1)?.message).toEqual({ type: 'rac-browser-theme', color: 'rgb(7, 8, 9)' });
+    const dynamicCount = theme.messages.length;
+    theme.setRootBackground('rgb(7, 8, 9)');
+    expect(theme.messages).toHaveLength(dynamicCount);
+    expect(dynamicCount).toBeGreaterThan(reportCount);
+
+    const mediaTheme = executeThemeBridge(bridge.body, {
+      metas: [
+        { name: 'theme-color', content: '#eee', media: '(prefers-color-scheme: light)' },
+        { name: 'theme-color', content: '#111', media: '(prefers-color-scheme: dark)' }
+      ]
+    });
+    expect(mediaTheme.messages.at(-1)?.message).toEqual({ type: 'rac-browser-theme', color: 'rgb(238, 238, 238)' });
+    mediaTheme.setDark(true);
+    expect(mediaTheme.messages.at(-1)?.message).toEqual({ type: 'rac-browser-theme', color: 'rgb(17, 17, 17)' });
+
+    const parsedTheme = executeThemeBridge(bridge.body, { rootBackground: 'rgba(4, 5, 6, 0)' });
+    expect(parsedTheme.messages.at(-1)?.message).toEqual({ type: 'rac-browser-theme', color: null });
+    parsedTheme.replaceMetas([{ name: 'theme-color', content: 'red' }]);
+    expect(parsedTheme.messages.at(-1)?.message).toEqual({ type: 'rac-browser-theme', color: 'rgb(255, 0, 0)' });
+    const restoredCount = parsedTheme.messages.length;
+    parsedTheme.requestTheme('https://evil.example.com');
+    parsedTheme.requestTheme('https://agents.example.com', false);
+    expect(parsedTheme.messages).toHaveLength(restoredCount);
+    parsedTheme.requestTheme('https://agents.example.com');
+    expect(parsedTheme.messages.slice(restoredCount)).toEqual([
+      { message: { type: 'rac-browser-location', url: 'https://project.example.com/dashboard' }, target: 'https://agents.example.com' },
+      { message: { type: 'rac-browser-theme', color: 'rgb(255, 0, 0)' }, target: 'https://agents.example.com' }
+    ]);
 
     const forwarded = await request(proxyPort, '/echo', { method: 'POST', body: 'retained request body' });
     expect(forwarded.body).toBe('retained request body');

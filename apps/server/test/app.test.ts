@@ -348,8 +348,8 @@ describe('server administration API', () => {
 });
 
 describe('project browser security boundary', () => {
-  // keep independent previews inside the explicit origin allowlist
-  it('limits iframe sources to configured project origins', async () => {
+  // allow direct browser navigation without widening other resource policies
+  it('allows HTTP(S) iframe navigation only', async () => {
     const app = await buildApp({ ...config, projects: [testProject({ projectUrl: 'https://external.example.com', worktreeOverrides: [
       { path: '/repo-feature', projectUrl: 'https://feature.example.com', projectPort: 4000 },
       { path: '/repo-shared', projectUrl: 'https://project.example.com', projectPort: 3000 },
@@ -357,9 +357,15 @@ describe('project browser security boundary', () => {
     ] })] }, { auth: new AuthService('$argon2id$unused', Buffer.alloc(32, 13).toString('base64url')) });
     try {
       const response = await app.inject({ method: 'GET', url: '/', headers: { host: 'agents.example.com' } });
-      // permit effective worktree previews without widening the origin allowlist
-      const sources = String(response.headers['content-security-policy']).match(/(?:^|;)\s*frame-src\s+([^;]+)/u)?.[1]?.trim().split(/\s+/u);
-      expect(new Set(sources)).toEqual(new Set(["'self'", 'https://external.example.com', 'https://feature.example.com', 'https://project.example.com']));
+      const policy = String(response.headers['content-security-policy']);
+      const sources = policy.match(/(?:^|;)\s*frame-src\s+([^;]+)/u)?.[1]?.trim().split(/\s+/u);
+      expect(sources).toEqual(["'self'", 'http:', 'https:']);
+      expect(policy).toContain("default-src 'self'");
+      expect(policy).toContain("connect-src 'self' wss://agents.example.com");
+      expect(policy).not.toContain("'unsafe-eval'");
+      expect(policy).not.toContain('external.example.com');
+      expect(policy).not.toContain('feature.example.com');
+      expect(policy).not.toContain('project.example.com');
     } finally { await app.close(); }
   });
 });

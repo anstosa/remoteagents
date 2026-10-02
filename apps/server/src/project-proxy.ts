@@ -77,6 +77,168 @@ const browserBridge = (parentOrigin: string, profile?: BrowserDeviceProfile) => 
     override('userAgentData', userAgentData);
   }
   `}
+  let reportedThemeColor;
+  let hasReportedThemeColor = false;
+  let themeQueued = false;
+  let themeMedia = [];
+  let themeHeadObserver;
+  let themeRootObserver;
+  // skip colors with no visible backing
+  const transparentColor = (color) => color === 'transparent' || /^rgba\\([^)]*,\\s*(?:0(?:\\.0+)?|\\.0+)\\s*\\)$/iu.test(color) || /\\/\\s*(?:0(?:\\.0+)?|\\.0+)\\s*\\)$/u.test(color);
+  // find metadata by case-insensitive name
+  const metadata = (name) => {
+    // skip theme inspection outside a document
+    if (typeof document === 'undefined') return [];
+    return Array.from(document.querySelectorAll('meta[name]')).filter(meta => (meta.getAttribute('name') || '').trim().toLowerCase() === name);
+  };
+  // resolve one valid CSS color to its computed value
+  const resolveColor = (value) => {
+    // reject missing, empty, or oversized colors
+    if (typeof value !== 'string' || value.trim() === '' || value.length > 256 || typeof document === 'undefined' || !document.documentElement) return null;
+    const candidate = value.trim();
+    // reject context-dependent values that are not literal metadata colors
+    if (/^(?:currentcolor|inherit|initial|unset|revert(?:-layer)?|var\\(|env\\()/iu.test(candidate)) return null;
+    const probe = document.createElement('span');
+    probe.style.setProperty('display', 'none', 'important');
+    probe.style.setProperty('color', candidate, 'important');
+    // reject colors the browser cannot parse
+    if (probe.style.getPropertyValue('color') === '') return null;
+    document.documentElement.append(probe);
+    try {
+      const color = window.getComputedStyle(probe).color;
+      return color === '' || transparentColor(color) ? null : color;
+    } finally { probe.remove(); }
+  };
+  // select the first valid, media-matching theme color
+  const configuredThemeColor = () => {
+    // inspect candidates in document order
+    for (const meta of metadata('theme-color')) {
+      const media = (meta.getAttribute('media') || '').trim();
+      // skip candidates outside the current media environment
+      if (media !== '' && (typeof window.matchMedia !== 'function' || !window.matchMedia(media).matches)) continue;
+      const color = resolveColor(meta.getAttribute('content'));
+      // use the first valid matching candidate
+      if (color !== null) return color;
+    }
+    return null;
+  };
+  // select the first valid legacy navigation color
+  const navigationColor = () => {
+    // inspect candidates in document order
+    for (const meta of metadata('msapplication-navbutton-color')) {
+      const value = (meta.getAttribute('content') || '').trim();
+      // retain the legacy named-or-hex color contract
+      if (!/^(?:[a-z]+|#(?:[\\da-f]{3}|[\\da-f]{6}))$/iu.test(value)) continue;
+      const color = resolveColor(value);
+      // use the first valid legacy candidate
+      if (color !== null) return color;
+    }
+    return null;
+  };
+  // map an enabled black Apple status bar to an opaque backing
+  const appleStatusColor = () => {
+    const capable = metadata('apple-mobile-web-app-capable').some(meta => (meta.getAttribute('content') || '').trim().toLowerCase() === 'yes');
+    // ignore status styles outside standalone-capable pages
+    if (!capable) return null;
+    const status = metadata('apple-mobile-web-app-status-bar-style').find(meta => {
+      const value = (meta.getAttribute('content') || '').trim().toLowerCase();
+      return value === 'black' || value === 'black-translucent';
+    });
+    return status === undefined ? null : resolveColor('#000');
+  };
+  // resolve the HTML root background without inventing a body fallback
+  const rootBackgroundColor = () => {
+    // skip documents without a root element
+    if (typeof document === 'undefined' || !document.documentElement) return null;
+    const color = window.getComputedStyle(document.documentElement).backgroundColor;
+    // let the console supply its default behind transparent pages
+    if (color === '' || transparentColor(color)) return null;
+    return color;
+  };
+  // resolve the product theme precedence
+  const currentThemeColor = () => configuredThemeColor() ?? navigationColor() ?? appleStatusColor() ?? rootBackgroundColor();
+  // report only actual theme changes
+  const reportTheme = () => {
+    const color = currentThemeColor();
+    // suppress repeated observer and lifecycle reports
+    if (hasReportedThemeColor && color === reportedThemeColor) return;
+    reportedThemeColor = color;
+    hasReportedThemeColor = true;
+    window.parent.postMessage({ type: 'rac-browser-theme', color }, ${JSON.stringify(parentOrigin)});
+  };
+  // detach stale media-query listeners
+  const clearThemeMedia = () => {
+    // release every retained query listener
+    for (const entry of themeMedia) {
+      // prefer modern media listener removal
+      if (typeof entry.query.removeEventListener === 'function') entry.query.removeEventListener('change', entry.listener);
+      else if (typeof entry.query.removeListener === 'function') entry.query.removeListener(entry.listener);
+    }
+    themeMedia = [];
+  };
+  // coalesce theme mutations into one evaluation
+  const scheduleTheme = () => {
+    // retain one queued theme evaluation
+    if (themeQueued) return;
+    themeQueued = true;
+    window.queueMicrotask(() => {
+      themeQueued = false;
+      syncTheme();
+    });
+  };
+  // bind theme and root color-scheme queries
+  const bindThemeMedia = () => {
+    clearThemeMedia();
+    // skip media bindings when unavailable
+    if (typeof window.matchMedia !== 'function') return;
+    const queries = new Set(['(prefers-color-scheme: dark)']);
+    // retain every configured theme query
+    for (const meta of metadata('theme-color')) {
+      const media = (meta.getAttribute('media') || '').trim();
+      // ignore unqualified duplicate candidates
+      if (media !== '') queries.add(media);
+    }
+    // observe every distinct media environment
+    for (const value of queries) {
+      const query = window.matchMedia(value);
+      const listener = scheduleTheme;
+      // prefer modern media listener registration
+      if (typeof query.addEventListener === 'function') query.addEventListener('change', listener);
+      else if (typeof query.addListener === 'function') query.addListener(listener);
+      else continue;
+      themeMedia.push({ query, listener });
+    }
+  };
+  // attach observers when their document nodes become available
+  const observeTheme = () => {
+    // skip observers outside a mutable document
+    if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return;
+    // observe metadata parsed after the injected head script
+    if (!themeHeadObserver && document.head) {
+      themeHeadObserver = new MutationObserver(scheduleTheme);
+      themeHeadObserver.observe(document.head, { attributes: true, attributeFilter: ['content', 'media', 'name'], childList: true, subtree: true });
+    }
+    // observe class and inline-style root theme changes
+    if (!themeRootObserver && document.documentElement) {
+      themeRootObserver = new MutationObserver(scheduleTheme);
+      themeRootObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+    }
+  };
+  // synchronize theme sources and one deduplicated report
+  const syncTheme = () => {
+    observeTheme();
+    bindThemeMedia();
+    reportTheme();
+  };
+  // honor a trusted parent color refresh handshake
+  const requestTheme = (event) => {
+    // reject untrusted senders and unrelated parent messages
+    if (event.source !== window.parent || event.origin !== ${JSON.stringify(parentOrigin)} || !event.data || event.data.type !== 'rac-browser-theme-request') return;
+    // reestablish the managed location after a cross-origin return
+    report();
+    hasReportedThemeColor = false;
+    syncTheme();
+  };
   // report the visible location
   const report = () => {
     window.parent.postMessage({ type: 'rac-browser-location', url: window.location.href }, ${JSON.stringify(parentOrigin)});
@@ -106,6 +268,11 @@ const browserBridge = (parentOrigin: string, profile?: BrowserDeviceProfile) => 
   window.addEventListener('pageshow', report);
   window.addEventListener('keydown', refresh);
   report();
+  syncTheme();
+  window.addEventListener('DOMContentLoaded', scheduleTheme);
+  window.addEventListener('load', scheduleTheme);
+  window.addEventListener('pageshow', scheduleTheme);
+  window.addEventListener('message', requestTheme);
 })();`;
 const browserBridgeTag = `<script src="${browserBridgePath}"></script>`;
 const hopByHopHeaders = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);

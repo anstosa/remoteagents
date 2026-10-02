@@ -1,7 +1,40 @@
 import { expect, test } from '@playwright/test';
+import { createServer, request as sendRequest } from 'node:http';
+import { ProjectProxy } from '../../server/src/project-proxy.js';
 import { installPaneMock, seedPaneSize, pushBytes } from './pane-stream-mock.js';
 import { clickPanelAction, expectPanelAction } from './panel-header';
 import { chooseSplit, openSplitMenu } from './split-menu.js';
+
+// load the production browser bridge through its real proxy endpoint
+const projectBrowserBridge = async () => {
+  const proxy = new ProjectProxy(() => [{ projectUrl: 'https://project.example.com', projectPort: 1 }], 'http://127.0.0.1:4173');
+  const server = createServer((request, response) => {
+    // reject unrelated virtual hosts and paths
+    if (!proxy.handle(request, response)) { response.writeHead(404); response.end(); }
+  });
+  const port = await new Promise<number>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      // reject unexpected non-TCP listeners
+      if (address === null || typeof address === 'string') { reject(new Error('missing browser bridge listener')); return; }
+      resolve(address.port);
+    });
+  });
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      const request = sendRequest({ hostname: '127.0.0.1', port, path: '/__rac/browser-bridge.js', headers: { host: 'project.example.com' } }, response => {
+        const chunks: Buffer[] = [];
+        response.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        response.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      });
+      request.once('error', reject);
+      request.end();
+    });
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+};
 
 // verify direct external preview routing
 test('loads direct external previews without managed proxy endpoints', async ({ page }) => {
@@ -99,6 +132,220 @@ test('loads direct external previews without managed proxy endpoints', async ({ 
   await expect(address).toHaveValue('https://external-preview.example/admin');
   await expect(page.frameLocator('iframe[title="Project browser"]').getByText('Direct external preview')).toBeVisible();
   expect(splitPopupOpened).toBe(false);
+});
+
+// verify managed browser chrome and safe external address navigation
+test('themes browser chrome and retains safe external addresses', async ({ page }) => {
+  test.setTimeout(75_000);
+  const managedTheme = '#123456';
+  const externalUrl = 'https://outside.example.com/reference?from=address#section';
+  const deviceRequests: string[] = [];
+  const externalRequests: string[] = [];
+  const bridge = await projectBrowserBridge();
+  await page.setViewportSize({ width: 1400, height: 850 });
+  await installPaneMock(page);
+  // serve the managed project and its cooperative browser messages
+  await page.route('https://project.example.com/**', async route => {
+    const requestUrl = new URL(route.request().url());
+    // serve the production bridge from its project-owned path
+    if (requestUrl.pathname === '/__rac/browser-bridge.js') return route.fulfill({ contentType: 'text/javascript', body: bridge });
+    let destination = requestUrl;
+    let deviceTransition = '';
+    // emulate the local device bridge
+    if (requestUrl.pathname === '/__rac/browser-device') {
+      deviceRequests.push(requestUrl.href);
+      destination = new URL(requestUrl.searchParams.get('location') ?? '/', requestUrl.origin);
+      deviceTransition = `<script>history.replaceState({}, '', ${JSON.stringify(`${destination.pathname}${destination.search}${destination.hash}`)})</script>`;
+    }
+    await route.fulfill({
+      contentType: 'text/html',
+      body: `${deviceTransition}<html style="background-color: rgb(4, 5, 6)"><head><meta name="theme-color" content="${managedTheme}" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#506070" media="(prefers-color-scheme: dark)"><meta name="msapplication-navbutton-color" content="#234567"><script src="/__rac/browser-bridge.js"></script></head><body><main>Managed project</main><a href="https://outside.example.com/from-managed-link">Leave managed project</a></body></html>`
+    });
+  });
+  // serve an external page that cannot control managed browser chrome
+  await page.route('https://outside.example.com/**', route => {
+    const requestUrl = new URL(route.request().url());
+    externalRequests.push(requestUrl.href);
+    return route.fulfill({
+      contentType: 'text/html',
+      body: '<main>External reference</main><a href="https://project.example.com/">Return to managed project</a><script>parent.postMessage({ type: "rac-browser-location", url: "https://outside.example.com/forged" }, "*"); parent.postMessage({ type: "rac-browser-theme", color: "#ff0000" }, "*");</script>'
+    });
+  });
+  // serve one active project workspace
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    // publish an authenticated session
+    if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // publish one managed project target
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-themed', sessionId: 'socket:$1', home: '/worktrees/themed', worktreeId: 'themed', worktreeLabel: 'Themed', worktreeOrder: 0, title: 'Ready', projectUrl: 'https://project.example.com', stack: { actions: ['start'], running: true, tunnel: true } }], projects: [] } });
+    // serve the required log ticket
+    if (path === '/api/agents/agent-themed/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    // serve empty agent collections
+    if (path === '/api/agents/agent-themed/saved-prompts' || path === '/api/agents/agent-themed/prompt-history' || path === '/api/agents/agent-themed/queued-prompts') return route.fulfill({ json: { prompts: [] } });
+    // serve empty worktree notes
+    if (path === '/api/worktrees/themed/notes') return route.fulfill({ json: { notes: [] } });
+    // serve an unavailable push key
+    if (path === '/api/push/public-key') return route.fulfill({ json: {} });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-themed', 80, 24);
+  const controls = page.getByRole('group', { name: 'Project controls' });
+  await controls.getByRole('button', { name: 'Stack controls: healthy' }).click();
+  await page.getByRole('button', { name: 'Split', exact: true }).click();
+  const browser = page.getByRole('dialog', { name: 'Browser' });
+  const address = browser.getByRole('textbox', { name: 'Browser address' });
+  const addressPill = browser.locator('.panel-header > .browser-address');
+  const frame = browser.locator('iframe[title="Project browser"]');
+  await expect(browser).toBeVisible();
+  await expect(addressPill).toHaveClass(/\bpanel-header-pill\b/u);
+  await expect(addressPill).toHaveClass(/\bpanel-header-title\b/u);
+  await expect(addressPill).toHaveAttribute('aria-label', 'Browser address');
+  await expect(addressPill.locator('input')).toHaveCount(0);
+  await expect(browser.locator('.browser-address-form')).toHaveCount(0);
+  await expect(address).toHaveCSS('border-top-width', '1px');
+  await expect(browser).toHaveCSS('background-color', 'rgb(18, 52, 86)');
+
+  // react to color-scheme changes using the matching theme metadata
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(browser).toHaveCSS('background-color', 'rgb(80, 96, 112)');
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  // fall through transparent theme colors to an opaque configured source
+  await preview.locator('html').evaluate(root => {
+    // make every theme-color candidate fully transparent
+    for (const meta of root.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) meta.content = 'transparent';
+  });
+  await expect(browser).toHaveCSS('background-color', 'rgb(35, 69, 103)');
+  // reject zero-alpha functional colors through the same fallback
+  await preview.locator('html').evaluate(root => {
+    // make every theme-color candidate fully transparent
+    for (const meta of root.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) meta.content = 'rgb(1 2 3 / 0)';
+  });
+  await expect(browser).toHaveCSS('background-color', 'rgb(35, 69, 103)');
+  // fall through invalid theme metadata to the configured navigation color
+  await preview.locator('html').evaluate(root => {
+    // invalidate every theme-color candidate
+    for (const meta of root.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) meta.content = 'not-a-color';
+  });
+  await expect(browser).toHaveCSS('background-color', 'rgb(35, 69, 103)');
+  // prefer enabled Apple status metadata after navigation metadata disappears
+  await preview.locator('html').evaluate(root => {
+    root.querySelector('meta[name="msapplication-navbutton-color"]')?.remove();
+    const capable = document.createElement('meta');
+    capable.name = 'apple-mobile-web-app-capable';
+    capable.content = 'yes';
+    const status = document.createElement('meta');
+    status.name = 'apple-mobile-web-app-status-bar-style';
+    status.content = 'black-translucent';
+    root.querySelector('head')?.append(capable, status);
+  });
+  await expect(browser).toHaveCSS('background-color', 'rgb(0, 0, 0)');
+  // fall back to the computed HTML background and track root theme changes
+  await preview.locator('html').evaluate(root => {
+    root.querySelector('meta[name="apple-mobile-web-app-capable"]')?.remove();
+    root.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.remove();
+  });
+  await expect(browser).toHaveCSS('background-color', 'rgb(4, 5, 6)');
+  await preview.locator('html').evaluate(root => { root.style.backgroundColor = 'rgb(7, 8, 9)'; });
+  await expect(browser).toHaveCSS('background-color', 'rgb(7, 8, 9)');
+  await page.emulateMedia({ colorScheme: 'light' });
+
+  // ignore same-origin messages that do not come from the managed frame
+  await page.evaluate(() => window.postMessage({ type: 'rac-browser-theme', color: '#00ff00' }, '*'));
+  await expect(browser).toHaveCSS('background-color', 'rgb(7, 8, 9)');
+
+  await address.fill(externalUrl);
+  await address.press('Enter');
+  await expect(frame).toHaveAttribute('src', externalUrl);
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('External reference')).toBeVisible();
+  await expect(address).toHaveValue(externalUrl);
+  expect(deviceRequests).toHaveLength(1);
+  await expect.poll(() => browser.evaluate(element => element.style.getPropertyValue('--browser-chrome-color'))).toBe('');
+  await expect(browser).not.toHaveCSS('background-color', 'rgb(255, 0, 0)');
+
+  // recover managed state when ordinary iframe navigation returns to the project origin
+  await page.frameLocator('iframe[title="Project browser"]').getByRole('link', { name: 'Return to managed project' }).click();
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('Managed project', { exact: true })).toBeVisible();
+  await expect(address).toHaveValue('https://project.example.com/');
+  await expect(browser).toHaveCSS('background-color', 'rgb(18, 52, 86)');
+  await expect(browser.getByRole('button', { name: 'Use mobile viewport and user agent' })).toBeVisible();
+  const externalRequestsBeforeManagedRefresh = externalRequests.length;
+  const deviceRequestsBeforeManagedRefresh = deviceRequests.length;
+  await browser.getByRole('button', { name: 'Refresh browser' }).click();
+  await expect.poll(() => deviceRequests.length).toBeGreaterThan(deviceRequestsBeforeManagedRefresh);
+  expect(externalRequests).toHaveLength(externalRequestsBeforeManagedRefresh);
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('Managed project', { exact: true })).toBeVisible();
+
+  // return to an external address for direct-mode behavior checks
+  await address.fill(externalUrl);
+  await address.press('Enter');
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('External reference')).toBeVisible();
+  const deviceRequestsBeforeExternalActions = deviceRequests.length;
+
+  // resize and refresh external pages without sending them through the local device bridge
+  await browser.getByRole('button', { name: 'Use mobile viewport' }).click();
+  await expect(browser.locator('.browser-frame-shell')).toHaveClass(/mobile/u);
+  expect(deviceRequests).toHaveLength(deviceRequestsBeforeExternalActions);
+  await browser.getByRole('button', { name: 'Refresh browser' }).click();
+  await expect(frame).toHaveAttribute('src', externalUrl);
+  expect(deviceRequests).toHaveLength(deviceRequestsBeforeExternalActions);
+
+  // reject active-content, embedded-data, and credential-bearing addresses
+  await address.fill('javascript:document.body.textContent="owned"');
+  await address.press('Enter');
+  await expect(address).toHaveValue(externalUrl);
+  await expect(frame).toHaveAttribute('src', externalUrl);
+  await address.fill('data:text/html,<main>owned</main>');
+  await address.press('Enter');
+  await expect(address).toHaveValue(externalUrl);
+  await expect(frame).toHaveAttribute('src', externalUrl);
+  await address.fill('https://user:secret@outside.example.com/private');
+  await address.press('Enter');
+  await expect(address).toHaveValue(externalUrl);
+  await expect(frame).toHaveAttribute('src', externalUrl);
+
+  // restore the external address after the console remounts
+  await page.reload();
+  await expect(browser).toBeVisible();
+  await expect(address).toHaveValue(externalUrl);
+  await expect(frame).toHaveAttribute('src', externalUrl);
+  expect(deviceRequests).toHaveLength(deviceRequestsBeforeExternalActions);
+
+  // home navigation returns to managed device emulation
+  const managedRequestsBeforeHome = deviceRequests.length;
+  await clickPanelAction(browser, 'Go to project home');
+  await expect.poll(() => deviceRequests.length).toBeGreaterThan(managedRequestsBeforeHome);
+  expect(new URL(deviceRequests.at(-1)!).searchParams.get('mode')).toBe('mobile');
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('Managed project', { exact: true })).toBeVisible();
+  await expect(browser).toHaveCSS('background-color', 'rgb(18, 52, 86)');
+
+  // clear managed chrome when the framed page itself leaves the local origin
+  await page.frameLocator('iframe[title="Project browser"]').getByRole('link', { name: 'Leave managed project' }).click();
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('External reference')).toBeVisible();
+  await expect.poll(() => browser.evaluate(element => element.style.getPropertyValue('--browser-chrome-color'))).toBe('');
+  await expect(browser).not.toHaveCSS('background-color', 'rgb(255, 0, 0)');
+  // establish retained external state before exercising another in-frame return home
+  await address.fill(externalUrl);
+  await address.press('Enter');
+  await expect(frame).toHaveAttribute('src', externalUrl);
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('External reference')).toBeVisible();
+  // recover the selected mobile mode when ordinary iframe navigation returns home
+  const deviceRequestsBeforeMobileReturn = deviceRequests.length;
+  await page.frameLocator('iframe[title="Project browser"]').getByRole('link', { name: 'Return to managed project' }).click();
+  await expect(address).toHaveValue('https://project.example.com/');
+  await expect.poll(() => deviceRequests.length).toBeGreaterThan(deviceRequestsBeforeMobileReturn);
+  expect(new URL(deviceRequests.at(-1)!).searchParams.get('mode')).toBe('mobile');
+  await expect(frame).toHaveAttribute('src', /\/__rac\/browser-device\?.*mode=mobile/u);
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('Managed project', { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expectPanelAction(browser, 'Use desktop viewport and user agent', toggle => expect(toggle).toBeVisible());
+  await expect(browser).toHaveCSS('background-color', 'rgb(18, 52, 86)');
+  const externalRequestsBeforeMobileReturnRefresh = externalRequests.length;
+  const deviceRequestsBeforeMobileReturnRefresh = deviceRequests.length;
+  await browser.getByRole('button', { name: 'Refresh browser' }).click();
+  await expect.poll(() => deviceRequests.length).toBeGreaterThan(deviceRequestsBeforeMobileReturnRefresh);
+  expect(externalRequests).toHaveLength(externalRequestsBeforeMobileReturnRefresh);
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('Managed project', { exact: true })).toBeVisible();
 });
 
 // verify retained browser navigation
@@ -310,15 +557,17 @@ test('opens the configured project in desktop and mobile split views', async ({ 
     browser.locator('.browser-frame-shell').evaluate(element => element.getBoundingClientRect().width),
     browser.evaluate(element => element.getBoundingClientRect().width),
     page.locator('.log-output').evaluate(element => element.getBoundingClientRect().width),
-    browser.locator('.browser-address-form').boundingBox(),
-    // the narrow column folds the device toggle into the header ⋮, which shares the address row
+    browser.locator('.browser-address').boundingBox(),
+    // the narrow column folds the device toggle into the header ⋮, which shares the address centerline
     browser.locator('.panel-header-more').boundingBox()
   ]);
   expect(frameWidth).toBeLessThanOrEqual(391);
   expect(Math.abs(frameWidth - shellWidth)).toBeLessThanOrEqual(2);
   expect(paneWidth).toBeLessThanOrEqual(391);
   expect(outputWidth).toBeGreaterThan(paneWidth);
-  expect(Math.abs(addressBounds!.y - deviceBounds!.y)).toBeLessThanOrEqual(2);
+  const addressCenter = addressBounds!.y + addressBounds!.height / 2;
+  const deviceCenter = deviceBounds!.y + deviceBounds!.height / 2;
+  expect(Math.abs(addressCenter - deviceCenter)).toBeLessThanOrEqual(4);
 
   await clickPanelAction(browser, 'Use desktop viewport and user agent');
   await expect(browser.locator('.browser-frame-shell')).toHaveClass(/desktop/u);

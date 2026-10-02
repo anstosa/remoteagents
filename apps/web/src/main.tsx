@@ -4293,16 +4293,18 @@ const browserSplitKey = (worktreeId: string) => `rac.browser-split:${worktreeId}
 const browserUrlKey = (worktreeId: string) => `rac.browser-url:${worktreeId}`;
 const browserDesktopViewportWidth = 980;
 type ProjectBrowserNavigationRequest = { sequence: number; url: string };
-// normalize project-owned locations
+// normalize safe web locations relative to the configured project
 const normalizeBrowserUrl = (candidate: string, homeUrl: string) => {
   try {
     const home = new URL(homeUrl);
     const next = new URL(candidate, home);
-    // keep the frame inside its configured origin
-    if (next.origin !== home.origin || next.username || next.password) return undefined;
+    // refuse active schemes and embedded credentials
+    if (!['http:', 'https:'].includes(next.protocol) || next.username || next.password) return undefined;
     return next.href;
   } catch { return undefined; }
 };
+// reserve proxy identity emulation for the configured project origin
+const isManagedBrowserUrl = (url: string, homeUrl: string, proxied: boolean) => proxied && new URL(url).origin === new URL(homeUrl).origin;
 // restore the last valid project location
 const savedBrowserUrl = (homeUrl: string, worktreeId?: string) => {
   // skip storage for unscoped agents
@@ -4376,7 +4378,7 @@ function useProjectBrowser(homeUrl?: string, worktreeId?: string, projectProxied
   }, [homeUrl, worktreeId]);
   // request one explicit frame navigation
   const openUrl = useCallback((candidate: string) => {
-    // reject missing or cross-origin locations
+    // reject missing project navigation
     if (homeUrl === undefined) return false;
     const next = normalizeBrowserUrl(candidate, homeUrl);
     // reject malformed locations
@@ -4407,6 +4409,26 @@ function useProjectBrowser(homeUrl?: string, worktreeId?: string, projectProxied
 type ProjectBrowserLocationMessage = { type: 'rac-browser-location'; url: string };
 type ProjectBrowserRefreshMessage = { type: 'rac-browser-refresh' };
 type ProjectBrowserDeviceErrorMessage = { type: 'rac-browser-device-error'; properties: string[] };
+type ProjectBrowserThemeMessage = { type: 'rac-browser-theme'; color: string | null };
+// keep unusable color reports from replacing the default backing
+const normalizeBrowserChromeColor = (color: string | null) => {
+  // restore the default for an explicit reset
+  if (color === null) return undefined;
+  const value = color.trim();
+  // discard transparent and context-dependent colors
+  if (/^(?:transparent|currentcolor|inherit|initial|unset|revert(?:-layer)?)$/iu.test(value)
+    || /^rgba\([^)]*,\s*(?:0(?:\.0+)?|\.0+)%?\s*\)$/iu.test(value)
+    || /\/\s*(?:0(?:\.0+)?|\.0+)%?\s*\)$/u.test(value)
+    || /^#(?:[\da-f]{3}0|[\da-f]{6}00)$/iu.test(value)) return undefined;
+  return value;
+};
+// accept only bounded browser color reports
+const isProjectBrowserThemeMessage = (value: unknown): value is ProjectBrowserThemeMessage => {
+  // ignore primitive messages
+  if (value === null || typeof value !== 'object') return false;
+  const { type, color } = value as { type?: unknown; color?: unknown };
+  return type === 'rac-browser-theme' && (color === null || typeof color === 'string' && color.length <= 256 && CSS.supports('color', color));
+};
 // recognize cooperative frame navigation reports
 const isProjectBrowserLocationMessage = (value: unknown): value is ProjectBrowserLocationMessage => value !== null && typeof value === 'object'
   && (value as ProjectBrowserLocationMessage).type === 'rac-browser-location'
@@ -4426,17 +4448,19 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   const expanded = usePanelExpand('browser')?.expanded === true;
   const [mobile, setMobile] = useState(() => savedBrowserMobile(worktreeId));
   const [deviceError, setDeviceError] = useState<string>();
+  const [chromeColor, setChromeColor] = useState<string>();
   const [address, setAddress] = useState(url);
-  const [frameSource, setFrameSource] = useState(() => proxied ? browserDeviceUrl(url, mobile) : url);
+  const [frameSource, setFrameSource] = useState(() => isManagedBrowserUrl(url, homeUrl, proxied) ? browserDeviceUrl(url, mobile) : url);
   const [frameAwayFromKnownUrl, setFrameAwayFromKnownUrl] = useState(false);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const frameShellRef = useRef<HTMLDivElement | null>(null);
   const loadedFrameSource = useRef(url);
-  const loadedFrameProxied = useRef(proxied);
+  const loadedFrameProxied = useRef(isManagedBrowserUrl(url, homeUrl, proxied));
   const expectedFrameLoad = useRef(true);
   const appliedNavigationSequence = useRef(navigationRequest?.sequence);
   const normalizedHomeUrl = normalizeBrowserUrl(homeUrl, homeUrl) ?? homeUrl;
   const normalizedUrl = normalizeBrowserUrl(url, homeUrl) ?? normalizedHomeUrl;
+  const managed = isManagedBrowserUrl(normalizedUrl, homeUrl, proxied);
   const atHome = normalizedUrl === normalizedHomeUrl && !frameAwayFromKnownUrl;
   useEffect(() => setAddress(url), [url]);
   // scale one desktop layout viewport into the visible phone frame
@@ -4463,12 +4487,13 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   // navigate without replacing the frame
   const loadFrame = useCallback((target: string, device = mobile) => {
     loadedFrameSource.current = target;
-    loadedFrameProxied.current = proxied;
-    const source = proxied ? browserDeviceUrl(target, device) : target;
+    loadedFrameProxied.current = isManagedBrowserUrl(target, homeUrl, proxied);
+    const source = loadedFrameProxied.current ? browserDeviceUrl(target, device) : target;
     setDeviceError(undefined);
+    setChromeColor(undefined);
     setFrameSource(source);
     frameRef.current?.setAttribute('src', source);
-  }, [mobile, proxied]);
+  }, [homeUrl, mobile, proxied]);
   // refresh the retained location
   const refreshFrame = useCallback(() => {
     expectedFrameLoad.current = true;
@@ -4481,14 +4506,14 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     const explicitlyRequested = navigationRequest !== undefined && appliedNavigationSequence.current !== navigationRequest.sequence;
     const target = explicitlyRequested ? navigationRequest.url : normalizedUrl;
     // skip retained locations already loaded by the pane
-    if (!explicitlyRequested && loadedFrameSource.current === target && loadedFrameProxied.current === proxied) return;
+    if (!explicitlyRequested && loadedFrameSource.current === target && loadedFrameProxied.current === isManagedBrowserUrl(target, homeUrl, proxied)) return;
     // consume one explicit navigation request
     if (explicitlyRequested) appliedNavigationSequence.current = navigationRequest.sequence;
     expectedFrameLoad.current = true;
     setLoading(true);
     setFrameAwayFromKnownUrl(false);
     loadFrame(target);
-  }, [loadFrame, navigationRequest, normalizedUrl, proxied]);
+  }, [homeUrl, loadFrame, navigationRequest, normalizedUrl, proxied]);
   useEffect(() => {
     // direct previews do not expose the managed bridge
     if (!proxied) return;
@@ -4496,28 +4521,47 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     const syncReportedFrame = (event: MessageEvent<unknown>) => {
       // ignore unrelated messages
       if (event.source !== frameRef.current?.contentWindow || event.origin !== new URL(homeUrl).origin) return;
+      // recover managed authority only through a valid home-origin location
+      if (isProjectBrowserLocationMessage(event.data)) {
+        const reportedUrl = normalizeBrowserUrl(event.data.url, homeUrl);
+        // retain explicit outside navigation until its load completes
+        if (reportedUrl === undefined || new URL(reportedUrl).origin !== event.origin || !loadedFrameProxied.current && expectedFrameLoad.current) return;
+        // retain the current managed location
+        if (onNavigate(reportedUrl)) {
+          loadedFrameSource.current = reportedUrl;
+          setFrameAwayFromKnownUrl(false);
+          // reapply the selected identity after returning from an outside page
+          if (!loadedFrameProxied.current) {
+            expectedFrameLoad.current = true;
+            setLoading(true);
+            loadFrame(reportedUrl);
+          }
+        }
+        return;
+      }
+      // outside pages cannot grant themselves theme or refresh authority
+      if (!loadedFrameProxied.current) return;
+      // tint only this browser's header backing
+      if (isProjectBrowserThemeMessage(event.data)) { setChromeColor(normalizeBrowserChromeColor(event.data.color)); return; }
       // reload only the embedded browser
       if (isProjectBrowserRefreshMessage(event.data)) { refreshFrame(); return; }
       // surface failed identity emulation
       if (isProjectBrowserDeviceErrorMessage(event.data)) { setDeviceError(`Unable to apply device mode: ${event.data.properties.join(', ')}`); return; }
-      // ignore unrelated project messages
-      if (!isProjectBrowserLocationMessage(event.data)) return;
-      // mark cooperative navigation
-      if (onNavigate(event.data.url)) {
-        loadedFrameSource.current = event.data.url;
-        setFrameAwayFromKnownUrl(false);
-      }
     };
     window.addEventListener('message', syncReportedFrame);
     return () => window.removeEventListener('message', syncReportedFrame);
-  }, [homeUrl, onNavigate, proxied, refreshFrame]);
+  }, [homeUrl, loadFrame, onNavigate, proxied, refreshFrame]);
   // sync readable same-origin frame locations
   const syncFrameLocation = () => {
     const expected = expectedFrameLoad.current;
     expectedFrameLoad.current = false;
     setLoading(false);
+    // discard the previous page's appearance after in-frame navigation
+    if (!expected) setChromeColor(undefined);
+    // probe the configured managed origin after a link or redirect returns there
+    if (proxied) frameRef.current?.contentWindow?.postMessage({ type: 'rac-browser-theme-request' }, new URL(homeUrl).origin);
     // leave direct cross-origin locations opaque
-    if (!proxied) return;
+    if (!loadedFrameProxied.current) return;
     // track unreported frame navigation
     if (!expected) setFrameAwayFromKnownUrl(true);
     try {
@@ -4529,7 +4573,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
       }
     } catch { /* cross-origin frames can report with rac-browser-location */ }
   };
-  // submit an owned browser location
+  // submit a safe browser location
   const navigate = () => {
     const target = normalizeBrowserUrl(address, homeUrl);
     // restore the retained address after invalid input
@@ -4543,8 +4587,13 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     loadFrame(target);
     onNavigate(target);
   };
-  // handle address submission
-  const submitAddress = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); navigate(); };
+  // submit the standalone address pill with enter
+  const submitAddress = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    // leave editing shortcuts unchanged
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    navigate();
+  };
   // update the editable address
   const changeAddress = (event: React.ChangeEvent<HTMLInputElement>) => setAddress(event.target.value);
   // return to the configured root
@@ -4585,7 +4634,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     saveBrowserMobile(worktreeId, nextMobile);
     setMobile(nextMobile);
     // resize direct previews without claiming user-agent emulation
-    if (!proxied) return;
+    if (!managed) return;
     expectedFrameLoad.current = true;
     setLoading(true);
     setFrameAwayFromKnownUrl(false);
@@ -4623,10 +4672,11 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     });
   };
   // describe the applied preview capability
-  const deviceLabel = proxied ? mobile ? 'Use desktop viewport and user agent' : 'Use mobile viewport and user agent' : mobile ? 'Use desktop viewport' : 'Use mobile viewport';
-  const deviceTitle = proxied ? mobile ? 'Desktop viewport and user agent' : 'Mobile viewport and user agent' : mobile ? 'Desktop viewport' : 'Mobile viewport';
+  const deviceLabel = managed ? mobile ? 'Use desktop viewport and user agent' : 'Use mobile viewport and user agent' : mobile ? 'Use desktop viewport' : 'Use mobile viewport';
+  const deviceTitle = managed ? mobile ? 'Desktop viewport and user agent' : 'Mobile viewport and user agent' : mobile ? 'Desktop viewport' : 'Mobile viewport';
   const actions = <>
-    {proxied
+    {deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}
+    {managed
       ? <button className={`panel-header-action browser-refresh${loading ? ' loading' : ''}`} type="button" aria-label={loading ? 'Stop loading browser' : 'Refresh browser'} aria-busy={loading} title={loading ? 'Stop' : 'Refresh'} onClick={toggleFrameLoad}><PanelIcon path={loading ? 'm6 6 12 12M18 6 6 18' : 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'} /></button>
       : <button className={`panel-header-action browser-refresh${loading ? ' loading' : ''}`} type="button" disabled={loading} aria-label="Refresh browser" aria-busy={loading} title={loading ? 'Loading external preview' : 'Refresh external preview'} onClick={refreshFrame}><PanelIcon path="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" /></button>}
     <a className="panel-header-action browser-open-tab" href={normalizedUrl} target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" title="Open in a new tab"><PanelIcon path="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></a>
@@ -4635,8 +4685,8 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     { key: 'home', label: 'Go to project home', title: 'Home', className: 'browser-home', disabled: atHome, icon: <PanelIcon path="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7" />, onSelect: goHome },
     { key: 'device', label: deviceLabel, title: deviceTitle, className: 'browser-device-toggle', pressed: mobile, icon: <svg className="panel-header-icon" data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg>, onSelect: toggleDevice }
   ];
-  const title = <>{deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}<form className="browser-address-form" onSubmit={submitAddress}><input type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onBlur={navigate} /></form></>;
-  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={browserContextMenu} onKeyDown={handleEscape}><PanelHeader panelKey="browser" label="browser" title={title} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close browser', title: 'Close', className: 'browser-close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} /><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
+  const titleControl = <input className="panel-header-pill panel-header-title browser-address" type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onKeyDown={submitAddress} onBlur={navigate} />;
+  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} style={{ '--browser-chrome-color': chromeColor } as React.CSSProperties} role="dialog" aria-label="Browser" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={browserContextMenu} onKeyDown={handleEscape}><PanelHeader panelKey="browser" label="browser" titleControl={titleControl} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close browser', title: 'Close', className: 'browser-close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} /><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
 }
 
 // reuse the owning view's note persistence and prompt draft
