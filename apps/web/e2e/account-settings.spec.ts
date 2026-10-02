@@ -296,3 +296,222 @@ test('keeps all ChatGPT account actions on one row at desktop and mobile widths'
   expect(horizontalMetrics.body).toBeLessThanOrEqual(horizontalMetrics.viewport);
   await page.screenshot({ path: '/tmp/remoteagents-account-actions-mobile.png' });
 });
+
+// verify active account identity beside the installed Codex version
+test('shows the active Codex account beside its version in launch menus', async ({ page }) => {
+  const longName = 'Autonomous research workspace account with an intentionally long saved display name';
+  const versionLabel = 'v0.153.2 → v0.154.0';
+  const state = await setupAccountSettings(page, [
+    { id: 'personal-account', label: 'Personal', email: 'personal@example.com', active: true, planType: 'pro' },
+    { id: 'work-account', label: 'Work', email: 'work@example.com', active: false, planType: 'business' },
+  ]);
+  let switchBody: unknown;
+  let switchCsrf = '';
+  // publish current and available Codex versions for the launch row
+  await page.route('**/api/agents/updates', route => route.fulfill({ json: { agents: [{ kind: 'codex', currentVersion: '0.153.2', latestVersion: '0.154.0', updateAvailable: true }] } }));
+  // switch the selected account without changing the shared settings fixture
+  await page.route('**/api/codex/accounts/switch', route => {
+    const request = route.request();
+    switchBody = request.postDataJSON();
+    switchCsrf = request.headers()['x-csrf-token'] ?? '';
+    const id = (switchBody as { id?: unknown }).id;
+    // select only the requested fixture account
+    for (const account of state.accounts) account.active = account.id === id;
+    const account = state.accounts.find(candidate => candidate.active);
+    // reject a malformed fixture request
+    if (account === undefined) return route.fulfill({ status: 404, json: { error: 'Account unavailable.' } });
+    return route.fulfill({ json: { account, restarts: [] } });
+  });
+
+  await page.goto('/');
+  const toolbar = page.getByRole('region', { name: 'Workspace toolbar' });
+  await toolbar.getByRole('button', { name: /^(Choose agent|Launch agent)(?: — update available)?$/u }).click();
+  const menu = page.getByRole('menu', { name: 'Choose agent', exact: true });
+  let codex = menu.getByRole('group', { name: 'Codex agent' });
+  const versionLine = codex.locator('.launch-agent-details');
+  const version = versionLine.getByText(versionLabel, { exact: true });
+  let activeName = versionLine.getByText('Personal', { exact: true });
+  await expect(version).toBeVisible();
+  await expect(activeName).toBeVisible();
+  await expect(codex.getByText('personal@example.com', { exact: true })).toHaveCount(0);
+  await expect.poll(() => state.accountQueries).toBe(1);
+  const versionBounds = await version.boundingBox();
+  const activeBounds = await activeName.boundingBox();
+  expect(versionBounds).not.toBeNull();
+  expect(activeBounds).not.toBeNull();
+  expect(activeBounds!.x).toBeGreaterThan(versionBounds!.x + versionBounds!.width);
+  expect(Math.abs((activeBounds!.y + activeBounds!.height / 2) - (versionBounds!.y + versionBounds!.height / 2))).toBeLessThanOrEqual(1);
+  const [activeColor, codexColor] = await Promise.all([
+    activeName.evaluate(element => getComputedStyle(element).color),
+    codex.locator('.launch-kind-codex').evaluate(element => getComputedStyle(element).color),
+  ]);
+  expect(activeColor).toBe(codexColor);
+
+  await codex.getByRole('menuitem', { name: 'Codex accounts', exact: true }).click();
+  let accounts = menu.getByRole('group', { name: 'Codex accounts', exact: true });
+  const work = accounts.getByRole('radio').filter({ hasText: 'Work' });
+  await expect(work).toHaveAttribute('aria-checked', 'false');
+  await work.click();
+  await expect(work).toHaveAttribute('aria-checked', 'true');
+  expect(switchBody).toEqual({ id: 'work-account' });
+  expect(switchCsrf).toBe('account-settings-csrf');
+  expect(state.accountQueries).toBe(1);
+  await accounts.getByRole('button', { name: /Back to agents/u }).click();
+  codex = menu.getByRole('group', { name: 'Codex agent' });
+  await expect(codex.locator('.launch-agent-account')).toHaveText('Work');
+
+  await codex.getByRole('menuitem', { name: 'Codex accounts', exact: true }).click();
+  accounts = menu.getByRole('group', { name: 'Codex accounts', exact: true });
+  await accounts.getByRole('button', { name: 'Rename Work', exact: true }).click();
+  const rename = page.getByRole('dialog', { name: 'Rename account', exact: true });
+  await rename.getByLabel('account name', { exact: true }).fill(longName);
+  await rename.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(rename).toHaveCount(0);
+  await expect(accounts.getByRole('status')).toContainText(`Renamed to ${longName}.`);
+  await accounts.getByRole('button', { name: /Back to agents/u }).click();
+  codex = menu.getByRole('group', { name: 'Codex agent' });
+  activeName = codex.locator('.launch-agent-account');
+  await expect(activeName).toHaveText(longName);
+  await expect(activeName).toHaveAttribute('title', longName);
+  expect(state.accountQueries).toBe(1);
+  await page.screenshot({ path: '/tmp/remoteagents-launch-account-desktop.png' });
+
+  await page.setViewportSize({ width: 320, height: 640 });
+  await expect(activeName).toBeVisible();
+  await expect(activeName).toHaveCSS('overflow', 'hidden');
+  await expect(activeName).toHaveCSS('text-overflow', 'ellipsis');
+  await expect(activeName).toHaveCSS('white-space', 'nowrap');
+  const [mobileVersionBounds, mobileAccountBounds, mobileLineBounds] = await Promise.all([
+    codex.getByText(versionLabel, { exact: true }).boundingBox(),
+    activeName.boundingBox(),
+    codex.locator('.launch-agent-details').boundingBox(),
+  ]);
+  expect(mobileVersionBounds).not.toBeNull();
+  expect(mobileAccountBounds).not.toBeNull();
+  expect(mobileLineBounds).not.toBeNull();
+  expect(mobileAccountBounds!.x).toBeGreaterThan(mobileVersionBounds!.x + mobileVersionBounds!.width);
+  expect(mobileAccountBounds!.x + mobileAccountBounds!.width).toBeLessThanOrEqual(mobileLineBounds!.x + mobileLineBounds!.width + 1);
+  const [mobileLaunchBounds, mobileAccountsBounds, mobileUpdateBounds, mobileDefaultBounds] = await Promise.all([
+    codex.locator(':scope > .launch-row').boundingBox(),
+    codex.locator(':scope > .launch-agent-accounts').boundingBox(),
+    codex.locator(':scope > .launch-agent-update').boundingBox(),
+    codex.locator(':scope > .launch-agent-default').boundingBox(),
+  ]);
+  expect(mobileLaunchBounds).not.toBeNull();
+  expect(mobileAccountsBounds).not.toBeNull();
+  expect(mobileUpdateBounds).not.toBeNull();
+  expect(mobileDefaultBounds).not.toBeNull();
+  expect(mobileLaunchBounds!.x + mobileLaunchBounds!.width).toBeLessThanOrEqual(mobileAccountsBounds!.x + 1);
+  expect(mobileAccountsBounds!.x + mobileAccountsBounds!.width).toBeLessThanOrEqual(mobileUpdateBounds!.x + 1);
+  expect(mobileUpdateBounds!.x + mobileUpdateBounds!.width).toBeLessThanOrEqual(mobileDefaultBounds!.x + 1);
+  const mobileAccountWidths = await activeName.evaluate(element => ({ client: element.clientWidth, scroll: element.scrollWidth }));
+  expect(mobileAccountWidths.scroll).toBeGreaterThan(mobileAccountWidths.client);
+  const horizontalMetrics = await page.evaluate(() => ({ viewport: window.innerWidth, document: document.documentElement.scrollWidth, body: document.body.scrollWidth }));
+  expect(horizontalMetrics.document).toBeLessThanOrEqual(horizontalMetrics.viewport);
+  expect(horizontalMetrics.body).toBeLessThanOrEqual(horizontalMetrics.viewport);
+  await page.screenshot({ path: '/tmp/remoteagents-launch-account-mobile.png' });
+
+  // refresh the menu with no selected account and keep the version honest
+  for (const account of state.accounts) account.active = false;
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  await toolbar.getByRole('button', { name: /^(Choose agent|Launch agent)(?: — update available)?$/u }).click();
+  await expect.poll(() => state.accountQueries).toBe(2);
+  codex = page.getByRole('menu', { name: 'Choose agent', exact: true }).getByRole('group', { name: 'Codex agent' });
+  await expect(codex.getByText(versionLabel, { exact: true })).toBeVisible();
+  await expect(codex.locator('.launch-agent-account')).toHaveCount(0);
+  expect(state.patches).toEqual([{ id: 'work-account', body: { label: longName }, csrf: 'account-settings-csrf' }]);
+});
+
+// keep restart choices informational instead of exposing global account management
+test('shows the active Codex account in Restart as without account actions', async ({ page }) => {
+  await setupAccountSettings(page, [
+    { id: 'personal-account', label: 'Personal', email: 'personal@example.com', active: true, planType: 'pro' },
+  ]);
+  // provide one ready configured Agent and its worktree
+  await page.route('**/api/dashboard', route => route.fulfill({ json: {
+    generation: 1,
+    adapters: {
+      codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
+      claude: { program: '/usr/local/bin/claude', launchable: true, stateSource: 'reported', turnCapture: false, inlineQuestions: false, commands: true, sandbox: false },
+    },
+    agents: [{ id: 'agent-cora', sessionId: 'socket:$1', home: '/worktrees/cora', projectId: 'project', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 1, title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0, launch: { kind: 'codex', origin: 'worktree' } }],
+    projects: [{ id: 'project', label: 'Project', available: true, worktrees: [{ id: 'cora', projectId: 'project', label: 'Cora', path: '/worktrees/cora', available: true, pinned: true, order: 1, launch: { kind: 'codex', origin: 'worktree' } }] }],
+    scratchLaunch: { kind: 'codex', origin: 'default' },
+    cleanupPending: 0,
+    reviews: [],
+    reviewTour: { available: false, reason: 'generator_unavailable' },
+  } }));
+  // publish the installed Codex version for the restart row
+  await page.route('**/api/agents/updates', route => route.fulfill({ json: { agents: [{ kind: 'codex', currentVersion: '0.153.2', latestVersion: '0.154.0', updateAvailable: true }] } }));
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  const menu = page.getByRole('menu', { name: 'Agent power options' });
+  const compactBounds = await menu.boundingBox();
+  expect(compactBounds).not.toBeNull();
+  expect(compactBounds!.width).toBeCloseTo(208, 0);
+  await menu.getByRole('menuitem', { name: 'Restart as…', exact: true }).click();
+  const pickerBounds = await menu.boundingBox();
+  expect(pickerBounds).not.toBeNull();
+  expect(pickerBounds!.width).toBeGreaterThan(compactBounds!.width);
+  const codex = menu.getByRole('group', { name: 'Codex agent' });
+  const version = codex.locator('.launch-agent-version');
+  const activeName = codex.locator('.launch-agent-account');
+  await expect(version).toHaveText('v0.153.2 → v0.154.0');
+  await expect(activeName).toHaveText('Personal');
+  await expect(codex.getByText('personal@example.com', { exact: true })).toHaveCount(0);
+  const [rowBounds, detailsBounds, versionBounds, activeBounds, defaultBounds] = await Promise.all([
+    codex.locator(':scope > .launch-row').boundingBox(),
+    codex.locator('.launch-agent-details').boundingBox(),
+    version.boundingBox(),
+    activeName.boundingBox(),
+    codex.locator(':scope > .launch-agent-default').boundingBox(),
+  ]);
+  expect(rowBounds).not.toBeNull();
+  expect(detailsBounds).not.toBeNull();
+  expect(versionBounds).not.toBeNull();
+  expect(activeBounds).not.toBeNull();
+  expect(defaultBounds).not.toBeNull();
+  expect(activeBounds!.x).toBeGreaterThan(versionBounds!.x + versionBounds!.width);
+  expect(detailsBounds!.x + detailsBounds!.width).toBeLessThanOrEqual(rowBounds!.x + rowBounds!.width + 1);
+  expect(detailsBounds!.x + detailsBounds!.width).toBeLessThanOrEqual(defaultBounds!.x + 1);
+  await page.screenshot({ path: '/tmp/remoteagents-restart-account-fixed.png' });
+  await expect(menu.getByRole('menuitem', { name: 'Codex accounts', exact: true })).toHaveCount(0);
+
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  const mobileCompactBounds = await menu.boundingBox();
+  expect(mobileCompactBounds).not.toBeNull();
+  expect(mobileCompactBounds!.width).toBeCloseTo(208, 0);
+  await menu.getByRole('menuitem', { name: 'Restart as…', exact: true }).click();
+  await expect(version).toHaveText('v0.153.2 → v0.154.0');
+  await expect(activeName).toHaveText('Personal');
+  const [mobileMenuBounds, mobileRowBounds, mobileDetailsBounds, mobileVersionBounds, mobileAccountBounds, mobileUpdateBounds, mobileDefaultBounds] = await Promise.all([
+    menu.boundingBox(),
+    codex.locator(':scope > .launch-row').boundingBox(),
+    codex.locator('.launch-agent-details').boundingBox(),
+    version.boundingBox(),
+    activeName.boundingBox(),
+    codex.locator(':scope > .launch-agent-update').boundingBox(),
+    codex.locator(':scope > .launch-agent-default').boundingBox(),
+  ]);
+  expect(mobileMenuBounds).not.toBeNull();
+  expect(mobileRowBounds).not.toBeNull();
+  expect(mobileDetailsBounds).not.toBeNull();
+  expect(mobileVersionBounds).not.toBeNull();
+  expect(mobileAccountBounds).not.toBeNull();
+  expect(mobileUpdateBounds).not.toBeNull();
+  expect(mobileDefaultBounds).not.toBeNull();
+  expect(mobileMenuBounds!.width).toBeLessThanOrEqual(304);
+  expect(mobileAccountBounds!.x).toBeGreaterThan(mobileVersionBounds!.x + mobileVersionBounds!.width);
+  expect(mobileDetailsBounds!.x + mobileDetailsBounds!.width).toBeLessThanOrEqual(mobileRowBounds!.x + mobileRowBounds!.width + 1);
+  expect(mobileDetailsBounds!.x + mobileDetailsBounds!.width).toBeLessThanOrEqual(mobileUpdateBounds!.x + 1);
+  expect(mobileUpdateBounds!.x + mobileUpdateBounds!.width).toBeLessThanOrEqual(mobileDefaultBounds!.x + 1);
+  await expect(menu.getByRole('menuitem', { name: 'Codex accounts', exact: true })).toHaveCount(0);
+  const mobileHorizontalMetrics = await page.evaluate(() => ({ viewport: window.innerWidth, document: document.documentElement.scrollWidth, body: document.body.scrollWidth }));
+  expect(mobileHorizontalMetrics.document).toBeLessThanOrEqual(mobileHorizontalMetrics.viewport);
+  expect(mobileHorizontalMetrics.body).toBeLessThanOrEqual(mobileHorizontalMetrics.viewport);
+  await page.screenshot({ path: '/tmp/remoteagents-restart-account-mobile.png' });
+});

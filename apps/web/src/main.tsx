@@ -1388,9 +1388,9 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
   const [switchingAccountId, setSwitchingAccountId] = useState<string>();
   const [resettingAccountId, setResettingAccountId] = useState<string>();
   const [accountMessage, setAccountMessage] = useState('');
-  // clear stale feedback only when opening the account submenu
+  // clear stale feedback when opening an account-aware launcher
   const showAccounts = useCallback(() => { setAccountMessage(''); setAccountsVisible(true); }, []);
-  // stop account polling when the submenu leaves the launcher
+  // stop account polling when the launcher closes
   const hideAccounts = useCallback(() => setAccountsVisible(false), []);
   const [accountClock, setAccountClock] = useState(() => Date.now());
   const accountDay = Math.floor(accountClock / 86_400_000);
@@ -1438,14 +1438,14 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
     if (textarea.parentElement) observer.observe(textarea.parentElement);
     return () => observer.disconnect();
   }, [open, davoEnabled, davoDraft.context]);
-  // refresh accounts when their launcher submenu opens and at utc day rollover
+  // refresh accounts when their launcher opens and at utc day rollover
   useEffect(() => {
-    // skip hidden account submenus and consoles without a configured Codex adapter
+    // skip hidden launchers and consoles without a configured Codex adapter
     if (!accountsVisible || !codexConfigured) return;
     let active = true;
     setAccountsLoading(true);
     void settings.codexAccounts().then(result => {
-      // ignore closed-menu responses
+      // ignore closed-launcher responses
       if (!active) return;
       setAccountsLoading(false);
       // retain the last good list on failure
@@ -1459,7 +1459,7 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
   }, [accountsVisible, codexConfigured, settings.codexAccounts, accountDay]);
   // update visible reset countdowns every second
   useEffect(() => {
-    // stop the clock while the account submenu is hidden
+    // stop the clock while the account-aware launcher is hidden
     if (!accountsVisible) return;
     setAccountClock(Date.now());
     const interval = window.setInterval(() => setAccountClock(Date.now()), 1_000);
@@ -1857,8 +1857,10 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
   // the server selector owns server updates; settings signals only client reloads
   const updatesAvailable = settings.clientUpdateAvailable;
   const trigger = <span className="server-switcher-settings-wrap"><button ref={triggerRef} type="button" className={`server-switcher-button server-switcher-settings${updatesAvailable ? ' updates-available' : ''}`} aria-label={updatesAvailable ? 'Global settings — updates available' : 'Global settings'} aria-haspopup="dialog" aria-controls="global-settings-page" aria-expanded={open} onClick={toggleSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06-.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" /></svg>{updatesAvailable && <span className="server-switcher-settings-update-dot" aria-hidden="true" />}</button></span>;
+  // reuse the saved label for the selected launcher account
+  const activeAccount = accounts.find(account => account.active);
   // keep account mutations mounted while the launch flyout changes menu pages
-  const accountsMenu = accountsSection === null ? undefined : { content: accountsSection, onOpen: showAccounts, onClose: hideAccounts };
+  const accountsMenu = accountsSection === null ? undefined : { content: accountsSection, activeName: activeAccount === undefined ? undefined : codexAccountName(activeAccount), onOpen: showAccounts, onClose: hideAccounts };
   return <ClientSettingsSplitContext.Provider value={{ open, page: settingsPage, trigger, close: closeSettings, renameServer: () => beginRename('server') }}><CodexAccountsMenuContext.Provider value={accountsMenu}>{children}</CodexAccountsMenuContext.Provider>{renameDialog}{accountLoginDialog}</ClientSettingsSplitContext.Provider>;
 }
 
@@ -2154,7 +2156,11 @@ function AgentPowerMenu(props: AgentPowerMenuProps) {
   // Turn off at the foot of the menu
   const footAction = <button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(props.onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button>;
   const menuLabel = 'Agent power options';
-  return <><span className="power-menu-wrap" ref={anchorRef} hidden={hidden}><button className={className} type="button" disabled={pending || disabledReason !== undefined || hidden} aria-label={menuLabel} data-context-flyout aria-expanded={open && !hidden} aria-haspopup="menu" title={disabledReason ?? menuLabel} onClick={() => setOpen(current => !current)}><span className="flyout-caret" aria-hidden="true" />{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && !hidden && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label={menuLabel}>{view === 'restart-as' && restartAs !== undefined ? restartAsPage : <>{stateActions}{newTaskOption}{footAction}</>}</div></FlyoutPortal>}</>;
+  // reuse launch layout only while choosing a restart agent
+  const restartPicker = view === 'restart-as' && restartAs !== undefined;
+  // let shared picker CSS replace the width retained from compact power actions
+  const flyoutStyle = restartPicker ? { ...style, width: undefined } : style;
+  return <><span className="power-menu-wrap" ref={anchorRef} hidden={hidden}><button className={className} type="button" disabled={pending || disabledReason !== undefined || hidden} aria-label={menuLabel} data-context-flyout aria-expanded={open && !hidden} aria-haspopup="menu" title={disabledReason ?? menuLabel} onClick={() => setOpen(current => !current)}><span className="flyout-caret" aria-hidden="true" />{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && !hidden && <FlyoutPortal onDismiss={() => setOpen(false)}><div className={`more-menu flyout-menu agent-power-menu${restartPicker ? ' launch-menu' : ''}`} ref={flyoutRef} style={flyoutStyle} role="menu" aria-label={menuLabel}>{restartPicker ? restartAsPage : <>{stateActions}{newTaskOption}{footAction}</>}</div></FlyoutPortal>}</>;
 }
 
 // render reusable mobile terminal controls

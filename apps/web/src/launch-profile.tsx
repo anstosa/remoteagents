@@ -16,7 +16,7 @@ export type AgentUpdateStatus = { kind: AgentKind; currentVersion?: string; late
 type AgentLaunchSettings = { statuses: AgentUpdateStatus[]; updating?: AgentKind; errors: string[]; defaultAgent?: AgentKind; defaultPending: boolean; setDefaultAgent: (kind: AgentKind) => void; updateAgent: (kind: AgentKind) => void };
 export const AgentLaunchSettingsContext = createContext<AgentLaunchSettings | undefined>(undefined);
 // keep Codex account controls in the launcher without coupling this module to settings
-export type CodexAccountsMenu = { content: ReactNode; onOpen: () => void; onClose: () => void };
+export type CodexAccountsMenu = { content: ReactNode; activeName?: string; onOpen: () => void; onClose: () => void };
 export const CodexAccountsMenuContext = createContext<CodexAccountsMenu | undefined>(undefined);
 
 // The capability record the Dashboard publishes per registered kind (ADR 0002). The web
@@ -88,16 +88,20 @@ function LaunchMenuEntries({ entries, divider = true }: { entries: readonly Laun
 export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], launchDisabled = false, accounts, accountsView: controlledAccountsView, onAccountsViewChange }: { verb: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice: LaunchChoice) => void; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean; accounts?: CodexAccountsMenu; accountsView?: boolean; onAccountsViewChange?: (visible: boolean) => void }) {
   const adapters = useContext(AdaptersContext);
   const settings = useContext(AgentLaunchSettingsContext);
+  // share account identity without enabling its management controls
+  const sharedAccounts = useContext(CodexAccountsMenuContext);
+  const accountState = accounts ?? sharedAccounts;
   const [localAccountsView, setLocalAccountsView] = useState(false);
   // preserve the toolbar submenu across desktop and phone render paths
   const accountsView = controlledAccountsView ?? localAccountsView;
   const setAccountsView = onAccountsViewChange ?? setLocalAccountsView;
-  // fetch account state only while its launcher submenu is visible
+  // load the selected name before opening the account submenu
   useEffect(() => {
-    if (!accountsView || accounts === undefined) return;
-    accounts.onOpen();
-    return accounts.onClose;
-  }, [accountsView, accounts?.onOpen, accounts?.onClose]);
+    // skip consoles without account controls
+    if (accountState === undefined) return;
+    accountState.onOpen();
+    return accountState.onClose;
+  }, [accountState?.onOpen, accountState?.onClose]);
   // return to the kind list without closing the launcher flyout
   if (accountsView && accounts !== undefined) return <div className="launch-accounts-submenu" role="group" aria-label="Codex accounts"><button className="launch-submenu-back" type="button" onClick={() => setAccountsView(false)}>‹ Back to agents</button>{accounts.content}</div>;
   const kinds = configuredKinds(adapters);
@@ -115,9 +119,11 @@ export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], la
       const version = status?.currentVersion === undefined ? undefined : status.currentVersion.startsWith('v') ? status.currentVersion : `v${status.currentVersion}`;
       const latest = status?.latestVersion === undefined ? undefined : status.latestVersion.startsWith('v') ? status.latestVersion : `v${status.latestVersion}`;
       const versionLabel = status?.updateAvailable && version !== undefined && latest !== undefined ? `${version} → ${latest}` : version;
+      // identify the selected Codex account beside its installed version
+      const accountName = kind === 'codex' ? accountState?.activeName : undefined;
       return <div key={kind} role="group" aria-label={`${agentKindLabel[kind]} agent`} className="launch-agent-line"><button type="button" role="menuitem" className="launch-row" disabled={!capability.launchable || launchDisabled} title={capability.unavailableReason} onClick={() => onLaunch({ kind, sandboxed })}>
         <KindMark kind={kind} />
-        <span className="launch-row-copy"><strong>{agentKindLabel[kind]}{resolved && <em> · {originCopy(resolution?.origin)}</em>}</strong>{versionLabel !== undefined && <span className="launch-agent-version">{versionLabel}</span>}<small>{capability.launchable ? sandboxCopy(kind, capability, sandboxed) : capability.unavailableReason ?? 'Unavailable'}</small></span>
+        <span className="launch-row-copy"><strong>{agentKindLabel[kind]}{resolved && <em> · {originCopy(resolution?.origin)}</em>}</strong>{(versionLabel !== undefined || accountName !== undefined) && <span className="launch-agent-details">{versionLabel !== undefined && <span className="launch-agent-version">{versionLabel}</span>}{accountName !== undefined && <span className="launch-agent-account" title={accountName}>{accountName}</span>}</span>}<small>{capability.launchable ? sandboxCopy(kind, capability, sandboxed) : capability.unavailableReason ?? 'Unavailable'}</small></span>
         {capability.launchable && sandboxed && <LockIcon />}
       </button>{/* keep the codex submenu next to launch */}{kind === 'codex' && accounts !== undefined && <button type="button" role="menuitem" className="launch-agent-accounts" data-context-flyout aria-label="Codex accounts" aria-haspopup="menu" onClick={() => setAccountsView(true)}>Accounts <span aria-hidden="true">›</span></button>}{/* put update before the default star */}{status?.updateAvailable && <button type="button" role="menuitem" className="launch-agent-update" aria-label={`Update ${agentKindLabel[kind]} to ${status.latestVersion ?? 'latest'}`} disabled={settings?.updating !== undefined} onClick={() => settings?.updateAgent(kind)}>{settings?.updating === kind ? <><span className="spinner" />Updating…</> : 'Update'}</button>}{/* keep an unavailable persisted default visible */}{settings !== undefined && (capability.launchable || settings.defaultAgent === kind) && <button type="button" role="menuitemradio" className="launch-agent-default" aria-label={`Make ${agentKindLabel[kind]} default`} aria-checked={settings.defaultAgent === kind} title={settings.defaultAgent === kind ? 'Default agent' : `Make ${agentKindLabel[kind]} default`} disabled={!capability.launchable || settings.defaultAgent === kind || settings.defaultPending} onClick={() => settings.setDefaultAgent(kind)}>{settings.defaultAgent === kind ? '★' : '☆'}</button>}</div>;
     })}
