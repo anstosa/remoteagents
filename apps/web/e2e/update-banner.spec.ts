@@ -37,8 +37,8 @@ test('keeps the embedded update advisor out of the main agent tabs', async ({ pa
   await expect(page.getByRole('tab', { name: /Update Advisor/u })).toHaveCount(0);
 });
 
-// reload stale browser assets without launching a host update
-test('reloads a stale client instead of restarting the server', async ({ page }) => {
+// keep stale browser assets actionable only from the persistent toast
+test('reloads a stale client without adding a settings action or animation', async ({ page }) => {
   let updateStarts = 0;
   let navigations = 0;
   const revisionSha = 'a1b2c3d4e5f6789012345678901234567890abcd';
@@ -71,9 +71,13 @@ test('reloads a stale client instead of restarting the server', async ({ page })
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.goto('/');
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await expect(page.getByRole('status', { name: 'UI update available' })).toBeVisible();
+  const notification = page.getByRole('status', { name: 'UI update available' });
+  await expect(notification).toBeVisible();
+  const reload = notification.getByRole('button', { name: 'Reload UI' });
+  await expect(reload).toBeVisible();
   const initialNavigations = navigations;
   const tabs = page.getByRole('tablist');
   await expect(tabs.getByRole('button', { name: 'Reload local update' })).toHaveCount(0);
@@ -86,11 +90,16 @@ test('reloads a stale client instead of restarting the server', async ({ page })
   await expect(server.getByRole('button', { name: 'Rename Server' })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('group', { name: 'Remote Agents servers' })).toHaveCount(0);
-  await page.getByRole('button', { name: /Global settings/u }).click();
+  const settingsTrigger = page.getByRole('button', { name: /^Global settings/u });
+  await expect(settingsTrigger).toHaveAccessibleName('Global settings');
+  // keep the entire settings control free of update animations
+  expect(await settingsTrigger.evaluate(button => button.getAnimations({ subtree: true }).length)).toBe(0);
+  await settingsTrigger.click();
   const settings = page.getByRole('dialog', { name: 'Settings' });
   await expect(settings.getByRole('group', { name: 'Server' })).toHaveCount(0);
-  const reload = settings.getByRole('button', { name: 'Reload local update' });
-  await expect(reload).toBeVisible();
+  await expect(settings.getByRole('button', { name: /reload/iu })).toHaveCount(0);
+  await settings.getByRole('button', { name: 'Rename Client' }).click({ trial: true });
+  await settings.getByRole('button', { name: 'Close settings' }).click();
   await reload.click();
 
   await expect.poll(() => navigations).toBeGreaterThan(initialNavigations);

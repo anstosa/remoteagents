@@ -12,7 +12,7 @@ test('keeps phone icon controls square and aligned with the workspace tab', asyn
       </div>
       <button class="workspace-dropdown active" role="tab" aria-selected="true"><span class="tab-kind-stack"><span class="tab-place-mark">◈</span></span><span class="workspace-dropdown-label">Workspace</span><svg class="workspace-dropdown-chevron" viewBox="0 0 24 24"></svg></button>
       <span class="launcher"><button class="new-agent-tab" aria-label="Launch agent"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg></button></span>
-      <span class="server-switcher-settings-wrap"><button class="server-switcher-button server-switcher-settings" aria-label="Settings"><svg viewBox="0 0 24 24"></svg><span class="server-switcher-settings-update-dot"></span></button></span>
+      <span class="server-switcher-settings-wrap"><button class="server-switcher-button server-switcher-settings" aria-label="Settings"><svg viewBox="0 0 24 24"></svg></button></span>
     </nav>
   `);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -37,12 +37,10 @@ test('keeps phone icon controls square and aligned with the workspace tab', asyn
   expect(tabBox!.x + tabBox!.width / 2).toBeCloseTo(phoneNav!.x + phoneNav!.width / 2, 1);
   expect((await controls[2].boundingBox())!.x).toBeGreaterThan((await controls[3].boundingBox())!.x);
   await expect(tab).toHaveCSS('border-top-width', '1px');
-  // align both corner dots to the same outer button inset despite different borders
-  const [serverBox, serverDotBox, mobileSettingsBox, settingsDotBox] = await Promise.all([controls[0].boundingBox(), controls[0].locator('.server-switcher-attention').boundingBox(), controls[2].boundingBox(), controls[2].locator('.server-switcher-settings-update-dot').boundingBox()]);
+  // preserve the server status dot inset
+  const [serverBox, serverDotBox] = await Promise.all([controls[0].boundingBox(), controls[0].locator('.server-switcher-attention').boundingBox()]);
   expect(serverDotBox!.y - serverBox!.y).toBeCloseTo(4, 1);
-  expect(settingsDotBox!.y - mobileSettingsBox!.y).toBeCloseTo(4, 1);
   expect(serverBox!.x + serverBox!.width - serverDotBox!.x - serverDotBox!.width).toBeCloseTo(4, 1);
-  expect(mobileSettingsBox!.x + mobileSettingsBox!.width - settingsDotBox!.x - settingsDotBox!.width).toBeCloseTo(4, 1);
   // keep the outlined row inside a narrow viewport
   expect(await page.locator('.tabs').evaluate(nav => nav.scrollWidth <= nav.clientWidth)).toBe(true);
 

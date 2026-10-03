@@ -1855,7 +1855,7 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
   // render each general setting without a card container
   const settingsRows = <div className="client-settings-overview">
     <div className="client-settings-setting client-settings-identity" role="group" aria-label="Client">
-      <header><small>CLIENT</small><span className="client-settings-setting-actions">{settings.clientUpdateAvailable && <button className="client-settings-reload" type="button" aria-label="Reload local update" onClick={settings.reloadClient}>Reload</button>}<button type="button" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header>
+      <header><small>CLIENT</small><span className="client-settings-setting-actions"><button type="button" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header>
       <strong>{settings.deviceName}</strong><span>This browser</span>
     </div>
     {terminalFontSetting}{themeSetting}{reducedMotionSetting}{flyoutMarkersSetting}{dynamicWorktreesSetting}
@@ -1915,9 +1915,8 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
     else setOpen(true);
     setError('');
   };
-  // the server selector owns server updates; settings signals only client reloads
-  const updatesAvailable = settings.clientUpdateAvailable;
-  const trigger = <span className="server-switcher-settings-wrap"><button ref={triggerRef} type="button" className={`server-switcher-button server-switcher-settings${updatesAvailable ? ' updates-available' : ''}`} aria-label={updatesAvailable ? 'Global settings — updates available' : 'Global settings'} aria-haspopup="dialog" aria-controls="global-settings-page" aria-expanded={open} onClick={toggleSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06-.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" /></svg>{updatesAvailable && <span className="server-switcher-settings-update-dot" aria-hidden="true" />}</button></span>;
+  // keep ui update guidance in the toast instead of settings
+  const trigger = <span className="server-switcher-settings-wrap"><button ref={triggerRef} type="button" className="server-switcher-button server-switcher-settings" aria-label="Global settings" aria-haspopup="dialog" aria-controls="global-settings-page" aria-expanded={open} onClick={toggleSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06-.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" /></svg></button></span>;
   // reuse the saved label for the selected launcher account
   const activeAccount = accounts.find(account => account.active);
   // keep account mutations mounted while the launch flyout changes menu pages

@@ -5,7 +5,6 @@ test('renders status color dots at one shared diameter', async ({ page }) => {
   await page.goto('/');
   await page.setContent(`
     <link rel="stylesheet" href="/src/styles.css">
-    <button class="server-switcher-button server-switcher-settings"><span class="server-switcher-settings-update-dot"></span></button>
     <button class="server-switcher-button"><span class="server-switcher-attention working"></span></button>
     <nav class="tabs"><button class="status-working">Working</button><button class="unread">Unread</button></nav>
     <span class="agent-switcher-attention"></span>
@@ -22,7 +21,6 @@ test('renders status color dots at one shared diameter', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 880 });
 
   const dots = [
-    ['.server-switcher-settings-update-dot'],
     ['.server-switcher-attention'],
     ['.tabs .status-working', '::after'],
     ['.tabs .unread', '::after'],

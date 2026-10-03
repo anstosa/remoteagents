@@ -127,8 +127,8 @@ test('keeps a stale UI reload toast visible in the shared upper-right stack', as
   const settingsButton = page.getByRole('button', { name: /Global settings/u });
   await settingsButton.click();
   let settings = page.getByRole('dialog', { name: 'Settings' });
-  const settingsReload = settings.getByRole('button', { name: 'Reload local update' });
-  const insetSettingsActionable = await isPointerActionable(settingsReload);
+  await expect(settings.getByRole('button', { name: /reload/iu })).toHaveCount(0);
+  const insetRenameClientActionable = await isPointerActionable(settings.getByRole('button', { name: 'Rename Client' }));
   await expect(notification).toBeVisible();
   await page.screenshot({ path: '/tmp/client-update-toast-settings-mobile.png', fullPage: true });
   await insetStyle.evaluate(element => element.remove());
@@ -160,14 +160,14 @@ test('keeps a stale UI reload toast visible in the shared upper-right stack', as
   const shortSettingsTriggerActionable = await isPointerActionable(settingsButton);
   await settingsButton.click();
   settings = page.getByRole('dialog', { name: 'Settings' });
-  const shortSettingsActionable = await isPointerActionable(settings.getByRole('button', { name: 'Reload local update' }));
+  const shortRenameClientActionable = await isPointerActionable(settings.getByRole('button', { name: 'Rename Client' }));
   await expect(notification).toBeVisible();
   await page.screenshot({ path: '/tmp/client-update-toast-settings-landscape.png', fullPage: true });
   await settings.getByRole('button', { name: 'Close settings' }).click();
   await upstreamDetail.evaluate((element, original) => { element.textContent = original; }, originalUpstreamDetail);
 
   expect({
-    insetSettingsActionable,
+    insetRenameClientActionable,
     shortStackBounded: shortLayout.bottom <= shortLayout.viewportHeight && shortLayout.height <= shortLayout.viewportHeight * .4 + 1,
     shortStackScrollable: shortLayout.scrollHeight > shortLayout.clientHeight,
     shortReloadVisible,
@@ -176,9 +176,9 @@ test('keeps a stale UI reload toast visible in the shared upper-right stack', as
     scrolledReloadVisible,
     scrolledReloadActionable,
     shortSettingsTriggerActionable,
-    shortSettingsActionable
+    shortRenameClientActionable
   }).toEqual({
-    insetSettingsActionable: true,
+    insetRenameClientActionable: true,
     shortStackBounded: true,
     shortStackScrollable: true,
     shortReloadVisible: true,
@@ -187,14 +187,14 @@ test('keeps a stale UI reload toast visible in the shared upper-right stack', as
     scrolledReloadVisible: true,
     scrolledReloadActionable: true,
     shortSettingsTriggerActionable: true,
-    shortSettingsActionable: true
+    shortRenameClientActionable: true
   });
 
-  // desktop settings reload stays actionable beneath the toast
+  // desktop rename stays actionable beneath the toast
   await page.setViewportSize({ width: 1440, height: 900 });
   await settingsButton.click();
   settings = page.getByRole('dialog', { name: 'Settings' });
-  await settings.getByRole('button', { name: 'Reload local update' }).click({ trial: true });
+  await settings.getByRole('button', { name: 'Rename Client' }).click({ trial: true });
   await expect(notification).toBeVisible();
   await page.screenshot({ path: '/tmp/client-update-toast-settings-desktop.png', fullPage: true });
   await settings.getByRole('button', { name: 'Close settings' }).click();
