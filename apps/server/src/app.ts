@@ -349,7 +349,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const place = agent.placeId === undefined ? undefined : placeById.get(agent.placeId);
       return agent.worktreeId === undefined && place !== undefined ? launchResolutions.get(placeLaunchScope(place)) : launchFor(agent.worktreeId);
     };
-    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(agentLaunch(agent) === undefined ? {} : { launch: agentLaunch(agent) }) })), places: discovered.places.map(place => ({ ...place, ...(launchResolutions.get(placeLaunchScope(place)) === undefined ? {} : { launch: launchResolutions.get(placeLaunchScope(place)) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, notesRevision, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews, ...(config.editor === undefined ? {} : { editor: true as const }) };
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), completionId: notifications.completionId(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(agentLaunch(agent) === undefined ? {} : { launch: agentLaunch(agent) }) })), places: discovered.places.map(place => ({ ...place, ...(launchResolutions.get(placeLaunchScope(place)) === undefined ? {} : { launch: launchResolutions.get(placeLaunchScope(place)) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, notesRevision, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews, ...(config.editor === undefined ? {} : { editor: true as const }) };
   };
   // observe only agent state needed by cross-instance attention
   const localInstanceAttention = async () => {
@@ -1404,13 +1404,16 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   });
   app.get('/api/push/public-key', async (request) => { session(request); return push.enabled ? { publicKey: push.publicKey } : { publicKey: undefined }; });
   app.post('/api/push/subscriptions', async (request, reply) => { session(request, true); return await push.subscribe(body(request) as never) ? reply.code(204).send() : reply.code(400).send({ error: 'invalid push subscription' }); });
+  // dismiss the viewed agent regardless of its current directory or workspace
   app.post('/api/agents/:id/notifications/dismiss', async (request, reply) => {
     controlled(request, true);
+    const completionId = body(request).completionId;
+    // reject malformed identities; omitted identities leave completions unchanged
+    if (completionId !== undefined && typeof completionId !== 'string') return reply.code(400).send({ error: 'invalid completion id' });
     const target = await discovery.target((request.params as { id: string }).id);
+    // reject agents that are no longer present
     if (!target) return reply.code(404).send({ error: 'target unavailable' });
-    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.home);
-    const scopedAgent = worktree === undefined ? target.agent : { ...target.agent, worktreeId: worktree.id };
-    notifications.view(scopedAgent);
+    notifications.view(target.agent, completionId);
     return reply.code(204).send();
   });
   app.get('/api/agents/:id/switch-prs', async (request, reply) => { controlled(request); const availability = await prSwitch.available((request.params as { id: string }).id); return availability === undefined ? reply.code(404).send({ error: 'pull request switching unavailable' }) : availability; });

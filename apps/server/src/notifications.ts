@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Agent } from './domain/models.js';
 import type { AttentionState } from './adapters/types.js';
 
@@ -41,8 +42,6 @@ export type ScheduleNotification = {
 export type PushMessage = AgentNotification | CleanupNotification | ReviewNotification | ScheduleNotification;
 
 type NotificationDelivery = (notification: AgentNotification) => void | Promise<void>;
-
-const attentionKey = (agent: Pick<Agent, 'id' | 'worktreeId'>) => agent.worktreeId === undefined ? `agent:${agent.id}` : `worktree:${agent.worktreeId}`;
 
 // Attention is resolved once, server-side, in DiscoveryService (ADR 0001/0002);
 // every consumer, including this coordinator, reads that resolved state.
@@ -119,13 +118,14 @@ export function agentNotification(previous: AgentAttentionState | undefined, cur
 
 export class AgentNotificationCoordinator {
   private readonly states = new Map<string, AgentAttentionState>();
-  private readonly pendingCompletions = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly unread = new Set<string>();
+  private readonly pendingCompletions = new Map<string, { id: string; timer: ReturnType<typeof setTimeout> }>();
+  private readonly unread = new Map<string, string>();
 
   constructor(private readonly deliver: NotificationDelivery, private readonly completionDelayMs = 2_000) {}
 
+  // track each agent independently even when several share one workspace
   observe(agent: Agent, hasQueuedPrompt = false, context?: AgentNotificationContext): void {
-    const key = attentionKey(agent);
+    const key = agent.id;
     const current = agentAttentionState(agent);
     const previous = this.states.get(key);
     this.states.set(key, current);
@@ -148,27 +148,40 @@ export class AgentNotificationCoordinator {
     }
 
     this.cancelCompletion(key);
+    // identify the turn during grace so an early view can dismiss only this turn
+    const id = randomUUID();
+    // promote the same identified turn after its grace period
     const timer = setTimeout(() => {
       this.pendingCompletions.delete(key);
       if (this.states.get(key) !== 'finished') return;
-      this.unread.add(key);
+      this.unread.set(key, id);
       this.deliverSafely(notification);
     }, this.completionDelayMs);
-    this.pendingCompletions.set(key, timer);
+    this.pendingCompletions.set(key, { id, timer });
   }
 
-  isUnread(agent: Pick<Agent, 'id' | 'worktreeId'>): boolean {
-    return this.unread.has(attentionKey(agent));
+  // expose unread state only for the agent whose turn finished
+  isUnread(agent: Pick<Agent, 'id'>): boolean {
+    return this.unread.has(agent.id);
   }
 
-  view(agent: Pick<Agent, 'id' | 'worktreeId'>): void {
-    const key = attentionKey(agent);
-    this.unread.delete(key);
-    this.cancelCompletion(key);
+  // identify the completion so clients can reject replayed unread snapshots
+  completionId(agent: Pick<Agent, 'id'>): string | undefined {
+    return this.unread.get(agent.id) ?? this.pendingCompletions.get(agent.id)?.id;
   }
 
-  retain(agents: Iterable<Pick<Agent, 'id' | 'worktreeId'>>): void {
-    const retained = new Set(Array.from(agents, attentionKey));
+  // dismiss only the completed turn the browser actually viewed
+  view(agent: Pick<Agent, 'id'>, completionId?: string): void {
+    // a stale dismissal must not clear or cancel a newer completed turn
+    if (completionId === undefined || this.completionId(agent) !== completionId) return;
+    this.unread.delete(agent.id);
+    this.cancelCompletion(agent.id);
+  }
+
+  // retire removed agents without transferring their state to replacements
+  retain(agents: Iterable<Pick<Agent, 'id'>>): void {
+    const retained = new Set(Array.from(agents, agent => agent.id));
+    // clear state and timers belonging to removed panes
     for (const key of this.states.keys()) {
       if (retained.has(key)) continue;
       this.cancelCompletion(key);
@@ -177,16 +190,20 @@ export class AgentNotificationCoordinator {
     }
   }
 
+  // release timers and unread identities when the coordinator stops
   stop(): void {
-    for (const timer of this.pendingCompletions.values()) clearTimeout(timer);
+    // cancel every pending turn
+    for (const pending of this.pendingCompletions.values()) clearTimeout(pending.timer);
     this.pendingCompletions.clear();
     this.unread.clear();
   }
 
+  // cancel only the identified pending turn for this agent
   private cancelCompletion(agentId: string): void {
-    const timer = this.pendingCompletions.get(agentId);
-    if (timer === undefined) return;
-    clearTimeout(timer);
+    const pending = this.pendingCompletions.get(agentId);
+    // leave agents without a pending turn unchanged
+    if (pending === undefined) return;
+    clearTimeout(pending.timer);
     this.pendingCompletions.delete(agentId);
   }
 

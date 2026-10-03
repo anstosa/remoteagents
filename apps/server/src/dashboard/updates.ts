@@ -10,7 +10,8 @@ export type DashboardPayload = Omit<Dashboard, 'agents' | 'projects' | 'places'>
   // `launch` carries each scope's resolved Launch profile so the web renders the Launch
   // menu without re-deriving it (a running agent's is its worktree's; a scratch agent's
   // is `scratchLaunch`); `scratchLaunch` is the Scratch group's resolution.
-  agents: Array<Agent & { unread: boolean; queuedPromptCount: number; stack?: StackState; launch?: LaunchResolution }>;
+  // completionId stays stable from pending detection through unread publication
+  agents: Array<Agent & { unread: boolean; completionId?: string; queuedPromptCount: number; stack?: StackState; launch?: LaunchResolution }>;
   // a non-git `directory` Project carries its own resolved Launch profile so the web renders
   // a Project-level Launch button (it has no Worktrees to launch through); omitted otherwise
   projects: Array<Omit<DashboardProject, 'worktrees'> & { worktrees: PayloadWorktree[]; launch?: LaunchResolution }>;

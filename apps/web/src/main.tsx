@@ -83,7 +83,7 @@ type AttentionState = 'working' | 'finished' | 'question';
 // `worktreeLabel`/`worktreeOrder` are no longer on the wire (the server carries them on the
 // Worktree); they remain as optional read-only fallbacks the tab bar consults when an Agent's
 // Worktree is not present in the payload, absent from the real server.
-type Agent = { id: string; sessionId: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; paneMode?: string; stack?: Stack; unread?: boolean; queuedPromptCount: number; launch?: LaunchResolution };
+type Agent = { id: string; sessionId: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; paneMode?: string; stack?: Stack; unread?: boolean; completionId?: string; queuedPromptCount: number; launch?: LaunchResolution };
 type Worktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; consoleShells?: number; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; order: number; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
 // `mode: 'directory'` marks a non-git Project the console launches in place (like Scratch);
 // `launch` is its resolved Launch profile for the Project-level Launch button. A git
@@ -788,10 +788,12 @@ const dismissNotification = async (tag: string) => {
   } catch { /* Notification access must not interfere with tab navigation. */ }
 };
 
-const dismissAgentNotifications = (agent: Pick<Agent, 'id' | 'worktreeId'>) => {
+// bind server acknowledgement to the completed turn visible in this snapshot
+const dismissAgentNotifications = (agent: Pick<Agent, 'id' | 'worktreeId' | 'completionId'>) => {
   const tags = new Set([agentNotificationTag(agent), `agent-status-${agent.id}`]);
+  // close the local notifications associated with this agent
   for (const tag of tags) void dismissNotification(tag);
-  void request(`/api/agents/${encodeURIComponent(agent.id)}/notifications/dismiss`, { method: 'POST' });
+  void request(`/api/agents/${encodeURIComponent(agent.id)}/notifications/dismiss`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ completionId: agent.completionId }) });
 };
 
 // finish only after a successful clipboard write
@@ -7638,15 +7640,24 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const chooseAgent = useCallback((key: string, agentId: string) => setAgentChoice(current => current[key] === agentId ? current : { ...current, [key]: agentId }), []);
   // the Agent in view (the active tab's switcher choice), so its notifications stay quiet
   const viewedAgentId = useRef<string | undefined>(undefined);
+  // retain the last viewed completion across buffered dashboard publications
+  const viewedCompletions = useRef(new Map<string, string>());
   const dashboardMounted = useRef(true);
   const showOperationFeedback = useCallback((feedback: Omit<OperationFeedback, 'id'>) => {
     operationFeedbackId.current += 1;
     setOperationFeedback({ ...feedback, id: operationFeedbackId.current });
   }, []);
-  const viewAgent = useCallback((agent: Pick<Agent, 'id' | 'worktreeId'>) => {
+  // remember the completion before clearing its optimistic highlight
+  const viewAgent = useCallback((agent: Pick<Agent, 'id' | 'worktreeId' | 'completionId'>) => {
+    const latest = dashboardSnapshot.current?.agents.find(candidate => candidate.id === agent.id);
+    // ignore callbacks rendered for an older completed turn or removed agent
+    if (latest === undefined || latest.completionId !== agent.completionId) return;
+    // only identified completions can suppress a later replay
+    if (agent.completionId !== undefined) viewedCompletions.current.set(agent.id, agent.completionId);
     setData(current => {
-      if (current === undefined || !current.agents.some(candidate => candidate.id === agent.id && candidate.unread)) return current;
-      return { ...current, agents: current.agents.map(candidate => candidate.id === agent.id ? { ...candidate, unread: false } : candidate) };
+      // preserve a newer completion queued after this callback's snapshot check
+      if (current === undefined || !current.agents.some(candidate => candidate.id === agent.id && candidate.completionId === agent.completionId && candidate.unread)) return current;
+      return { ...current, agents: current.agents.map(candidate => candidate.id === agent.id && candidate.completionId === agent.completionId ? { ...candidate, unread: false } : candidate) };
     });
     dismissAgentNotifications(agent);
   }, []);
@@ -7712,9 +7723,16 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       // retain the last known workspace shape
       if (retained !== undefined) retainedWorktrees.push({ ...retained, available: false, pinned: false });
     }
-    const nextPayload = retainedWorktrees.length === 0 ? payload : { ...payload, projects: mergeRetainedWorktrees(payload.projects, retainedWorktrees) };
+    // keep a viewed completion read without suppressing a different completed turn
+    const agents = payload.agents.map(agent => agent.completionId !== undefined && viewedCompletions.current.get(agent.id) === agent.completionId ? { ...agent, unread: false } : agent);
+    const nextPayload = { ...payload, agents, ...(retainedWorktrees.length === 0 ? {} : { projects: mergeRetainedWorktrees(payload.projects, retainedWorktrees) }) };
     dashboardSnapshot.current = nextPayload;
     const activeAgentIds = new Set(nextPayload.agents.map(agent => agent.id));
+    // bound viewed completion identities to agents still in the dashboard
+    for (const id of viewedCompletions.current.keys()) {
+      // forget a removed pane rather than carrying its dismissal to a replacement
+      if (!activeAgentIds.has(id)) viewedCompletions.current.delete(id);
+    }
     const activeWorktreeIds = new Set(allWorktrees(nextPayload).map(worktree => worktree.id));
     // move startup drafts only when their worktree has a discovered agent
     for (const agent of nextPayload.agents) {

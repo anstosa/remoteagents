@@ -132,6 +132,7 @@ describe('agent notifications', () => {
     coordinator.stop();
   });
 
+  // publish one stable identity per completed turn and dismiss only its agent
   it('delivers completion after the agent remains finished', async () => {
     vi.useFakeTimers();
     const delivered: AgentNotification[] = [];
@@ -139,15 +140,110 @@ describe('agent notifications', () => {
 
     coordinator.observe(agent({ title: '⠋ Working' }));
     coordinator.observe(agent({ title: 'Ready' }));
+    const pendingId = coordinator.completionId(agent());
+    expect(pendingId).toEqual(expect.any(String));
+    expect(coordinator.isUnread(agent())).toBe(false);
     await vi.advanceTimersByTimeAsync(2_000);
 
     expect(delivered).toHaveLength(1);
     expect(delivered[0]?.kind).toBe('finished');
     expect(coordinator.isUnread(agent())).toBe(true);
+    const completionId = coordinator.completionId(agent());
+    expect(completionId).toBe(pendingId);
+    expect(completionId).toEqual(expect.any(String));
+    coordinator.observe(agent());
+    expect(coordinator.completionId(agent())).toBe(completionId);
     const replacement = agent({ id: 'socket:%2', paneId: '%2' });
-    expect(coordinator.isUnread(replacement)).toBe(true);
+    expect(coordinator.isUnread(replacement)).toBe(false);
     coordinator.view(replacement);
+    expect(coordinator.isUnread(agent())).toBe(true);
+    coordinator.view(agent(), completionId);
     expect(coordinator.isUnread(agent())).toBe(false);
+    expect(coordinator.completionId(agent())).toBeUndefined();
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent());
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(coordinator.completionId(agent())).toEqual(expect.any(String));
+    expect(coordinator.completionId(agent())).not.toBe(completionId);
+    coordinator.stop();
+  });
+
+  // sibling activity must not fabricate a new completed turn after dismissal
+  it('keeps each agent completion independent across unchanged worktree polls', async () => {
+    vi.useFakeTimers();
+    const delivered: AgentNotification[] = [];
+    const coordinator = new AgentNotificationCoordinator(notification => delivered.push(notification), 2_000);
+    const working = agent({ title: '⠋ Working' });
+    const sibling = agent({ id: 'socket:%2', paneId: '%2', title: 'Ready' });
+    coordinator.observe(agent({ id: sibling.id, paneId: sibling.paneId, title: '⠋ Working' }));
+    coordinator.observe(sibling);
+    await vi.advanceTimersByTimeAsync(2_000);
+    coordinator.view(sibling, coordinator.completionId(sibling));
+
+    coordinator.observe(working);
+    coordinator.observe(sibling);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(coordinator.isUnread(sibling)).toBe(false);
+    expect(delivered).toHaveLength(1);
+    coordinator.observe(agent());
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(coordinator.isUnread(working)).toBe(true);
+    expect(coordinator.isUnread(sibling)).toBe(false);
+    coordinator.view(sibling);
+    expect(coordinator.isUnread(working)).toBe(true);
+    coordinator.stop();
+  });
+
+  // an old browser dismissal must neither cancel nor clear a newer completion
+  it('ignores delayed dismissals for an earlier completed turn', async () => {
+    vi.useFakeTimers();
+    const delivered: AgentNotification[] = [];
+    const coordinator = new AgentNotificationCoordinator(notification => delivered.push(notification), 2_000);
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent());
+    await vi.advanceTimersByTimeAsync(2_000);
+    const firstId = coordinator.completionId(agent());
+
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent());
+    coordinator.view(agent(), firstId);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(delivered).toHaveLength(2);
+    const secondId = coordinator.completionId(agent());
+    expect(secondId).toEqual(expect.any(String));
+    expect(secondId).not.toBe(firstId);
+
+    coordinator.view(agent(), firstId);
+    expect(coordinator.completionId(agent())).toBe(secondId);
+    coordinator.view(agent());
+    expect(coordinator.completionId(agent())).toBe(secondId);
+    coordinator.view(agent(), secondId);
+    expect(coordinator.isUnread(agent())).toBe(false);
+    coordinator.stop();
+  });
+
+  // delayed visits during grace must not cancel a subsequent turn's grace timer
+  it('identifies pending completions before accepting a dismissal', async () => {
+    vi.useFakeTimers();
+    const delivered: AgentNotification[] = [];
+    const coordinator = new AgentNotificationCoordinator(notification => delivered.push(notification), 2_000);
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent());
+    const firstId = coordinator.completionId(agent());
+    expect(firstId).toEqual(expect.any(String));
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent());
+    const secondId = coordinator.completionId(agent());
+    expect(secondId).not.toBe(firstId);
+
+    coordinator.view(agent(), firstId);
+    coordinator.view(agent());
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(delivered).toHaveLength(1);
+    expect(coordinator.completionId(agent())).toBe(secondId);
+    expect(coordinator.isUnread(agent())).toBe(true);
     coordinator.stop();
   });
 
@@ -174,7 +270,7 @@ describe('agent notifications', () => {
 
     coordinator.observe(agent({ title: '⠋ Working' }));
     coordinator.observe(agent({ title: 'Ready' }));
-    coordinator.view(agent());
+    coordinator.view(agent(), coordinator.completionId(agent()));
     await vi.advanceTimersByTimeAsync(2_000);
 
     expect(coordinator.isUnread(agent())).toBe(false);

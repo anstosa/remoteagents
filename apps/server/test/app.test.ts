@@ -449,7 +449,7 @@ describe('client control', () => {
     expect(key.json()).toEqual({ publicKey: 'public-key' });
     const registration = await pushApp.inject({ method: 'POST', url: '/api/push/subscriptions', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: inactive.cookie, 'x-csrf-token': inactive.response.json().csrfToken }, payload: { endpoint: 'https://push.example.com/subscription', keys: { p256dh: 'key', auth: 'auth' } } });
     const unreadDashboard = await pushApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie: active.cookie } });
-    const dismissal = await pushApp.inject({ method: 'POST', url: `/api/agents/${encodeURIComponent(agent.id)}/notifications/dismiss`, headers: { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: active.cookie, 'x-csrf-token': active.response.json().csrfToken } });
+    const dismissal = await pushApp.inject({ method: 'POST', url: `/api/agents/${encodeURIComponent(agent.id)}/notifications/dismiss`, headers: { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: active.cookie, 'x-csrf-token': active.response.json().csrfToken }, payload: { completionId: unreadDashboard.json().agents[0].completionId } });
     const viewedDashboard = await pushApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie: active.cookie } });
     expect(registration.statusCode).toBe(204);
     expect(subscribed).toHaveLength(1);
@@ -671,6 +671,52 @@ describe('pull request switch API', () => {
 
 // exercise status publication through the shared loader
 describe('dashboard status updates', () => {
+  // dismissal follows the session's workspace rather than its current directory
+  it.each(['/worktrees/cora/nested-repo', '/worktrees/other'])('keeps a viewed completion dismissed when its pane runs in %s', async home => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = testWorktree({ id: 'cora', projectId: 'app', path: '/worktrees/cora', identity: '/worktrees/cora' });
+    const other = testWorktree({ id: 'other', projectId: 'app', path: '/worktrees/other', identity: '/worktrees/other' });
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: worktree.identity, placeId: worktree.id, worktreeId: worktree.id, title: 'Ready' });
+    const notifications = new AgentNotificationCoordinator(() => {}, 0);
+    notifications.observe(stated({ ...agent, title: '⠋ Working' }));
+    notifications.observe(agent);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const discovery = {
+      // expose both roots so a pane's cwd could select the wrong worktree
+      worktreesNow: () => [worktree, other],
+      // retain the raw pane root while the session stays assigned to cora
+      target: async () => ({ agent: { ...agent, home, worktreeId: undefined }, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } }),
+      // publish the session's canonical workspace just as discovery does
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [agent], projects: [] })
+    };
+    const app = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 37).toString('base64url')), discovery: discovery as never, notifications });
+    try {
+      const bootstrap = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': bootstrap.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      const before = await app.inject({ method: 'GET', url: '/api/dashboard', headers });
+      expect(before.json().agents[0].unread).toBe(true);
+      expect(before.json().agents[0].completionId).toEqual(expect.any(String));
+      const dismissal = await app.inject({ method: 'POST', url: `/api/agents/${encodeURIComponent(agent.id)}/notifications/dismiss`, headers, payload: { completionId: before.json().agents[0].completionId } });
+      expect(dismissal.statusCode).toBe(204);
+      const after = await app.inject({ method: 'GET', url: '/api/dashboard', headers });
+      expect(after.json().agents[0].unread).toBe(false);
+      expect(after.json().agents[0].completionId).toBeUndefined();
+      // preserve a new completion when the old browser request arrives again
+      notifications.observe(stated({ ...agent, title: '⠋ Working' }));
+      notifications.observe(agent);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const nextId = notifications.completionId(agent);
+      const delayed = await app.inject({ method: 'POST', url: `/api/agents/${encodeURIComponent(agent.id)}/notifications/dismiss`, headers, payload: { completionId: before.json().agents[0].completionId } });
+      expect(delayed.statusCode).toBe(204);
+      const latest = await app.inject({ method: 'GET', url: '/api/dashboard', headers });
+      expect(latest.json().agents[0]).toMatchObject({ unread: true, completionId: nextId });
+    } finally {
+      notifications.stop();
+      await app.close();
+    }
+  });
+
   // publish resumed work instead of the last cached completion
   it('publishes resumed work without reusing stale agent status', async () => {
     const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboardFingerprint);
