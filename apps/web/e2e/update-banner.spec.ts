@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { latestCompletedAssistantMessage } from '../../server/src/adapters/codex-turns.js';
 import { installPaneMock, paneInputList, pushBytes, pushMetadata, pushQuestion } from './pane-stream-mock';
 
 // open the reviewed host update from the current server submenu
@@ -173,6 +174,8 @@ test('opens the commit review before starting and retains update failures in the
 // embed migration advice and require explicit acknowledgement
 test('opens an advisor for flagged update paths before enabling Update', async ({ page }) => {
   const targetSha = '3'.repeat(40);
+  // parse the current Codex completion footer through the production handoff
+  const completedResponse = latestCompletedAssistantMessage(`• No host migration is required for this update.\n\n\x1b[2m  Worked for 5m 29s • 08:01\x1b[0m`)?.text ?? '';
   let advisorLaunched = false;
   let advisorStops = 0;
   const advisorAnswers: Array<{ questionId?: string; index?: number }> = [];
@@ -232,9 +235,14 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   // overflow, then paint the reviewed output and publish the response the feedback form gates on
   await page.waitForFunction(() => (window as unknown as { __pane: { lastViewport: (id: string) => unknown } }).__pane.lastViewport('update-advisor') !== undefined);
   // A few blank rows first so the selectable row clears the top-left status badge (the stream
-  // writes top-down), then the completed response the feedback form gates on.
-  await pushBytes(page, 'update-advisor', '\r\n\r\n\r\nReview complete\r\n');
-  await pushMetadata(page, 'update-advisor', 'No host migration is required for this update.');
+  // writes top-down), then the timestamped completion footer emitted by current Codex clients.
+  await pushBytes(page, 'update-advisor', '\r\n\r\n\r\nReview complete\r\n\x1b[2m  Worked for 5m 29s • 08:01\x1b[0m\r\n');
+  // visible completion text cannot bypass the parsed response handoff
+  await expect(dialog.locator('.update-advisor-state')).toHaveText('Reviewing');
+  await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toHaveCount(0);
+  await expect(dialog.getByLabel('Approval or feedback')).toBeDisabled();
+  // publish the response after the server recognizes the completion footer
+  await pushMetadata(page, 'update-advisor', completedResponse);
   const outputBounds = await output.evaluate(element => {
     const output = element.getBoundingClientRect();
     const screen = element.querySelector<HTMLElement>('.xterm-screen')!.getBoundingClientRect();

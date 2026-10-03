@@ -231,7 +231,9 @@ const hasLaterAssistantActivity = (lines: string[], completedAt: number): boolea
 
 // capture the newest prompt-coherent completed turn
 export function latestCompletedAssistantTurn(value: string): CompletedAssistantTurn | undefined {
-  const lines = assistantMarkdown(value).split('\n');
+  // preserve dim completion chrome before stripping terminal styles
+  const normalized = value.replace(/^\x1b\[2m {2}(Worked for \d+[hms](?: \d+[hms])* • \d{2}:\d{2})\x1b\[0m\r?$/gmu, '─ $1');
+  const lines = assistantMarkdown(normalized).split('\n');
   // inspect completion boundaries newest first
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const timed = /^─ Worked for\b/u.test(lines[index]!);

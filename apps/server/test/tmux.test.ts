@@ -520,6 +520,47 @@ describe('TmuxAdapter prompt history', () => {
     });
   });
 
+  // recognize the timestamped footer used by the update advisor
+  it.each(['42s', '5m 29s', '1h 2m 3s'])('captures advisor completion with a %s timestamped footer', async duration => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const history = [
+      '› Review the pending update',
+      '',
+      '• Questions 1/1 answered',
+      '  • Is the review sufficient?',
+      '    answer: Review is sufficient (Recommended)',
+      '',
+      '• Review complete. No host-local changes are required.',
+      '',
+      '  The upgrade remains pending in the update modal.',
+      '',
+      `\x1b[2m  Worked for ${duration} • 08:01\x1b[0m`,
+      '',
+      '› Ask Codex to do anything',
+      '',
+      '  GPT-6.1-Sol xhigh fast · ~/project · main',
+      ''
+    ].join('\n');
+    const text = 'Review complete. No host-local changes are required.\n\nThe upgrade remains pending in the update modal.';
+    expect(latestCompletedAssistantTurn(history)).toEqual({ prompt: 'Review the pending update', text, rows: 3 });
+    run.mockResolvedValueOnce({ code: 0, stdout: history, stderr: '' });
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 24)).resolves.toMatchObject({ latestAssistantMessage: text, latestAssistantMessageOverflows: false });
+  });
+
+  // never reuse timestamped guidance after the advisor resumes work
+  it('rejects timestamped completion when a later response is still active', () => {
+    const history = ['› Review update', '', '• Review complete', '', '\x1b[2m  Worked for 5m 29s • 08:01\x1b[0m', '', '› Check rollback', '', '• Checking rollback', ''].join('\n');
+
+    expect(latestCompletedAssistantTurn(history)).toBeUndefined();
+  });
+
+  // ordinary elapsed-time prose is not a completion signal
+  it.each(['  Worked for 5m 29s on the review', '  Worked for 5m 29s', '  Worked for a while • 08:01', '  Worked for 5m 29s • 08:01'])('ignores non-footer text: %s', line => {
+    const history = ['› Review update', '', '• Still reviewing', '', line, ''].join('\n');
+
+    expect(latestCompletedAssistantTurn(history)).toBeUndefined();
+  });
+
   it('turns green inline highlights into Markdown code without formatting links', () => {
     const history = [
       '• Run \x1b[38;5;6mpnpm test\x1b[39m, then inspect \x1b[36mconfig.json\x1b[39m.',
