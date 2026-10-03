@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PromptService } from '../src/prompts/service.js';
 import { QueuedPromptService } from '../src/prompts/queue.js';
@@ -53,9 +54,147 @@ const createResetFixture = async (kind: ResetTestAgent['kind'] = 'codex') => {
   return { agent, cleanup, discovery, drain, history, queue, saved };
 };
 
+// advance polling timers while allowing real durable storage to finish
+const settlePolling = async <T>(operation: Promise<T>): Promise<T> => {
+  let settled = false;
+  // stop driving timers after either outcome without swallowing failures
+  void operation.then(() => { settled = true; }, () => { settled = true; });
+  // yield to filesystem callbacks between fake timer batches
+  while (!settled) {
+    await setImmediate();
+    await vi.runOnlyPendingTimersAsync();
+  }
+  return await operation;
+};
+
 // conversation resets must not wait for model answers or drain queued follow-ups
 describe('clear then queue', () => {
   afterEach(() => vi.useRealTimers());
+
+  // reset redraws can hide the composer beyond ordinary prompt acknowledgement
+  it.each([
+    ['codex', '/clear'], ['codex', '/new'], ['omx', '/clear'], ['omx', '/new']
+  ] as const)('accepts %s %s after a delayed composer redraw without saving it to notes', async (kind, command) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const { agent, cleanup, discovery, drain, history, queue, saved } = await createResetFixture(kind);
+    const scope = `agent:${agent.id}`;
+    const pasted: string[] = [];
+    const sent: string[][] = [];
+    let composer = '';
+    let resetAt: number | undefined;
+    let loading = true;
+    const tmux = {
+      // retain each draft until its submit key
+      pastePrompt: async (_s: unknown, _p: string, _b: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = prompt; return true; },
+      // reproduce the blank pane that clear draws before restoring its composer
+      capture: async () => {
+        // hide the composer beyond ordinary acknowledgement without pinning poll counts
+        if (resetAt !== undefined && Date.now() - resetAt < 1_500) return '';
+        return `${loading ? 'model: loading\n' : ''}› ${composer || 'Ask Codex to do anything'}`;
+      },
+      // execute the reset once without starting a model turn
+      sendKeys: async (_s: unknown, _p: string, keys: string[]) => {
+        sent.push(keys);
+        resetAt = composer.trim() === command ? Date.now() : undefined;
+        composer = '';
+        agent.attention = 'working';
+        return true;
+      }
+    };
+    const service = new PromptService(discovery as never, tmux as never, history, queue, drain);
+    try {
+      await expect(settlePolling(service.submit(agent.id, command))).resolves.toBe(true);
+      expect(sent).toEqual([['Enter']]);
+      await expect(queue.list(scope)).resolves.toEqual([]);
+      await expect(history.list(scope)).resolves.toEqual([]);
+      await expect(queue.resets.get(scope)).resolves.toMatchObject({ agentId: agent.id });
+
+      // hold immediate follow-ups until reset startup finishes
+      await service.submit(agent.id, 'after delayed reset');
+      agent.attention = 'finished';
+      await settlePolling(service.observe(agent));
+      expect(pasted).toEqual([command]);
+      expect(saved).toEqual([]);
+
+      // send real work only after the empty composer is ready
+      loading = false;
+      await settlePolling(service.observe(agent));
+      expect(pasted).toEqual([command, 'after delayed reset']);
+      expect(saved).toEqual([]);
+      await expect(queue.list(scope)).resolves.toEqual([]);
+      await expect(history.list(scope)).resolves.toMatchObject([{ text: 'after delayed reset' }]);
+    } finally { await cleanup(); }
+  });
+
+  // longer reset grace must still preserve commands without acknowledgement
+  it.each(['visible', 'hidden'] as const)('recovers an unacknowledged reset with a %s composer after the reset budget', async frame => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const { agent, cleanup, discovery, drain, history, queue, saved } = await createResetFixture();
+    const scope = `agent:${agent.id}`;
+    const sent: string[][] = [];
+    let submitted = false;
+    const tmux = {
+      // allow the reset draft to render before its submit key
+      pastePrompt: async () => true,
+      // retain the draft or an inconclusive frame throughout reset acceptance
+      capture: async () => submitted && frame === 'hidden' ? '' : '› /clear ',
+      // successful key delivery alone must not consume the reset
+      sendKeys: async (_s: unknown, _p: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
+    };
+    const service = new PromptService(discovery as never, tmux as never, history, queue, drain);
+    try {
+      await expect(settlePolling(service.submit(agent.id, '/clear'))).resolves.toBe(true);
+      // visible drafts may retry without depending on the exact retry schedule
+      expect(sent.length).toBeGreaterThan(0);
+      // hidden frames never permit resubmitting the reset
+      if (frame === 'hidden') expect(sent).toEqual([['Enter']]);
+      await expect(queue.list(scope)).resolves.toMatchObject([{ text: '/clear' }]);
+      await expect(queue.resets.get(scope)).resolves.toBeUndefined();
+      await expect(history.list(scope)).resolves.toEqual([]);
+
+      // retain recovery for genuinely swallowed or unverifiable commands
+      await service.observe(agent);
+      expect(saved).toEqual(['/clear']);
+      await expect(queue.list(scope)).resolves.toEqual([]);
+    } finally { await cleanup(); }
+  });
+
+  // slow terminal snapshots must not turn reset grace into an unbounded wait
+  it('bounds reset acknowledgement time when terminal captures are slow', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const { agent, cleanup, discovery, drain, queue, saved } = await createResetFixture();
+    const scope = `agent:${agent.id}`;
+    let submitted = false;
+    const tmux = {
+      // allow the reset draft to reach the terminal
+      pastePrompt: async () => true,
+      // each inconclusive snapshot consumes real terminal execution time
+      capture: async () => {
+        // keep the pre-submit composer visible for the render gate
+        if (!submitted) return '› /clear ';
+        vi.setSystemTime(Date.now() + 3_000);
+        return '';
+      },
+      // key delivery does not acknowledge a hidden composer
+      sendKeys: async () => { submitted = true; return true; }
+    };
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue, drain);
+    try {
+      const startedAt = Date.now();
+      await expect(settlePolling(service.submit(agent.id, '/clear'))).resolves.toBe(true);
+      // allow the in-flight snapshot to finish without extending every poll
+      expect(Date.now() - startedAt).toBeLessThan(15_000);
+      await expect(queue.list(scope)).resolves.toMatchObject([{ text: '/clear' }]);
+
+      // preserve the timed-out command through the normal durable recovery path
+      await service.observe(agent);
+      expect(saved).toEqual(['/clear']);
+      await expect(queue.list(scope)).resolves.toEqual([]);
+    } finally { await cleanup(); }
+  });
 
   // resets must release follow-ups without waiting for a nonexistent model answer
   it.each([
