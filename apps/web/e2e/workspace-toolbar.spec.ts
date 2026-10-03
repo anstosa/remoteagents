@@ -27,7 +27,8 @@ const dashboard = {
   scratchLaunch: { kind: 'claude', origin: 'default' }
 };
 
-async function mount(page: Page) {
+// mount the toolbar with optional editor configuration
+async function mount(page: Page, editor = false) {
   const launches: string[] = [];
   const pins: unknown[] = [];
   const shells: string[] = [];
@@ -35,7 +36,8 @@ async function mount(page: Page) {
     const request = route.request();
     const path = decodeURIComponent(new URL(request.url()).pathname);
     if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (path === '/api/dashboard') return route.fulfill({ json: dashboard });
+    // keep existing fixtures editor-free unless explicitly enabled
+    if (path === '/api/dashboard') return route.fulfill({ json: editor ? { ...dashboard, editor: true } : dashboard });
     if (path === '/api/push/public-key') return route.fulfill({ json: {} });
     if (path === `/api/worktrees/${cora}/panes`) return route.fulfill({ json: { panes: [{ paneId: '%9', session: '$9', window: '@9', role: 'shell', command: 'zsh', path: '/repo/wts/cora', title: 'zsh', agent: false }] } });
     if (path === `/api/worktrees/${idle}/shells` && request.method() === 'POST') { shells.push(path); return route.fulfill({ json: { paneId: '%12' } }); }
@@ -54,6 +56,26 @@ async function mount(page: Page) {
 }
 
 const toolbar = (page: Page) => page.getByRole('region', { name: 'Workspace toolbar' });
+
+// keep the configured editor desktop-only across agent and agentless workspaces
+test('hides the Editor button only at phone widths', async ({ page }) => {
+  await mount(page, true);
+
+  // select each workspace before the phone layout collapses the tab strip
+  for (const [tab, count] of [[/^Cora/u, 1], [/^Idle/u, 2]] as const) {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByRole('tab', { name: tab }).click();
+    // cover a phone and both sides of the existing mobile breakpoint
+    for (const width of [1440, 390, 600, 601]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(toolbar(page).getByRole('button', { name: 'Open the editor', includeHidden: true })).toBeVisible({ visible: width > 600 });
+      // cover the toolbar and the additional empty-workspace action
+      await expect(page.getByRole('button', { name: 'Open the editor' })).toHaveCount(width > 600 ? count : 0);
+      await expect(toolbar(page).getByRole('button', { name: 'Open a terminal' })).toBeVisible();
+    }
+  }
+});
+
 // the toolbar's controls left to right, by accessible name
 const controlNames = (page: Page) => toolbar(page).locator('.workspace-toolbar-actions > *').evaluateAll(elements => elements.flatMap(element => {
   const controls = element.matches('button, a') ? [element] : [...element.querySelectorAll('button, a')];

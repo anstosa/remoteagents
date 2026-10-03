@@ -1164,6 +1164,8 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 :root[data-motion="reduced"] .panel-dots .panel-dot::before { transition: none; }
 /* the phone toolbar keeps to one row, with or without the carousel's dots */
 @media (max-width: 600px) {
+  /* keep the local editor off phone toolbars and empty-workspace actions */
+  :is(.workspace-toolbar-actions, .empty-workspace-actions) .editor-launch { display: none; }
   /* keep prompt-control gaps within each group while reserving the split area */
   .workspace-toolbar-actions { flex-wrap: nowrap; justify-content: flex-start; gap: .375rem; }
   /* float icon-mode counts above their buttons */
