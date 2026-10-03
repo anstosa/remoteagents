@@ -46,6 +46,9 @@ test('renders status color dots at one shared diameter', async ({ page }) => {
   await expect(page.locator('.git-status-dot')).toHaveCSS('border-top-width', '0px');
   await expect(page.locator('.project-stack-status-dot')).toHaveCSS('border-top-width', '0px');
   await expect(page.locator('.server-switcher-attention')).toHaveCSS('border-top-width', '0px');
+  // keep workspace tab dots still while other painted layers carry status motion
+  const tabDotMotion = await page.locator('.tabs button').evaluateAll(buttons => buttons.map(button => getComputedStyle(button, '::after').animationName));
+  expect(tabDotMotion).toEqual(['none', 'none']);
 });
 
 // a pending operation should not retain a stale unread highlight
@@ -66,6 +69,7 @@ test('uses transition colors over unread colors on workspace controls', async ({
     return {
       border: getComputedStyle(element).borderColor,
       dot: getComputedStyle(entry, '::after').backgroundColor,
+      dotMotion: getComputedStyle(entry, '::after').animationName,
       label: getComputedStyle(entry.querySelector('strong')!).color,
       animation: getComputedStyle(element).animationName
     };
@@ -74,6 +78,7 @@ test('uses transition colors over unread colors on workspace controls', async ({
   expect(tab.unreadDot).toBe('none');
   expect(row.border).toBe(tab.border);
   expect(row.dot).toBe(tab.border);
+  expect(row.dotMotion).toBe('none');
   expect(row.label).toBe(tab.border);
   expect(row.animation).toBe('none');
 });

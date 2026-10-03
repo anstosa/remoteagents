@@ -361,7 +361,8 @@ test('the phone workspace switcher renames a worktree without selecting it', asy
   await expect(sheet.getByRole('button', { name: /^Renamed Cora\b/u })).toBeVisible();
 });
 
-test('the phone workspace flyout animates working status and borders its active row', async ({ page }) => {
+// keep phone working motion behind steady content
+test('the phone workspace flyout moves only a working row background and borders its active row', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.route('**/api/**', route => {
@@ -378,26 +379,48 @@ test('the phone workspace flyout animates working status and borders its active 
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
   await page.goto('/');
-  await page.getByRole('tab', { selected: true }).click();
+  const dropdown = page.getByRole('tab', { selected: true });
+  await expect(dropdown).toBeVisible();
+  // restrict dropdown motion to its background layer
+  const dropdownMotion = await dropdown.evaluate(element => element.getAnimations({ subtree: true }).map(animation => {
+    const effect = animation.effect as KeyframeEffect;
+    return effect.target === element && effect.pseudoElement === '::before' ? 'background' : 'content-or-dot';
+  }));
+  expect(dropdownMotion).toEqual(['background']);
+  await dropdown.click();
   const row = page.getByRole('dialog', { name: 'Workspaces' }).locator('.workspace-sheet-row.status-working');
   await expect(row.getByRole('button', { name: /^Build\s*2 Agents · 2 shells · Working$/u })).toBeVisible();
   const paint = await row.evaluate(element => {
     const entry = element.querySelector('.workspace-sheet-entry')!;
     const label = entry.querySelector('strong')!;
-    return { border: getComputedStyle(element).borderColor, dot: getComputedStyle(entry, '::after').backgroundColor, dotMotion: getComputedStyle(entry, '::after').animationName, labelMotion: getComputedStyle(label).animationName };
+    // keep only status-related movement from this row
+    const movingParts = element.getAnimations({ subtree: true }).flatMap(animation => {
+      const effect = animation.effect as KeyframeEffect;
+      // retain the working background sweep
+      if (effect.target === element && effect.pseudoElement === '::before') return ['background'];
+      // surface accidental label motion
+      if (effect.target === label) return ['label'];
+      // surface accidental dot motion
+      if (effect.target === entry && effect.pseudoElement === '::after') return ['dot'];
+      return [];
+    });
+    const dot = getComputedStyle(entry, '::after');
+    return { border: getComputedStyle(element).borderColor, dot: dot.backgroundColor, dotMotion: dot.animationName, dotWidth: dot.width, dotHeight: dot.height, labelMotion: getComputedStyle(label).animationName, movingParts };
   });
   expect(paint.border).toBe(paint.dot);
   const dropdownPaint = await page.getByRole('tab', { selected: true }).evaluate(element => ({ border: getComputedStyle(element).borderColor, shadow: getComputedStyle(element).boxShadow }));
   expect(dropdownPaint.border).toBe(paint.dot);
   expect(dropdownPaint.shadow).not.toContain('inset');
-  expect(paint.dotMotion).not.toBe('none');
-  expect(paint.labelMotion).not.toBe('none');
+  expect(paint.movingParts).toEqual(['background']);
+  expect(paint.dotMotion).toBe('none');
+  expect([paint.dotWidth, paint.dotHeight]).toEqual(['6px', '6px']);
+  expect(paint.labelMotion).toBe('none');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const reduced = await row.evaluate(element => {
     const entry = element.querySelector('.workspace-sheet-entry')!;
-    return { dotMotion: getComputedStyle(entry, '::after').animationName, labelMotion: getComputedStyle(entry.querySelector('strong')!).animationName };
+    return { animations: element.getAnimations({ subtree: true }).length, dotMotion: getComputedStyle(entry, '::after').animationName, labelMotion: getComputedStyle(entry.querySelector('strong')!).animationName };
   });
-  expect(reduced).toEqual({ dotMotion: 'none', labelMotion: 'none' });
+  expect(reduced).toEqual({ animations: 0, dotMotion: 'none', labelMotion: 'none' });
 });
 
 test('a phone shows only the current Workspace, as a dropdown over a sheet of every Workspace', async ({ page }) => {
@@ -464,7 +487,8 @@ test('a phone shows only the current Workspace, as a dropdown over a sheet of ev
   const statusPaint = await sheet.locator('.workspace-sheet-row').evaluateAll(rows => rows.map(row => {
     const entry = row.querySelector('.workspace-sheet-entry')!;
     const dot = getComputedStyle(entry, '::after');
-    return { border: getComputedStyle(row).borderColor, dot: dot.backgroundColor, label: getComputedStyle(entry.querySelector('strong')!).color, motion: dot.animationName };
+    const label = getComputedStyle(entry.querySelector('strong')!);
+    return { border: getComputedStyle(row).borderColor, rowMotion: getComputedStyle(row).animationName, dot: dot.backgroundColor, dotWidth: dot.width, dotHeight: dot.height, label: label.color, dotMotion: dot.animationName, labelMotion: label.animationName };
   }));
   expect(statusPaint[0].border).toBe(statusPaint[0].dot);
   // a ready but read workspace keeps the same idle tone as an empty one
@@ -472,16 +496,27 @@ test('a phone shows only the current Workspace, as a dropdown over a sheet of ev
   expect(statusPaint[0].label).toBe(statusPaint[3].label);
   // the new workspace action uses the ordinary idle label color
   await expect(sheet.locator('.workspace-sheet-new strong')).toHaveCSS('color', statusPaint[3].label);
-  expect(statusPaint[0].motion).toBe('none');
+  expect(statusPaint[0].dotMotion).toBe('none');
+  expect(statusPaint[0].labelMotion).toBe('none');
   await expect(dropdown).toHaveCSS('border-color', statusPaint[0].dot);
   expect(await dropdown.evaluate(element => getComputedStyle(element).boxShadow)).not.toContain('inset');
   expect(statusPaint[1].label).toBe(statusPaint[1].dot);
   expect(statusPaint[2].label).toBe(statusPaint[2].dot);
   expect(statusPaint[2].dot).not.toBe(statusPaint[0].dot);
   expect(statusPaint[1].dot).not.toBe(statusPaint[2].dot);
-  expect(statusPaint[1].motion).not.toBe('none');
-  expect(statusPaint[2].motion).not.toBe('none');
-  expect(statusPaint[3].motion).toBe('none');
+  expect(statusPaint[1].dotMotion).toBe('none');
+  expect(statusPaint[1].labelMotion).toBe('none');
+  expect(statusPaint[2].border).toBe(statusPaint[2].dot);
+  expect(statusPaint[2].rowMotion).toBe('none');
+  expect([statusPaint[2].dotWidth, statusPaint[2].dotHeight]).toEqual(['6px', '6px']);
+  expect(statusPaint[2].dotMotion).toBe('none');
+  expect(statusPaint[2].labelMotion).not.toBe('none');
+  expect(statusPaint[3].dotMotion).toBe('none');
+  expect(statusPaint[3].labelMotion).toBe('none');
+  // disable completion motion without changing workspace state
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  expect(await sheet.locator('.workspace-sheet-row').evaluateAll(rows => rows.flatMap(row => row.getAnimations({ subtree: true })).length)).toBe(0);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   // a sheet across the screen's bottom edge, once it has risen into place
   await expect.poll(async () => { const box = (await sheet.boundingBox())!; return [box.x, box.width, box.y + box.height].map(Math.round); }).toEqual([0, 390, 844]);
 

@@ -324,8 +324,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const count = await queuedPrompts.list(promptStorageKeyForAgent(agent)).then(queue => queue?.length ?? 0).catch(() => 1);
     return [agent.id, count] as const;
   })));
+  // publish current pane observations on each dashboard update
   const dashboard = async (): Promise<DashboardPayload> => {
-    const discovered = await discovery.dashboard();
+    const discovered = await discovery.dashboard(false, true);
     const queuedCounts = await queuedPromptCounts(discovered.agents);
     await Promise.all(discovered.agents.map(agent => prompts.observe(agent).catch(() => undefined)));
     // suppress completions while more work waits

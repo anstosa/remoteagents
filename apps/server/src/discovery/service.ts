@@ -218,18 +218,20 @@ export class DiscoveryService {
     this.socketRefreshInFlight = refresh;
     return refresh;
   }
-  async refresh(force = false): Promise<Agent[]> {
+  // read agent state, optionally bypassing cache or forcing a separate scan
+  async refresh(force = false, fresh = false): Promise<Agent[]> {
     // finish older scans before a forced read
     if (force && this.refreshInFlight) await this.refreshInFlight;
     // reuse only ordinary fresh snapshots
-    if (!force && Date.now() - this.refreshedAt < DiscoveryService.refreshCacheMs) return this.snapshot;
+    if (!force && !fresh && Date.now() - this.refreshedAt < DiscoveryService.refreshCacheMs) return this.snapshot;
     // coalesce matching live scans
     if (this.refreshInFlight) return this.refreshInFlight;
-    this.refreshInFlight = this.discover().finally(() => { this.refreshInFlight = undefined; });
+    this.refreshInFlight = this.discover(force).finally(() => { this.refreshInFlight = undefined; });
     return this.refreshInFlight;
   }
-  private async discover(): Promise<Agent[]> {
-    const sockets = await this.sockets(true);
+  // discover agents while reusing sockets unless the caller forces discovery
+  private async discover(force = false): Promise<Agent[]> {
+    const sockets = await this.sockets(force);
     const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket)).map(pane => ({ ...pane, socket }))))).flat();
     const panePids = new Map<string, number>();
     const paneCwds = new Map<string, string>();
@@ -486,16 +488,18 @@ export class DiscoveryService {
     return { worktrees, stale, pins };
   }
 
-  // build or reuse one dashboard view
-  async dashboard(force = false): Promise<Dashboard> {
+  // build or reuse one dashboard view; freshAgents bypasses pane snapshots only
+  async dashboard(force = false, freshAgents = false): Promise<Dashboard> {
     const cached = this.dashboardSnapshot;
     // bypass cached state for lifecycle checks
-    if (!force && cached !== undefined && Date.now() - cached.refreshedAt < DiscoveryService.refreshCacheMs) return cached.value;
+    if (!force && !freshAgents && cached !== undefined && Date.now() - cached.refreshedAt < DiscoveryService.refreshCacheMs) return cached.value;
     // reuse only ordinary dashboard refreshes
-    if (!force && this.dashboardRefreshInFlight !== undefined) return this.dashboardRefreshInFlight;
-    const value = this.buildDashboard(force)
+    if (!force && !freshAgents && this.dashboardRefreshInFlight !== undefined) return this.dashboardRefreshInFlight;
+    const startedAt = Date.now();
+    const value = this.buildDashboard(force, freshAgents)
       .then(dashboard => {
-        this.dashboardSnapshot = { refreshedAt: Date.now(), value: dashboard };
+        // publish only the newest build without re-aging an older agent snapshot
+        if (this.dashboardRefreshInFlight === value) this.dashboardSnapshot = { refreshedAt: startedAt, value: dashboard };
         return dashboard;
       })
       .finally(() => {
@@ -522,8 +526,9 @@ export class DiscoveryService {
     return capture === undefined ? undefined : questions.reported(payload, capture);
   }
 
-  private async buildDashboard(force = false): Promise<Dashboard> {
-    const discovered = await this.refresh(force);
+  // enrich live agent state with independently cached worktree metadata
+  private async buildDashboard(force = false, freshAgents = false): Promise<Dashboard> {
+    const discovered = await this.refresh(force, freshAgents);
     let worktrees = await this.worktrees(force);
     // a `git worktree add` from a terminal appears within one tick: if a live agent sits
     // in a checkout we do not know yet whose repository is a configured Project, re-scan once

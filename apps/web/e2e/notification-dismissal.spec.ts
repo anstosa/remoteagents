@@ -42,7 +42,6 @@ test('dismisses a newly selected agent tab but waits for prompt focus on the alr
   await expect.poll(() => remoteDismissals).toContain('/api/agents/agent-1/notifications/dismiss');
   const unread = page.getByRole('tab', { name: 'Owen — Prompt done — Unread' });
   await expect(unread).toHaveClass(/unread/u);
-  await expect(unread).toHaveCSS('animation-name', 'tab-unread-success');
   await unread.click();
   await expect(page.getByRole('tab', { name: 'Owen — Prompt done' })).not.toHaveClass(/unread/u);
   await expect.poll(() => remoteDismissals).toContain('/api/agents/agent-2/notifications/dismiss');

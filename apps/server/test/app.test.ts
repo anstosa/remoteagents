@@ -669,6 +669,45 @@ describe('pull request switch API', () => {
   }, 15_000);
 });
 
+// exercise status publication through the shared loader
+describe('dashboard status updates', () => {
+  // publish resumed work instead of the last cached completion
+  it('publishes resumed work without reusing stale agent status', async () => {
+    const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboardFingerprint);
+    const cachedAgent = stated({ id: 'agent-cora', sessionId: 'socket:$1', home: '/worktrees/cora', title: 'Ready' });
+    let currentAgent = cachedAgent;
+    const discovery = {
+      // isolate agent updates from worktree enrichment
+      worktreesNow: () => [],
+      // model the discovery cache while allowing fresh pane observations
+      dashboard: async (force = false, freshAgents = false) => ({
+        generation: 1, serverStartedAt: 0, places: [], adapters: {}, projects: [],
+        agents: [force || freshAgents ? currentAgent : cachedAgent]
+      }),
+      // skip prompt dispatch without a live pane
+      target: async () => undefined
+    };
+    const published: string[] = [];
+    // observe the same payload stream consumed by dashboard subscribers
+    dashboardUpdates.subscribe(value => { published.push(value.agents[0]!.attention); });
+    const app = await buildApp(config, {
+      auth: new AuthService('$argon2id$unused', Buffer.alloc(32, 36).toString('base64url')),
+      discovery: discovery as never,
+      dashboardUpdates,
+      reviewTours: { capability: async () => ({ available: false, reason: 'generator_unavailable' }) } as never
+    });
+    try {
+      await dashboardUpdates.refresh();
+      currentAgent = stated({ ...cachedAgent, title: '⠋ Working' });
+      await dashboardUpdates.refresh();
+
+      expect(published).toEqual(['finished', 'working']);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe('dashboard launch resolution', () => {
   it('publishes each scope\'s launch profile: worktree, running agent, and scratch', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
-test('animates working tabs from left to right with a peach status dot', async ({ page }) => {
+// keep work motion behind steady status content
+test('moves only the working tab background while its label and dot stay steady', async ({ page }) => {
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -16,38 +17,31 @@ test('animates working tabs from left to right with a peach status dot', async (
   const workingTab = page.getByRole('tab', { name: 'Cora — Working' });
   await expect(workingTab).toBeVisible();
   const treatment = await workingTab.evaluate(element => {
-    const sweep = getComputedStyle(element, '::before');
     const dot = getComputedStyle(element, '::after');
     const label = getComputedStyle(element.querySelector('.tab-label')!);
+    // classify movement by the painted part rather than its keyframe name
+    const movingParts = element.getAnimations({ subtree: true }).map(animation => {
+      const effect = animation.effect as KeyframeEffect;
+      // separate descendant label motion
+      if (effect.target !== element) return 'label';
+      return effect.pseudoElement === '::before' ? 'background' : 'tab-or-dot';
+    });
     return {
-      sweepAnimation: sweep.animationName,
-      sweepDirection: sweep.animationDirection,
-      sweepBackground: sweep.backgroundImage,
-      sweepFilter: sweep.filter,
-      labelAnimation: label.animationName,
-      labelAnimationDirection: label.animationDirection,
-      labelAnimationDuration: label.animationDuration,
-      labelBackground: label.backgroundImage,
-      dotAnimation: dot.animationName,
+      movingParts,
       dotColor: dot.backgroundColor,
-      dotRadius: dot.borderRadius
+      dotWidth: dot.width,
+      dotHeight: dot.height,
+      labelColor: label.color
     };
   });
 
-  expect(treatment.sweepAnimation).toBe('tab-working-sweep');
-  expect(treatment.sweepDirection).toBe('normal');
-  expect(treatment.sweepBackground).toContain('linear-gradient');
-  expect(treatment.sweepFilter).toContain('blur');
-  expect(treatment.labelAnimation).toBe('tab-working-text-glow');
-  expect(treatment.labelAnimationDirection).toBe('reverse');
-  expect(treatment.labelAnimationDuration).toBe('3s');
-  expect(treatment.labelBackground).toContain('linear-gradient');
-  expect(treatment.dotAnimation).toBe('tab-working-dot');
-  expect(treatment.dotColor).toBe('rgb(250, 179, 135)');
-  expect(treatment.dotRadius).toBe('50%');
+  expect(treatment.movingParts).toEqual(['background']);
+  expect([treatment.dotWidth, treatment.dotHeight]).toEqual(['6px', '6px']);
+  expect(treatment.dotColor).toBe(treatment.labelColor);
 });
 
-test('animates an unread success tab with a green glow and status dot', async ({ page }) => {
+// limit completed motion to its text while retaining the success outline
+test('flashes only completed text while its green tab and dot stay steady', async ({ page }) => {
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -65,43 +59,44 @@ test('animates an unread success tab with a green glow and status dot', async ({
   const treatment = await successTab.evaluate(element => {
     const tab = getComputedStyle(element);
     const dot = getComputedStyle(element, '::after');
-    return { tabAnimation: tab.animationName, dotAnimation: dot.animationName, dotColor: dot.backgroundColor };
+    const label = element.querySelector('.tab-label')!;
+    // classify movement by its rendered target
+    const movingParts = element.getAnimations({ subtree: true }).map(animation => {
+      const effect = animation.effect as KeyframeEffect;
+      // identify the intended completion flash
+      if (effect.target === label) return 'label';
+      return effect.pseudoElement === '::after' ? 'dot' : 'tab';
+    });
+    return { movingParts, borderColor: tab.borderColor, dotColor: dot.backgroundColor, dotWidth: dot.width, dotHeight: dot.height };
   });
-  expect(treatment.tabAnimation).toBe('tab-unread-success');
-  expect(treatment.dotAnimation).toBe('tab-unread-dot');
-  expect(treatment.dotColor).toBe('rgb(166, 227, 161)');
+  expect(treatment.movingParts).toEqual(['label']);
+  expect(treatment.borderColor).toBe(treatment.dotColor);
+  expect([treatment.dotWidth, treatment.dotHeight]).toEqual(['6px', '6px']);
 });
 
-test('the Reduced motion setting keeps the peach working treatment but stills the shimmer', async ({ page }) => {
+// preserve status colors while the motion preference stills every treatment
+test('the Reduced motion setting preserves working and completed status without movement', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('rac.reduced-motion', 'enabled'));
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeLabel: 'Cora', title: '⠋ Working', attention: 'working' }], projects: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeLabel: 'Cora', title: '⠋ Working', attention: 'working' }, { id: 'agent-2', sessionId: 'socket:$2', home: '/worktrees/delta', worktreeLabel: 'Delta', title: 'Ready', unread: true }], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
-    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname) && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
   await page.goto('/');
   const workingTab = page.getByRole('tab', { name: 'Cora — Working' });
+  const successTab = page.getByRole('tab', { name: 'Delta — Prompt done — Unread' });
   await expect(workingTab).toBeVisible();
-  const treatment = await workingTab.evaluate(element => {
-    const label = getComputedStyle(element.querySelector('.tab-label')!);
-    return {
-      sweepAnimation: getComputedStyle(element, '::before').animationName,
-      dotAnimation: getComputedStyle(element, '::after').animationName,
-      dotColor: getComputedStyle(element, '::after').backgroundColor,
-      labelAnimation: label.animationName,
-      labelBackground: label.backgroundImage
-    };
-  });
-  expect(treatment.sweepAnimation).toBe('none');
-  expect(treatment.dotAnimation).toBe('none');
-  expect(treatment.labelAnimation).toBe('none');
-  // the peach gradient text and status dot stay
-  expect(treatment.labelBackground).toContain('linear-gradient');
-  expect(treatment.dotColor).toBe('rgb(250, 179, 135)');
+  await expect(successTab).toBeVisible();
+  expect(await workingTab.evaluate(element => element.getAnimations({ subtree: true }).length)).toBe(0);
+  expect(await successTab.evaluate(element => element.getAnimations({ subtree: true }).length)).toBe(0);
+  const colors = await page.getByRole('tab').evaluateAll(tabs => tabs.map(tab => ({ border: getComputedStyle(tab).borderColor, dot: getComputedStyle(tab, '::after').backgroundColor, label: getComputedStyle(tab.querySelector('.tab-label')!).color })));
+  expect(colors[0].label).toBe(colors[0].dot);
+  expect(colors[1].border).toBe(colors[1].dot);
+  expect(colors[1].label).toBe(colors[1].dot);
 });

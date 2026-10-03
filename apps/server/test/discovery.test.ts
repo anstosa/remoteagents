@@ -9,6 +9,7 @@ import { inlineQuestionId } from '../src/adapters/inline-questions.js';
 import { pendingOmxQuestion } from '../src/adapters/omx-questions.js';
 import type { SocketRef } from '../src/domain/models.js';
 import type { WorktreeEntry } from '../src/git/worktrees.js';
+import { AgentNotificationCoordinator } from '../src/notifications.js';
 import { paneLister, processInspector, socketFinder } from './helpers/discovery-stubs.js';
 import { testProject } from './helpers/config.js';
 
@@ -331,6 +332,51 @@ describe('DiscoveryService dashboard', () => {
     expect(dashboard.adapters).toMatchObject({ codex: { launchable: false, stateSource: 'title', turnCapture: true, conversations: true, inlineQuestions: true, commands: true, sandbox: false } });
   });
 
+  // refresh attention on the configured poll before completion grace expires
+  it('does not hold a transient finished title after the pane resumes working', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-03T12:00:00.000Z'));
+    let title = '⠋ Working';
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    const tmux = {
+      markSessionPlace: async () => true,
+      listPanes: async () => {
+        // model nonzero tmux scan and dashboard enrichment time
+        vi.setSystemTime(Date.now() + 100);
+        return [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title }];
+      }
+    };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+    const notifications = new AgentNotificationCoordinator(() => {}, 2_000);
+    try {
+      const initial = await service.dashboard(false, true);
+      notifications.observe(initial.agents[0]!);
+
+      // sample one genuine idle boundary
+      await vi.advanceTimersByTimeAsync(2_000);
+      title = 'Ready';
+      const finished = await service.dashboard(false, true);
+      notifications.observe(finished.agents[0]!);
+      expect(finished.agents[0]?.attention).toBe('finished');
+
+      // resume before the next configured status poll
+      title = '⠙ Working';
+      await vi.advanceTimersByTimeAsync(500);
+      const resumed = await service.dashboard(false, true);
+      notifications.observe(resumed.agents[0]!);
+      expect(resumed.agents[0]?.attention).toBe('working');
+
+      // keep the stale completion timer past its original deadline
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(notifications.isUnread(resumed.agents[0]!)).toBe(false);
+    } finally {
+      notifications.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('clears stale @rac_* only on a non-agent pane that still carries a report', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
@@ -467,6 +513,72 @@ describe('DiscoveryService dashboard', () => {
     expect(listings).toBe(2);
   });
 
+  // join one live pane scan across concurrent fresh dashboard readers
+  it('coalesces concurrent fresh agent reads without forcing socket discovery', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    let finds = 0;
+    let listings = 0;
+    let markListingStarted!: () => void;
+    let releaseListing!: () => void;
+    const listingStarted = new Promise<void>(resolve => { markListingStarted = resolve; });
+    const listingBlocked = new Promise<void>(resolve => { releaseListing = resolve; });
+    const finder = { find: async () => { finds += 1; return [socket]; } };
+    const tmux = { markSessionPlace: async () => true, listPanes: async () => {
+      listings += 1;
+      markListingStarted();
+      await listingBlocked;
+      return [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: '⠋ Working' }];
+    } };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+
+    const first = service.dashboard(false, true);
+    await listingStarted;
+    const second = service.dashboard(false, true);
+    releaseListing();
+
+    await expect(Promise.all([first, second])).resolves.toMatchObject([
+      { agents: [{ attention: 'working' }] },
+      { agents: [{ attention: 'working' }] }
+    ]);
+    expect(listings).toBe(1);
+    expect(finds).toBe(1);
+  });
+
+  // retain only the newest dashboard when an older enrichment finishes last
+  it('does not let an older fresh dashboard overwrite a newer forced snapshot', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    let title = 'Ready';
+    let pullRequestLookups = 0;
+    let markFirstLookupStarted!: () => void;
+    let releaseFirstLookup!: () => void;
+    const firstLookupStarted = new Promise<void>(resolve => { markFirstLookupStarted = resolve; });
+    const firstLookupBlocked = new Promise<void>(resolve => { releaseFirstLookup = resolve; });
+    const finder = { find: async () => [socket] };
+    const tmux = { markSessionPlace: async () => true, listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title }] };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
+    const pullRequests = { cachedPullRequest: async () => {
+      pullRequestLookups += 1;
+      // hold only the older dashboard after it captured Ready
+      if (pullRequestLookups === 1) {
+        markFirstLookupStarted();
+        await firstLookupBlocked;
+      }
+      return undefined;
+    } };
+    const service = new DiscoveryService(finder, tmux as never, processes, pullRequests as never);
+
+    const older = service.dashboard(false, true);
+    await firstLookupStarted;
+    title = '⠋ Working';
+    const newer = await service.dashboard(true);
+    releaseFirstLookup();
+    await older;
+
+    expect(newer.agents[0]?.attention).toBe('working');
+    await expect(service.dashboard()).resolves.toMatchObject({ agents: [{ attention: 'working' }] });
+  });
+
   it('resolves a known target without repeating global discovery after the dashboard cache expires', async () => {
     vi.useFakeTimers();
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
@@ -529,6 +641,19 @@ describe('DiscoveryService dashboard', () => {
       expect(third).toBe(first);
       expect(lookups).toBe(1);
     } finally { await rm(workspace, { recursive: true, force: true }); }
+  });
+
+  // keep git worktree discovery cached during live pane refreshes
+  it('refreshes agents without rescanning cached worktrees', async () => {
+    const project = testProject({ id: 'app', label: 'App', path: '/repo' });
+    let worktreeScans = 0;
+    const list = async () => { worktreeScans += 1; return [entry('/repo', 'main')]; };
+    const service = new DiscoveryService(socketFinder(), paneLister([]) as never, processInspector({ codex: false }), undefined, undefined, [project], undefined, list);
+
+    await service.dashboard(false, true);
+    await service.dashboard(false, true);
+
+    expect(worktreeScans).toBe(1);
   });
 
   it('discovers worktrees from git porcelain, excludes bare and stale entries, and shapes them by Project', async () => {
