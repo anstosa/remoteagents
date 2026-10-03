@@ -1,14 +1,16 @@
 // The Review tour's diff renderer: the Changes of one tour step rendered with `@pierre/diffs`, the
 // same library and theming the Code panel uses, so a guided review reads with the same fidelity as
-// the standalone panel (real syntax highlighting, line numbers, proper unified diffs). It is a second
-// importer of the library, so — like code-panel.tsx — it is only ever reached through a dynamic
-// `import()` (review-tour.tsx lazy-loads it); review-tour.tsx itself is in the eager dashboard bundle,
-// so importing the library here directly would drag its ~177 kB in. Controlled and side-effect free:
-// the caller hands in the step's Changes and this renders them, nothing more.
-import { type CSSProperties, useMemo } from 'react';
+// the standalone panel (real syntax highlighting, line numbers, unified or — with room — split
+// diffs). It is a second importer of the library, so — like code-panel.tsx — it is only ever reached
+// through a dynamic `import()` (review-tour.tsx lazy-loads it); review-tour.tsx itself is in the
+// eager dashboard bundle, so importing the library here directly would drag its ~177 kB in. Controlled and side-effect free:
+// the caller hands in the step's Changes and this renders them. The only state it owns is visual: the
+// Unified / Split choice, which (rendered at the same spot for every step) carries across steps.
+import { type CSSProperties, useMemo, useState } from 'react';
 import { CodeView, type CodeViewItem, type CodeViewReactOptions } from '@pierre/diffs/react';
 import { useColorTheme } from '../color-theme.js';
 import { useTerminalFontSize } from '../terminal-font-size.js';
+import { DiffLayoutSegment, SPLIT_MIN_WIDTH, useObservedWidth } from './diff-layout.js';
 import { codeViewBaseOptions, codeViewStyle, diffItemForPatch } from './items.js';
 
 type ReviewItem = CodeViewItem<undefined>;
@@ -36,12 +38,20 @@ export default function ReviewDiffs({ changes }: { changes: ReviewDiffChange[] }
     return { items, placeholders };
   }, [changes]);
 
-  // The Code panel's shared render options, fixed to unified (the tour has no split/full-context toggles).
-  const options = useMemo<ReviewOptions>(() => ({ ...codeViewBaseOptions(theme === 'latte' ? 'light' : 'dark', terminalFontSize), diffStyle: 'unified' }), [terminalFontSize, theme]);
+  // Split follows the Code panel's rule: offered only when the diff pane itself is wide enough, so a
+  // phone or a narrow dialog always reads unified.
+  const [split, setSplit] = useState(false);
+  const [viewRef, viewWidth] = useObservedWidth();
+  const splitFits = viewWidth >= SPLIT_MIN_WIDTH;
+  const effectiveSplit = split && splitFits;
+
+  // The Code panel's shared render options (the tour has no full-context toggle).
+  const options = useMemo<ReviewOptions>(() => ({ ...codeViewBaseOptions(theme === 'latte' ? 'light' : 'dark', terminalFontSize), diffStyle: effectiveSplit ? 'split' : 'unified' }), [effectiveSplit, terminalFontSize, theme]);
 
   const style = codeViewStyle(terminalFontSize) as CSSProperties;
   return (
-    <div className="review-tour-diff-view" style={style}>
+    <div className="review-tour-diff-view" style={style} ref={viewRef}>
+      {items.length > 0 && splitFits && <div className="review-tour-diff-toolbar"><DiffLayoutSegment split={effectiveSplit} onChange={setSplit} /></div>}
       {placeholders.length > 0 && (
         <ul className="review-tour-diff-placeholders">
           {placeholders.map(change => (

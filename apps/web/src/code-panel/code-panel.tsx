@@ -13,6 +13,7 @@ import { useColorTheme } from '../color-theme.js';
 import { PanelHeader, PanelIcon, panelIcons, usePanelExpand } from '../panel-header.js';
 import { useTerminalFontSize } from '../terminal-font-size.js';
 import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch, type FilePreviewView } from './comparison.js';
+import { DiffLayoutSegment, SPLIT_MIN_WIDTH, useObservedWidth } from './diff-layout.js';
 import { codeViewBaseOptions, codeViewStyle, diffItemForContents, diffItemForFile, fileItemForContents, fileVersion, loadedFilesFromContents } from './items.js';
 
 type PanelItem = CodeViewItem<undefined>;
@@ -20,10 +21,10 @@ type PanelOptions = CodeViewReactOptions<undefined, undefined>;
 type PanelHandle = CodeViewHandle<undefined, undefined>;
 
 // Below this panel width the changed-file list is a slide-over drawer rather than a persistent left
-// rail, and the split layout is unavailable — one width rule covers both phones (always narrow) and
-// a narrow desktop column, which is what "phones force unified" and "narrow panels auto-collapse"
-// both come down to.
-const RAIL_BREAKPOINT = 640;
+// rail, and the split layout is unavailable — one width rule (shared with the Review tour) covers both
+// phones (always narrow) and a narrow desktop column, which is what "phones force unified" and
+// "narrow panels auto-collapse" both come down to.
+const RAIL_BREAKPOINT = SPLIT_MIN_WIDTH;
 
 // Below this (narrower) width the title pill drops its file count and branch so the title reads.
 const COMPACT_BREAKPOINT = 480;
@@ -168,10 +169,6 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   const [fileCollapse, setFileCollapse] = useState<Record<string, { collapsed: boolean; revision: number }>>({});
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  // The panel's own width (not the viewport's), so the file list and header adapt to a squeezed
-  // column, not just a narrow phone. `narrow` folds the file list into a drawer and forces unified;
-  // `compact` (narrower still) drops the header's file count and branch.
-  const [panelWidth, setPanelWidth] = useState(Number.POSITIVE_INFINITY);
   // Changes the reviewer pulled in with "Load anyway", keyed by path; they render as ordinary diff
   // items alongside the rest.
   const [loaded, setLoaded] = useState<Record<string, PanelItem>>({});
@@ -235,13 +232,9 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   // A callback ref (not a mount-once effect) so the observer re-attaches every time the Comparison
   // section mounts: the panel can open straight into the File view, whose section carries no ref, and
   // returning from a File detour remounts this section — a `[]`-effect would never see either.
-  const panelObserver = useRef<ResizeObserver | undefined>(undefined);
-  const panelRef = useCallback((node: HTMLElement | null) => {
-    panelObserver.current?.disconnect();
-    if (node === null) { panelObserver.current = undefined; return; }
-    panelObserver.current = new ResizeObserver(entries => setPanelWidth(entries[0]?.contentRect.width ?? node.clientWidth));
-    panelObserver.current.observe(node);
-  }, []);
+  const [panelRef, panelWidth] = useObservedWidth();
+  // `narrow` folds the file list into a drawer and forces unified; `compact` (narrower still) drops
+  // the header's file count and branch.
   const narrow = panelWidth < RAIL_BREAKPOINT;
   const compact = panelWidth < COMPACT_BREAKPOINT;
 
@@ -478,10 +471,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
     </div>
     {!narrow && effectiveMode !== 'plain' && <div className="code-pane-options-group">
       <span className="code-pane-options-label">Diff layout</span>
-      <span className="code-pane-segment" role="group" aria-label="Diff layout">
-        <button type="button" aria-pressed={!effectiveSplit} onClick={() => setSplit(false)}>Unified</button>
-        <button type="button" aria-pressed={effectiveSplit} onClick={() => setSplit(true)}>Split</button>
-      </span>
+      <DiffLayoutSegment split={effectiveSplit} onChange={setSplit} />
     </div>}
     {/* keep labels mounted through their forwarded click, then reveal the newly configured view */}
     {selectedPath === undefined && groups.supporting.length > 0 && <label className="code-pane-view-check" onClick={event => event.stopPropagation()}><input type="checkbox" checked={supportingExpanded} onChange={event => { setSupportingExpanded(event.target.checked); closeMenu(); }} />View docs <small>({groups.supporting.length})</small></label>}

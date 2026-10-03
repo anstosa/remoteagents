@@ -158,6 +158,14 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect(diffPane.getByText(/new route wide-content/u)).toBeVisible();
   // the wide diff line stays inside the panel — the page never gains a horizontal scrollbar
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  // the wide desktop diff pane offers the Code panel's Unified / Split choice
+  const diffLayout = diffPane.getByRole('group', { name: 'Diff layout' });
+  await expect(diffLayout.getByRole('button', { name: 'Unified' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(diffPane.locator('[data-diff-type="single"]')).toHaveCount(1);
+  await diffLayout.getByRole('button', { name: 'Split' }).click();
+  await expect(diffPane.locator('[data-diff-type="split"]')).toHaveCount(1);
+  await diffLayout.getByRole('button', { name: 'Unified' }).click();
+  await expect(diffPane.locator('[data-diff-type="single"]')).toHaveCount(1);
   expect(jobRequests).toEqual([{ scope: 'pr', includeTests: false, includeDocs: false }]);
   const nextButton = dialog.getByRole('button', { name: 'Next' });
   const nextColors = await nextButton.evaluate(button => {
@@ -227,6 +235,8 @@ test('guides a human through active-scope implementation changes and sends conso
   expect(Math.abs(mobilePanes.narration.bottom - mobilePanes.step.bottom)).toBeLessThanOrEqual(1);
   expect(mobilePanes.files.height).toBeGreaterThan(0);
   expect(mobilePanes.narration.height).toBeGreaterThan(0);
+  // a phone-width diff pane has no room for split, so the layout choice is gone
+  await expect(dialog.getByRole('group', { name: 'Diff layout' })).toHaveCount(0);
   await expect(dialog.getByLabel('Feedback for this change')).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Next' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
