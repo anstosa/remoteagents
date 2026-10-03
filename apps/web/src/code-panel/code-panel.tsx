@@ -61,7 +61,8 @@ export type CodePanelProps = {
 
 // Start (or reopen) the guided review of a Comparison; `unavailable` says why it cannot start.
 // With no Agent there is no `onReview`, and the button shows disabled with `unavailable` as its reason.
-export type CodePanelReview = { onReview?: (scope: CodePanelMode) => void; open: boolean; unavailable?: string };
+// `generating` marks an open review still being built; the button says so but still opens it.
+export type CodePanelReview = { onReview?: (scope: CodePanelMode) => void; open: boolean; generating?: boolean; unavailable?: string };
 
 // Why a Change shows a placeholder instead of a rendered diff.
 type PlaceholderReason = 'capped' | 'binary' | 'metadata' | 'unrenderable';
@@ -503,7 +504,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
         <button type="button" aria-pressed={mode === 'pr'} disabled={!prAvailable} title={prAvailable ? 'Compare the whole PR' : 'Merge target unavailable'} onClick={() => onSetMode('pr')}>All PR</button>
       </span>
     )}
-    {review !== undefined && <button type="button" className="code-pane-review" disabled={review.onReview === undefined || (!review.open && (review.unavailable !== undefined || !hasDiffs))} title={review.unavailable ?? (review.open ? 'Open the guided review' : 'Start a guided review of these changes')} onClick={() => review.onReview?.(mode)}>{review.open ? 'Open Review' : 'Review'}</button>}
+    {review !== undefined && <button type="button" className="code-pane-review" aria-busy={review.generating || undefined} disabled={review.onReview === undefined || (!review.open && (review.unavailable !== undefined || !hasDiffs))} title={review.unavailable ?? (review.generating ? 'Generating the guided review — open it to watch progress or cancel' : review.open ? 'Open the guided review' : 'Start a guided review of these changes')} onClick={() => review.onReview?.(mode)}>{review.generating ? <><span className="spinner" aria-hidden="true" />Generating…</> : review.open ? 'Open Review' : 'Review'}</button>}
   </>;
 
   return (

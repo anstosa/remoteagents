@@ -418,6 +418,7 @@ html.software-keyboard-open .tabs { display: none; }
 .git-status-actions { display: flex; min-width: 0; align-items: center; gap: .4rem; }
 .git-status-review { min-height: 2rem; padding: .35rem .7rem; border-color: color-mix(in srgb, var(--blue) 58%, var(--surface-2)); background: color-mix(in srgb, var(--blue) 15%, var(--crust)); color: var(--blue); font: 800 .62rem var(--font-mono); }
 .git-status-review:disabled { border-color: var(--surface-1); background: transparent; color: var(--surface-2); }
+.git-status-review .spinner, .code-pane-review .spinner { box-sizing: border-box; flex: 0 0 .7rem; width: .7rem; height: .7rem; margin-right: .4rem; border-width: 1.5px; vertical-align: -.1rem; }
 .git-status-view-changes { min-height: 2rem; padding: .35rem .7rem; border-color: color-mix(in srgb, var(--mauve) 58%, var(--surface-2)); background: color-mix(in srgb, var(--mauve) 15%, var(--crust)); color: var(--mauve); font: 800 .62rem var(--font-mono); white-space: nowrap; }
 .git-status-view-changes:disabled { border-color: var(--surface-1); background: transparent; color: var(--surface-2); }
 .git-status-push { display: inline-flex; min-height: 2rem; align-items: center; gap: .35rem; padding: .35rem .7rem; border-color: color-mix(in srgb, var(--mauve) 58%, var(--surface-2)); background: color-mix(in srgb, var(--mauve) 15%, var(--crust)); color: var(--mauve); font: 800 .62rem var(--font-mono); white-space: nowrap; }
@@ -1116,6 +1117,7 @@ html.software-keyboard-open :is(.log, .log-split) > :is(.log-output, .terminal-p
 /* the git status reads as one more toolbar button */
 .workspace-toolbar-actions .git-status-wrap, .workspace-toolbar-actions .git-status-wrap.expanded { flex: 0 1 auto; min-width: 0; max-width: 24rem; margin-left: 0; }
 .workspace-toolbar-actions .git-branch-icon { display: block; flex: none; width: 1rem; height: 1rem; }
+.workspace-toolbar-actions .git-review-spinner { box-sizing: border-box; flex: none; width: .9rem; height: .9rem; border-width: 1.5px; color: var(--blue); }
 .workspace-toolbar-actions .git-status-summary { height: var(--standard-control-size); border: 1px solid var(--prompt-control-border); border-radius: var(--control-radius); padding: 0 .6rem; background: var(--prompt-control-background); }
 .workspace-toolbar-actions .git-status-summary:hover, .workspace-toolbar-actions .git-status-summary[aria-expanded='true'] { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); }
 /* keep review progress on the branch control instead of a second toolbar button */

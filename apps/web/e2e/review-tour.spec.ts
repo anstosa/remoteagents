@@ -102,13 +102,19 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect(page.getByRole('button', { name: /Open (generating |out-of-date )?guided review/u })).toHaveCount(0);
   await expect(branchButton).toHaveAttribute('aria-busy', 'true');
   await expect(branchButton).not.toHaveCSS('animation-name', 'none');
-  // still the branch glow for the system's reduced-motion preference
+  // the branch icon gives way to a spinner, which still shows when reduced motion stills the glow
+  await expect(branchButton.locator('.git-review-spinner')).toBeVisible();
+  await expect(branchButton.locator('.git-branch-icon')).toHaveCount(0);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await expect(branchButton).toHaveCSS('animation-name', 'none');
+  await expect(branchButton.locator('.git-review-spinner')).toBeVisible();
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await branchButton.click();
-  await expect(statusPanel.getByRole('button', { name: 'Open Review' })).toBeVisible();
-  await statusPanel.getByRole('button', { name: 'Open Review' }).click();
+  // the flyout's review button says it is generating, yet still opens the progress dialog
+  const generatingButton = statusPanel.getByRole('button', { name: 'Generating…' });
+  await expect(generatingButton).toBeEnabled();
+  await expect(generatingButton).toHaveAttribute('aria-busy', 'true');
+  await generatingButton.click();
   await expect(loadingDialog).toBeVisible();
   expect(jobRequests).toHaveLength(1);
   await expect(loadingDialog).toHaveCSS('animation-name', 'review-tour-slide-up');
@@ -123,6 +129,7 @@ test('guides a human through active-scope implementation changes and sends conso
 
   releaseGeneration = true;
   await expect(branchButton).not.toHaveAttribute('aria-busy');
+  await expect(branchButton.locator('.git-branch-icon')).toBeVisible();
   await expect.poll(async () => await page.evaluate(() => (
     window as unknown as { __testNotifications: Array<{ title: string; options?: NotificationOptions }> }
   ).__testNotifications.map(notification => ({ title: notification.title, body: notification.options?.body, tag: notification.options?.tag, data: notification.options?.data })))).toEqual([{ title: 'Review ready in Remote Agents', body: 'Cora is ready for review', tag: 'review-ready-cora', data: { url: '/#agent=agent-1', kind: 'system', worktreeId: 'cora' } }]);
@@ -463,7 +470,7 @@ test('does not retry a tour start after cancellation', async ({ page }) => {
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
   await expect.poll(() => starts).toBe(1);
   await branchButton.click();
-  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Generating…' }).click();
   const dialog = page.getByRole('dialog', { name: 'Generating change tour' });
   const failedStart = page.waitForResponse(response => new URL(response.url()).pathname === '/api/agents/agent-1/review-tour/jobs' && response.status() === 503);
   await dialog.getByRole('button', { name: 'Cancel' }).click();
