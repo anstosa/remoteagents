@@ -430,8 +430,8 @@ html.software-keyboard-open .tabs { display: none; }
 .git-status-mode button:last-child { border-right: 0; }
 .git-status-mode button[aria-pressed="true"] { background: color-mix(in srgb, var(--mauve) 24%, var(--surface-0)); color: var(--lavender); }
 .git-status-mode button:disabled { color: var(--surface-2); }
-/* align the current pr between full-size branch actions */
-.git-status-panel-footer > .pull-request-card { flex: 1 1 0; min-width: 0; margin: 0; }
+/* match the current pr to the surrounding branch controls */
+.git-status-panel-footer > .pull-request-card { flex: 1 1 0; min-width: 0; height: var(--standard-control-size); min-height: var(--standard-control-size); margin: 0; }
 .git-status-panel-footer .git-status-actions, .git-status-panel-footer .git-status-mode { flex: 0 0 auto; }
 /* keep branch actions aligned at the standard control height */
 .git-status-panel-footer :is(.git-status-view-changes, .git-status-review, .git-status-push, .pull-request-fixup, .git-status-mode button) { height: var(--standard-control-size); min-height: var(--standard-control-size); padding: .5rem .7rem; font-size: .75rem; line-height: 1.2; }

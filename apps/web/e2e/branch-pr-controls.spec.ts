@@ -124,7 +124,8 @@ test('keeps the current pull request in the Working footer and queues one active
   expect(actionsBox.x + actionsBox.width).toBeLessThanOrEqual(cardBox.x + 1);
   expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(modeBox.x + 1);
   expect([actionsBox, cardBox, modeBox].every(box => { /* center one footer control */ return Math.abs(box.y + box.height / 2 - cardBox.y - cardBox.height / 2) <= 1; })).toBe(true);
-  // match standard controls without shrinking the pr card
+  // match the pr card and actions to the standard control height
+  expect(Math.abs(cardBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
   expect(Math.abs(reviewBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
   expect(Math.abs(pushBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
   expect(Math.abs(allPrBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
@@ -369,7 +370,7 @@ test('stacks standard-height Working footer controls at 375px without growing th
   const fixup = await renderedBox(actions.getByRole('button', { name: 'Queue $fixup' }));
   const push = await renderedBox(actions.getByRole('button', { name: 'Finish and PR', exact: true }));
   // keep pr content on one row while fixes stay beside push
-  expect(cardBox.height).toBeCloseTo(48, 0);
+  expect(Math.abs(cardBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
   expect(cardMain.y + cardMain.height / 2).toBeCloseTo(cardIndicators.y + cardIndicators.height / 2, 0);
   expect(fixup.y).toBeCloseTo(push.y, 0);
   expect(fixup.x).toBeGreaterThanOrEqual(push.x + push.width);
