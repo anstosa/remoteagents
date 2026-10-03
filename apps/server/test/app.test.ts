@@ -940,11 +940,11 @@ describe('Console shells server lifecycle', () => {
   let secret = 30;
   // build the app with the given fakes and return a logged-in session's headers
   // `realLaunch` leaves the launch service to buildApp, so its Place-session lookup is the app's own wiring
-  const start = async (deps: { discovery?: object; launch?: object; realLaunch?: true; tmux?: object; worktreeCommands?: object }) => {
+  const start = async (deps: { discovery?: object; launch?: object; realLaunch?: true; tmux?: object; worktreeCommands?: object; editor?: string }) => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const discovery = { worktreesNow: () => [worktree], dashboard: async () => idleDashboard, target: async () => undefined, ...deps.discovery };
     const launch = { launchResolutions: async () => new Map(), ...deps.launch };
-    const app = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, secret++).toString('base64url')), discovery: discovery as never, ...(deps.realLaunch ? {} : { launch: launch as never }), tmux: (deps.tmux ?? {}) as never, ...(deps.worktreeCommands === undefined ? {} : { worktreeCommands: deps.worktreeCommands as never }) });
+    const app = await buildApp({ ...config, ...(deps.editor === undefined ? {} : { editor: deps.editor }) }, { auth: new AuthService(hash, Buffer.alloc(32, secret++).toString('base64url')), discovery: discovery as never, ...(deps.realLaunch ? {} : { launch: launch as never }), tmux: (deps.tmux ?? {}) as never, ...(deps.worktreeCommands === undefined ? {} : { worktreeCommands: deps.worktreeCommands as never }) });
     const boot = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
     const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
     const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
@@ -1003,13 +1003,37 @@ describe('Console shells server lifecycle', () => {
     } finally { await app.close(); }
   }, 15_000);
 
+  it('opens the configured editor in a Console shell named for its program, and says one is configured', async () => {
+    const createConsoleShell = vi.fn(async () => '%9');
+    const { app, headers } = await start({ launch: { createConsoleShell }, editor: '/usr/local/bin/nvim -p' });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { editor: true } });
+      expect(response.statusCode).toBe(201);
+      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), 'nvim', '/usr/local/bin/nvim -p');
+      const dashboard = await app.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
+      expect(dashboard.json().editor).toBe(true);
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('refuses an editor shell when no editor is configured, and leaves it off the dashboard', async () => {
+    const createConsoleShell = vi.fn(async () => '%9');
+    const { app, headers } = await start({ launch: { createConsoleShell } });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { editor: true } });
+      expect(response.statusCode).toBe(400);
+      expect(createConsoleShell).not.toHaveBeenCalled();
+      const dashboard = await app.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
+      expect(dashboard.json().editor).toBeUndefined();
+    } finally { await app.close(); }
+  }, 15_000);
+
   it('opens a Console shell with no name and no live Agent', async () => {
     const createConsoleShell = vi.fn(async () => '%9');
     const { app, headers } = await start({ launch: { createConsoleShell } });
     try {
       const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: {} });
       expect(response.statusCode).toBe(201);
-      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), '');
+      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), '', '');
     } finally { await app.close(); }
   }, 15_000);
 

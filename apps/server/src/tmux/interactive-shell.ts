@@ -24,7 +24,7 @@ export function hostCommand(command: string, home: string, path = process.env.RA
 }
 
 // bootstrap zsh after its normal operator configuration
-function zshBootstrap(command: string, home: string, shell: string): string {
+function zshBootstrap(command: string, home: string, shell: string, exitAfter: boolean): string {
   const homeAssignment = home === '$HOME' ? '' : `export HOME=${quote(home)}\n`;
   const environmentInitializer = `[[ -f "$HOME/.zshenv" ]] && source "$HOME/.zshenv"`;
   const interactiveInitializer = `[[ -f "$HOME/.zshrc" ]] && source "$HOME/.zshrc"
@@ -35,7 +35,7 @@ __rac_start_agent() {
   unset RAC_AGENT_COMMAND
   rm -rf -- "$RAC_RC_DIR"
   unset RAC_RC_DIR ZDOTDIR
-  eval "$command"
+  eval "$command"${exitAfter ? '\n  exit $?' : ''}
 }
 typeset -ga precmd_functions
 precmd_functions+=(__rac_start_agent)`;
@@ -49,7 +49,7 @@ exec ${quote(shell)} -i`;
 }
 
 // bootstrap bash after its normal operator configuration
-function bashBootstrap(command: string, home: string, shell: string): string {
+function bashBootstrap(command: string, home: string, shell: string, exitAfter: boolean): string {
   const homeAssignment = home === '$HOME' ? '' : `export HOME=${quote(home)}\n`;
   const interactiveInitializer = `[[ -f "$HOME/.bashrc" ]] && source "$HOME/.bashrc"
 __rac_start_agent() {
@@ -65,7 +65,7 @@ __rac_start_agent() {
   unset RAC_AGENT_COMMAND
   rm -rf -- "$RAC_RC_DIR"
   unset RAC_RC_DIR
-  eval "$command"
+  eval "$command"${exitAfter ? '\n  exit $?' : ''}
 }
 # prepend without discarding existing prompt hooks
 if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
@@ -81,7 +81,7 @@ exec ${quote(shell)} --noprofile --rcfile "$rcdir/.bashrc" -i`;
 }
 
 // bootstrap fish after its normal operator configuration
-function fishBootstrap(command: string, home: string, shell: string): string {
+function fishBootstrap(command: string, home: string, shell: string, exitAfter: boolean): string {
   const homeAssignment = home === '$HOME' ? '' : `set -gx HOME ${quote(home)}\n`;
   // A command run inside a `fish_prompt` event handler stays in fish's own process
   // group — no job control, so Ctrl-Z would suspend fish itself. Injecting it into the
@@ -89,11 +89,13 @@ function fishBootstrap(command: string, home: string, shell: string): string {
   // matching what zsh's precmd and bash's PROMPT_COMMAND already give. `__rac_run` keeps
   // that injected line to a single clean token; the POSIX command travels in the
   // environment (never fish/`ps` argv) and is unset before `eval` so the agent never
-  // inherits it. Both helpers erase themselves, leaving the operator a pristine shell.
+  // inherits it. Both helpers erase themselves, leaving the operator a pristine shell. With
+  // `exitAfter`, `__rac_run` instead execs the command, so fish never resumes after it.
+  const run = `sh -c 'cmd=$RAC_AGENT_COMMAND; unset RAC_AGENT_COMMAND; eval "$cmd"'`;
   const hook = `function __rac_run
-    sh -c 'cmd=$RAC_AGENT_COMMAND; unset RAC_AGENT_COMMAND; eval "$cmd"'
+    ${exitAfter ? `exec ${run}` : `${run}
     set --erase RAC_AGENT_COMMAND
-    functions --erase __rac_run
+    functions --erase __rac_run`}
 end
 function __rac_start_agent --on-event fish_prompt
     functions --erase __rac_start_agent
@@ -104,12 +106,13 @@ end`;
 exec ${quote(shell)} -i -C ${quote(hook)}`;
 }
 
-// start an agent after interactive job control initializes
-export function interactiveShellBootstrap(command: string, home = '$HOME', shell = interactiveShellPath()): string {
+// start an agent after interactive job control initializes; with `exitAfter` the shell ends
+// with the command (the editor's Console shell) instead of returning to a prompt
+export function interactiveShellBootstrap(command: string, home = '$HOME', shell = interactiveShellPath(), exitAfter = false): string {
   const name = interactiveShellName(shell);
   // use the matching startup contract
-  if (name === 'zsh') return zshBootstrap(command, home, shell);
-  if (name === 'bash') return bashBootstrap(command, home, shell);
-  if (name === 'fish') return fishBootstrap(command, home, shell);
+  if (name === 'zsh') return zshBootstrap(command, home, shell, exitAfter);
+  if (name === 'bash') return bashBootstrap(command, home, shell, exitAfter);
+  if (name === 'fish') return fishBootstrap(command, home, shell, exitAfter);
   throw new Error(`unsupported interactive shell: ${shell}`);
 }

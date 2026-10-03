@@ -22,6 +22,8 @@ export type DashboardPayload = Omit<Dashboard, 'agents' | 'projects' | 'places'>
   scratchLaunch?: LaunchResolution;
   reviewTour: ReviewTourCapability;
   reviews: StoredReviewTourSummary[];
+  // whether an `editor` is configured, so the web shows its Editor button (never the command)
+  editor?: true;
 };
 
 // fingerprint every dashboard field that drives browser refreshes

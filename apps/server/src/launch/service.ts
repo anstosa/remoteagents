@@ -655,23 +655,31 @@ export class LaunchService {
   // the login-shell command and cwd for a Console shell at a Place: a native login shell in the
   // Place home, or the host bootstrap in its host root on the host socket (same shape as
   // `startWorktreeShell`), with the HOME the Place's own Agent launch exports. Never sandboxed —
-  // it is the operator's own shell, not the Agent's.
-  private consoleShellCommand(place: ConsoleShellPlace): { cwd: string; argv: string[] } {
-    if (this.hostSocket === undefined) return { cwd: place.home, argv: [this.localShell, '-l'] };
+  // it is the operator's own shell, not the Agent's. A `command` (the configured editor) runs
+  // through the interactive bootstrap once the shell is up, and the shell ends with it.
+  private consoleShellCommand(place: ConsoleShellPlace, command: string): { cwd: string; argv: string[] } {
+    if (this.hostSocket === undefined) return { cwd: place.home, argv: command === '' ? [this.localShell, '-l'] : [this.localShell, '-lc', interactiveShellBootstrap(command, '$HOME', this.localShell, true)] };
     // a Worktree launch exports its Project's account home; directory and Scratch launches the default one
     const home = this.agentHome(place.kind === 'worktree' ? place.projectId : undefined);
-    return { cwd: placeHostRoot(place), argv: [this.hostShell, '-lc', interactiveShellBootstrap(hostCommand('', home), home, this.hostShell)] };
+    return { cwd: placeHostRoot(place), argv: [this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(command, home), home, this.hostShell, command !== '')] };
   }
 
   // Open a Console shell at the Place and return the new pane id, or undefined on failure.
   // Placement (spec): a detached window in the session of the Place's live Agent (the caller
   // resolves it from discovery), else the session already holding the Place's Console shells,
   // else a fresh console session named for the Place — so agent and shells stay in one session.
-  async createConsoleShell(place: ConsoleShellPlace, name: string): Promise<string | undefined> {
-    const { cwd, argv } = this.consoleShellCommand(place);
+  async createConsoleShell(place: ConsoleShellPlace, name: string, command = ''): Promise<string | undefined> {
+    const { cwd, argv } = this.consoleShellCommand(place, command);
     const joined = await this.placeSession(place);
-    if (joined !== undefined) return await this.panes.createConsoleShellWindow(joined.socket, joined.session, cwd, argv, name);
-    return await this.createConsoleShellSession(place, cwd, argv, name);
+    const pane = joined !== undefined
+      ? await this.panes.createConsoleShellWindow(joined.socket, joined.session, cwd, argv, name)
+      : await this.createConsoleShellSession(place, cwd, argv, name);
+    // a command's pane closes when it exits, even under an operator's `remain-on-exit on`
+    if (pane !== undefined && command !== '') {
+      const socketPath = joined === undefined ? this.hostSocket : joined.socket.path;
+      await run(this.tmux, [...(socketPath === undefined ? [] : ['-S', socketPath]), 'set-option', '-p', '-t', pane, 'remain-on-exit', 'off']);
+    }
+    return pane;
   }
 
   // create the Place's first Console shell as a fresh console session named for the Place

@@ -101,7 +101,7 @@ type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
 // a directory-Project or Scratch Place, listed beside the Worktrees (a Worktree is a Place with the same id)
 // `adhoc` marks a Scratch folder other than the configured one: the console cannot launch into it
 type Place = { id: string; kind: 'directory' | 'scratch'; projectId: string; label: string; home: string; adhoc?: true; pinned: boolean; consoleShells?: number; launch?: LaunchResolution };
-type Dashboard = { notesRevision?: number; generation?: number; serverStartedAt?: number; adapters?: AdapterCapabilities; agents: Agent[]; projects: Project[]; places?: Place[]; cleanupPending?: number; scratchLaunch?: LaunchResolution; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[] };
+type Dashboard = { notesRevision?: number; generation?: number; serverStartedAt?: number; adapters?: AdapterCapabilities; agents: Agent[]; projects: Project[]; places?: Place[]; cleanupPending?: number; scratchLaunch?: LaunchResolution; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[]; editor?: boolean };
 // every Worktree across the dashboard's Projects, flattened for tab and launcher rendering
 const allWorktrees = (dashboard: Pick<Dashboard, 'projects'>): Worktree[] => dashboard.projects.flatMap(project => project.worktrees);
 // why a Worktree's Remove is disabled (it is the Project's Main checkout, git holds a lock,
@@ -817,6 +817,8 @@ const ServerStatusContext = createContext<Readonly<Record<string, InstanceAttent
 const VoiceTriggerContext = createContext<{ open: () => void; active: boolean; visible: boolean; name: string } | undefined>(undefined);
 // the dashboard's Projects and their Worktrees, which name a Worktree's stack "<Project> / <Worktree>"
 const ProjectsContext = createContext<readonly Project[]>([]);
+// whether the server configures an `editor`, which adds the toolbar's Editor button
+const EditorConfiguredContext = createContext(false);
 // refresh open schedules on dashboard advances and closed badges on queued-note additions
 const DashboardGenerationContext = createContext<{ generation?: number; notesRevision?: number; serverStartedAt?: number }>({});
 type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
@@ -5053,10 +5055,11 @@ const listPlacePanes = async (placeId: string): Promise<WorktreePane[] | undefin
 };
 // a Console shell the console opened, as against the Agent's own pane or a hand-made one
 const isConsoleShell = (pane: WorktreePane): boolean => pane.role === 'shell' && !pane.agent;
-// open a new Console shell at a Place: its pane id, or the reason it could not
-const createPlaceShell = async (placeId: string): Promise<{ paneId: string } | { error: string }> => {
+// open a new Console shell at a Place, running the configured editor when `editor`: its pane id,
+// or the reason it could not
+const createPlaceShell = async (placeId: string, editor = false): Promise<{ paneId: string } | { error: string }> => {
   try {
-    const response = await request(`/api/worktrees/${encodeURIComponent(placeId)}/shells`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
+    const response = await request(`/api/worktrees/${encodeURIComponent(placeId)}/shells`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(editor ? { editor: true } : {}) });
     const body = await response.json().catch(() => ({})) as { paneId?: unknown; error?: unknown };
     if (response.ok && typeof body.paneId === 'string') return { paneId: body.paneId };
     return { error: typeof body.error === 'string' ? body.error : 'The console could not open a shell there.' };
@@ -5342,6 +5345,18 @@ const claimedTerminalWindows = (panes: WorktreePane[], openIds: Set<string>) => 
 const pickableTerminalPane = (pane: WorktreePane, openIds: Set<string>, claimedWindows: Set<string>) =>
   !pane.agent && !openIds.has(pane.paneId) && (pane.window === undefined || !claimedWindows.has(pane.window));
 
+// make a new Console shell at the Place (running the configured editor when `editor`) and open
+// it as a Terminal panel; returns the error when the shell could not be made
+const openNewShell = async (worktreeId: string, { refreshPanes, openPane }: WorktreeTerminals, editor = false): Promise<string | undefined> => {
+  const created = await createPlaceShell(worktreeId, editor);
+  if (!('paneId' in created)) return created.error;
+  const { paneId } = created;
+  const list = await refreshPanes();
+  const shell = list?.find(pane => pane.paneId === paneId);
+  openPane(paneId, shell ? terminalPaneLabel(shell) : editor ? 'editor' : 'shell');
+  return undefined;
+};
+
 // render the terminal icon button and worktree pane picker
 function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; terminals: WorktreeTerminals }) {
   const { open, panes, refreshPanes, openPane, endPane } = terminals;
@@ -5351,16 +5366,7 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
   const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(menuOpen, { placement: 'above', align: 'start' });
   const openIds = new Set(open.map(terminal => terminal.paneId));
   const claimedWindows = claimedTerminalWindows(panes, openIds);
-  // returns the error when the shell could not be made
-  const createShell = async (): Promise<string | undefined> => {
-    const created = await createPlaceShell(worktreeId);
-    if (!('paneId' in created)) return created.error;
-    const { paneId } = created;
-    const list = await refreshPanes();
-    const shell = list?.find(pane => pane.paneId === paneId);
-    openPane(paneId, shell ? terminalPaneLabel(shell) : 'shell');
-    return undefined;
-  };
+  const createShell = () => openNewShell(worktreeId, terminals);
   const newShell = async () => {
     setBusy(true);
     try {
@@ -5418,10 +5424,27 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
     </div></FlyoutPortal>}</>;
 }
 
-// The split columns and the toolbar's Terminal button for a Place's Terminals, shared by the Agent tab
-// and the agentless Worktree and Place tabs. A target the dashboard placed nowhere gets neither.
-function useTerminalViews(worktreeId: string | undefined): { columns?: TerminalColumn[]; control?: ReactNode; closeAll: () => void } {
+// render the Editor button: a new Console shell that runs the configured editor, opened as a
+// Terminal panel; a failure is reported as operation feedback
+function EditorButton({ worktreeId, terminals, onOperationFeedback }: { worktreeId: string; terminals: WorktreeTerminals; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
+  const [busy, setBusy] = useState(false);
+  const openEditor = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const failure = await openNewShell(worktreeId, terminals, true);
+      if (failure !== undefined) onOperationFeedback?.({ tone: 'error', message: 'The editor did not open', detail: failure });
+    } finally { setBusy(false); }
+  };
+  return <button type="button" className="editor-launch toolbar-button" aria-busy={busy} aria-label="Open the editor" title="Open the editor in a new terminal" disabled={busy} onClick={() => void openEditor()}>{busy ? <span className="spinner" /> : <LauncherRowIcon name="editor" />}<span className="toolbar-label">Editor</span></button>;
+}
+
+// The split columns and the toolbar's Terminal (and, with an `editor` configured, Editor) buttons
+// for a Place's Terminals, shared by the Agent tab and the agentless Worktree and Place tabs. A
+// target the dashboard placed nowhere gets neither.
+function useTerminalViews(worktreeId: string | undefined, onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void): { columns?: TerminalColumn[]; control?: ReactNode; closeAll: () => void } {
   const terminals = useWorktreeTerminals(worktreeId);
+  const editorConfigured = useContext(EditorConfiguredContext);
   // minimize every visible shell without ending its process
   const closeAll = () => terminals.open.forEach(terminal => terminals.closePane(terminal.paneId));
   if (worktreeId === undefined) return { closeAll };
@@ -5431,7 +5454,7 @@ function useTerminalViews(worktreeId: string | undefined): { columns?: TerminalC
     const managedShell = pane?.role === 'shell' && !pane.agent;
     return { key: terminal.paneId, label: terminal.name, node: <TerminalPane key={terminal.paneId} worktreeId={worktreeId} paneId={terminal.paneId} name={terminal.name} onMinimize={() => { /* keep the shell running */ terminals.closePane(terminal.paneId); }} onExit={() => { /* remove ended shells from the count */ terminals.forgetPane(terminal.paneId); }} onRename={managedShell ? (name => terminals.renamePane(terminal.paneId, name)) : undefined} onDelete={managedShell ? (() => terminals.endPane(pane)) : undefined} /> };
   });
-  return { columns, control: <TerminalPicker worktreeId={worktreeId} terminals={terminals} />, closeAll };
+  return { columns, control: <><TerminalPicker worktreeId={worktreeId} terminals={terminals} />{editorConfigured && <EditorButton worktreeId={worktreeId} terminals={terminals} onOperationFeedback={onOperationFeedback} />}</>, closeAll };
 }
 
 // format one git stat number
@@ -5751,7 +5774,7 @@ function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNa
   const browser = useProjectBrowser(place.projectUrl, place.id, place.projectProxied);
   const code = useCodePanel(place.worktreeId, request, comparisonChangeSignal(place.gitStatus, place.gitPrStatus, place.attention));
   const stackPanel = useStackPanel(place.worktreeId);
-  const terminals = useTerminalViews(place.id);
+  const terminals = useTerminalViews(place.id, onOperationFeedback);
   // keep the toolbar dots aligned with the visible phone panel
   const [carousel, setCarousel] = useState<PanelCarousel>();
   const conversations = useWorktreeConversations(place.worktreeId, agentId, { onNavigateWorktree, onOperationFeedback });
@@ -6199,7 +6222,7 @@ function MoreMenuIcon({ name }: { name: MoreMenuIconName }) {
 }
 
 // the glyphs on a launcher row's icon controls
-const launcherRowIcons = { pin: 'M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6ZM12 15v5', rename: actionIconPaths.pencil, trash: actionIconPaths.trash, terminal: 'M4 5h16v14H4V5Zm3 4 3 3-3 3m5 0h4' };
+const launcherRowIcons = { pin: 'M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6ZM12 15v5', rename: actionIconPaths.pencil, trash: actionIconPaths.trash, terminal: 'M4 5h16v14H4V5Zm3 4 3 3-3 3m5 0h4', editor: actionIconPaths.pencil };
 // render launcher actions at the shared line-icon size and stroke
 const LauncherRowIcon = ({ name }: { name: keyof typeof launcherRowIcons }) => <svg className="launcher-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={launcherRowIcons[name]} /></svg>;
 
@@ -8788,7 +8811,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} data-context-flyout aria-expanded={launcherOpen} onClick={() => { /* toggle the launcher */ if (launcherOpen) closeLauncher(); else setLauncherOpen(true); }}><span className="flyout-caret" aria-hidden="true" />{creatingAgent ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}</button></span>{launcherOpen && <FlyoutPortal onDismiss={closeLauncher}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}{launcherPlaceSplit('~ Scratch', scratchPlace, data.scratchLaunch, '/api/agents/launch', choice => void createAgent(choice))}</div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}{clientSettings && <ClientSettingsTrigger />}</nav>{agent === undefined && item?.worktree === undefined && renderNotifications()}</>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><ProjectsContext.Provider value={data.projects}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><OptionalClientSettingsLayout settings={clientSettings}><GlobalLaunchContext.Provider value={globalLaunch}><main className={consoleClass}>{voiceDialog}<article className="agent-view cleanup-empty-view"><section className="log-shell"><div className="log inactive-log"><div className="empty-workspace"><h2>No sessions</h2></div></div><ClientSettingsPane /></section>{tabBar}<WorkspaceToolbar cleanupControl={cleanupControl} />{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></GlobalLaunchContext.Provider></OptionalClientSettingsLayout></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></ProjectsContext.Provider></AdaptersContext.Provider>;
-  return <AdaptersContext.Provider value={data.adapters}><ProjectsContext.Provider value={data.projects}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><OptionalClientSettingsLayout settings={clientSettings}><GlobalLaunchContext.Provider value={globalLaunch}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item !== undefined && agent !== undefined && <AgentPlaceCard key={item.key} agent={agent} agents={item.agents} onSelectAgent={agentId => select(visibleActive, agentId)} active={agentState(agent) === 'working'} tabBar={tabBar} renderNotifications={renderNotifications} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onOpenWorktreeStack={openWorktreeStack} onPromptFocus={() => viewAgent(agent)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} launch={activeLaunch} {...(activeWorktree !== undefined || activePlace === undefined ? {} : { pinned: activePlace.pinned, onTogglePin: () => void togglePin(activePlace) })} {...(activeWorktree === undefined ? {} : { worktreeLabel: activeWorktree.label, ...(activeWorktree.main ? {} : { onRemoveWorktree: () => setRemoveWorktreeId(activeWorktree.id), removeDisabledReason: 'Turn off the agents here before removing this worktree' }) })} />}{item?.worktree !== undefined && agent === undefined && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} renderNotifications={renderNotifications} cleanupControl={cleanupControl} transient={item.transient === true} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onOpenWorktreeStack={openWorktreeStack} onTogglePin={() => void togglePin(item.worktree!)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place !== undefined && agent === undefined && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} transient={item.transient === true} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></GlobalLaunchContext.Provider></OptionalClientSettingsLayout></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></ProjectsContext.Provider></AdaptersContext.Provider>;
+  return <AdaptersContext.Provider value={data.adapters}><EditorConfiguredContext.Provider value={data.editor === true}><ProjectsContext.Provider value={data.projects}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><OptionalClientSettingsLayout settings={clientSettings}><GlobalLaunchContext.Provider value={globalLaunch}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item !== undefined && agent !== undefined && <AgentPlaceCard key={item.key} agent={agent} agents={item.agents} onSelectAgent={agentId => select(visibleActive, agentId)} active={agentState(agent) === 'working'} tabBar={tabBar} renderNotifications={renderNotifications} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onOpenWorktreeStack={openWorktreeStack} onPromptFocus={() => viewAgent(agent)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} launch={activeLaunch} {...(activeWorktree !== undefined || activePlace === undefined ? {} : { pinned: activePlace.pinned, onTogglePin: () => void togglePin(activePlace) })} {...(activeWorktree === undefined ? {} : { worktreeLabel: activeWorktree.label, ...(activeWorktree.main ? {} : { onRemoveWorktree: () => setRemoveWorktreeId(activeWorktree.id), removeDisabledReason: 'Turn off the agents here before removing this worktree' }) })} />}{item?.worktree !== undefined && agent === undefined && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} renderNotifications={renderNotifications} cleanupControl={cleanupControl} transient={item.transient === true} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onOpenWorktreeStack={openWorktreeStack} onTogglePin={() => void togglePin(item.worktree!)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place !== undefined && agent === undefined && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} transient={item.transient === true} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></GlobalLaunchContext.Provider></OptionalClientSettingsLayout></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></ProjectsContext.Provider></EditorConfiguredContext.Provider></AdaptersContext.Provider>;
 }
 
 // coordinate console session and update lifecycle

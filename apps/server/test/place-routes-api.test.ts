@@ -82,10 +82,10 @@ describe('Terminals at a directory-Project or Scratch Place with no Agent', () =
       const directory = await app.inject({ method: 'POST', url: url(directoryPlace.id, '/shells'), headers: mutate, payload: { name: 'build' } });
       expect(directory.statusCode).toBe(201);
       // the listed Place carries its bridge host path, where the host tmux starts the shell
-      expect(createConsoleShell).toHaveBeenCalledWith(directoryPlace, 'build');
+      expect(createConsoleShell).toHaveBeenCalledWith(directoryPlace, 'build', '');
       const scratch = await app.inject({ method: 'POST', url: url(scratchPlace.id, '/shells'), headers: mutate, payload: {} });
       expect(scratch.statusCode).toBe(201);
-      expect(createConsoleShell).toHaveBeenLastCalledWith(scratchPlace, '');
+      expect(createConsoleShell).toHaveBeenLastCalledWith(scratchPlace, '', '');
     } finally { await app.close(); }
   });
 

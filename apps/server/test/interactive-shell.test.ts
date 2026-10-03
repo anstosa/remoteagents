@@ -66,6 +66,18 @@ describe('interactive agent shell', () => {
     expect(bootstrap.startsWith('set -gx RAC_AGENT_COMMAND')).toBe(true);
   });
 
+  it('ends the shell with the command when asked, never returning to a prompt', () => {
+    // zsh and bash exit with the command's status from the one-time hook
+    expect(interactiveShellBootstrap('nvim', '$HOME', '/usr/bin/zsh', true)).toContain('eval "$command"\n  exit $?\n}');
+    expect(interactiveShellBootstrap('nvim', '$HOME', '/bin/bash', true)).toContain('eval "$command"\n  exit $?\n}');
+    // fish execs the command, so it is never resumed after the command exits
+    const fish = interactiveShellBootstrap('nvim', '$HOME', '/usr/bin/fish', true);
+    expect(fish).toContain(`function __rac_run\n    exec sh -c '\\''cmd=$RAC_AGENT_COMMAND; unset RAC_AGENT_COMMAND; eval "$cmd"'\\''\nend`);
+    // an agent launch still returns to the shell
+    expect(interactiveShellBootstrap('nvim', '$HOME', '/usr/bin/zsh')).not.toContain('exit $?');
+    expect(interactiveShellBootstrap('nvim', '$HOME', '/usr/bin/fish')).not.toContain('exec sh');
+  });
+
   it('sets the host home before fish loads the operator configuration', () => {
     process.env.RAC_INTERACTIVE_SHELL = '/usr/bin/fish';
 

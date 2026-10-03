@@ -37,6 +37,13 @@ Scratch Place; set `scratchDirectory` to keep it narrow. A pane outside both the
 Scratch folder and every Project is a Scratch Place of its own. Before
 publishing the console, replace `publicOrigin` with its canonical HTTPS origin.
 
+Set the top-level `editor` to a command line such as `"/usr/bin/nvim"` to add
+an Editor button to the Workspace toolbar, beside Terminal. It opens a new
+Console shell at the Place and runs the command in it once the shell is up;
+quitting the editor ends the shell and closes its Terminal, even if your tmux
+configuration sets `remain-on-exit`. The command runs in the operator's
+interactive shell, never sandboxed, and is never sent to the browser.
+
 When `remoteServers` connects multiple console instances, configure the same
 separately generated `RAC_INSTANCE_STATUS_SECRET` on every peer. Keep each
 instance's `RAC_SESSION_SECRET` unique: it signs browser sessions and must not

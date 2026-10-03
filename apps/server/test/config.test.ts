@@ -195,6 +195,14 @@ describe('project configuration', () => {
     await expect(validateConfig({ publicOrigin: 'https://agents.example.com', projects: [{ id: 'scratch', path: repo }] })).rejects.toThrow();
   });
 
+  it('accepts an editor command line, omits it when unset, and refuses a multi-line one', async () => {
+    const set = await validateConfig({ publicOrigin: 'https://agents.example.com', editor: ' /usr/bin/nvim -p ' });
+    expect(set.editor).toBe('/usr/bin/nvim -p');
+    expect((await validateConfig({ publicOrigin: 'https://agents.example.com' })).editor).toBeUndefined();
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', editor: 'nvim\nrm -rf ~' })).rejects.toThrow('newlines');
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', editor: '  ' })).rejects.toThrow();
+  });
+
   it('accepts an absolute scratchDirectory, omits it when unset, and refuses a relative one', async () => {
     const set = await validateConfig({ publicOrigin: 'https://agents.example.com', scratchDirectory: '/srv/scratch' });
     expect(set.scratchDirectory).toBe('/srv/scratch');

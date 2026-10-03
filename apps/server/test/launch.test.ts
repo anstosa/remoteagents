@@ -9,7 +9,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LaunchService, composeCommand, composeLaunch, expandCommand, expandHomeCommand, scratchLabel, type TmuxSession } from '../src/launch/service.js';
-import { hostCommand, interactiveShellPath } from '../src/tmux/interactive-shell.js';
+import { hostCommand, interactiveShellBootstrap, interactiveShellPath } from '../src/tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../src/tmux/session-name.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
 import { testWorktree } from './helpers/config.js';
@@ -721,6 +721,21 @@ describe('LaunchService', () => {
       expect(newWindow?.[1]).toEqual(['-S', '/tmp/tmux/default', 'new-window', '-d', '-t', '$1', '-c', '/worktrees/alex', '-P', '-F', '#{pane_id}', '--', interactiveShellPath(), '-l']);
       expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux/default', 'set-option', '-p', '-t', '%9', '@rac_role', 'shell']);
       expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux/default', 'set-option', '-p', '-t', '%9', '@rac_pane_name', 'build']);
+    });
+
+    it('runs a startup command (the editor) through the interactive bootstrap, closing the pane when it exits', async () => {
+      run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
+      const socket: SocketRef = { fingerprint: 'sock', path: '/tmp/tmux/default', device: 1, inode: 1 };
+      const worktree = alex();
+      const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree], () => new Set(), async placeId => (placeId === 'alex' ? { socket, session: '$1' } : undefined));
+
+      await expect(service.createConsoleShell(worktreePlace(worktree), 'nvim', '/usr/bin/nvim')).resolves.toBe('%9');
+
+      const newWindow = run.mock.calls.find(call => call[1].includes('new-window'));
+      expect(newWindow?.[1].slice(-4)).toEqual(['--', interactiveShellPath(), '-lc', interactiveShellBootstrap('/usr/bin/nvim', '$HOME', interactiveShellPath(), true)]);
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux/default', 'set-option', '-p', '-t', '%9', '@rac_pane_name', 'nvim']);
+      // an operator's `remain-on-exit on` would otherwise keep the dead pane
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux/default', 'set-option', '-p', '-t', '%9', 'remain-on-exit', 'off']);
     });
 
     it('opens the first Console shell in a fresh session named for the Worktree when there is no live Agent', async () => {

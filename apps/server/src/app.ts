@@ -348,7 +348,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const place = agent.placeId === undefined ? undefined : placeById.get(agent.placeId);
       return agent.worktreeId === undefined && place !== undefined ? launchResolutions.get(placeLaunchScope(place)) : launchFor(agent.worktreeId);
     };
-    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(agentLaunch(agent) === undefined ? {} : { launch: agentLaunch(agent) }) })), places: discovered.places.map(place => ({ ...place, ...(launchResolutions.get(placeLaunchScope(place)) === undefined ? {} : { launch: launchResolutions.get(placeLaunchScope(place)) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, notesRevision, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews };
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(agentLaunch(agent) === undefined ? {} : { launch: agentLaunch(agent) }) })), places: discovered.places.map(place => ({ ...place, ...(launchResolutions.get(placeLaunchScope(place)) === undefined ? {} : { launch: launchResolutions.get(placeLaunchScope(place)) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, notesRevision, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews, ...(config.editor === undefined ? {} : { editor: true as const }) };
   };
   // observe only agent state needed by cross-instance attention
   const localInstanceAttention = async () => {
@@ -2483,9 +2483,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     const place = await resolvePlace((request.params as { id: string }).id);
     if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
-    const name = body(request).name;
+    const { name, editor } = body(request);
     if (name !== undefined && (typeof name !== 'string' || name.length > 120 || name.includes('\0') || /[\r\n]/u.test(name))) return reply.code(400).send({ error: 'invalid terminal name' });
-    const paneId = await launch.createConsoleShell(place, typeof name === 'string' ? name : '');
+    if (editor !== undefined && typeof editor !== 'boolean') return reply.code(400).send({ error: 'invalid editor flag' });
+    // the Editor button: a shell that runs the configured editor first, named for its program
+    if (editor === true && config.editor === undefined) return reply.code(400).send({ error: 'no editor is configured' });
+    const command = editor === true ? config.editor ?? '' : '';
+    const paneId = await launch.createConsoleShell(place, typeof name === 'string' ? name : command === '' ? '' : basename(command.split(/\s+/u)[0]!), command);
     if (paneId === undefined) return reply.code(500).send({ error: 'could not open a terminal' });
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(201).send({ paneId });

@@ -109,6 +109,9 @@ const sourceSchema = z.object({
   // The account home the shell exports stays independent of it (launch/service.ts
   // agentHome), so this only moves the working directory, not HOME.
   scratchDirectory: z.string().min(1).max(4096).startsWith('/', 'scratchDirectory must be an absolute path').refine(value => !value.includes('\0'), 'NUL is forbidden').optional(),
+  // the operator's editor, a shell command line (`/usr/bin/nvim`): when set, the Workspace
+  // toolbar's Editor button opens a Console shell that runs it first
+  editor: z.string().trim().min(1).max(4096).refine(value => !/[\0\r\n]/u.test(value), 'NUL and newlines are forbidden').optional(),
   adapters: adaptersSchema.default({}),
   integrations: integrationFeatures,
   // a repository the console manages; its checkouts are discovered from git, never
@@ -122,7 +125,7 @@ export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
 export type IntegrationConfig = z.output<typeof integrationFeatures>;
 export type DavoSettings = z.output<typeof davoSettingsSchema>;
-export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; defaultAgent?: AgentKind; scratchDirectory?: string; adapters: AdapterConfigs; integrations?: IntegrationConfig; projects: Project[] };
+export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; defaultAgent?: AgentKind; scratchDirectory?: string; editor?: string; adapters: AdapterConfigs; integrations?: IntegrationConfig; projects: Project[] };
 // how validation surfaces non-fatal facts: `warn` collects boot warnings (non-executable
 // programs, a crossed OMX/Codex program); `checkExecutables` runs the boot X_OK probe
 // and is skipped under the host bridge, where `program` is a host path the container
@@ -370,5 +373,5 @@ export async function validateConfig(input: unknown, options: ValidateConfigOpti
     else { if (identities.has(project.identity)) throw new Error('duplicate project identity'); identities.add(project.identity); }
     projects.push(project);
   }
-  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, ...(parsed.defaultAgent === undefined ? {} : { defaultAgent: parsed.defaultAgent }), ...(parsed.scratchDirectory === undefined ? {} : { scratchDirectory: resolve(parsed.scratchDirectory) }), adapters, integrations: parsed.integrations, projects };
+  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, ...(parsed.defaultAgent === undefined ? {} : { defaultAgent: parsed.defaultAgent }), ...(parsed.scratchDirectory === undefined ? {} : { scratchDirectory: resolve(parsed.scratchDirectory) }), ...(parsed.editor === undefined ? {} : { editor: parsed.editor }), adapters, integrations: parsed.integrations, projects };
 }

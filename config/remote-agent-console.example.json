@@ -7,6 +7,7 @@
   "publicOrigin": "http://127.0.0.1:8787",
   "scratchDirectory": "/home/me",
   "defaultAgent": "codex",
+  "editor": "/usr/bin/nvim",
   "adapters": {
     "codex": {
       "program": "/usr/local/bin/codex",
