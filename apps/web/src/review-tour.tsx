@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom';
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { prefersReducedMotion } from './reduced-motion.js';
+import type { ReviewDiffComment, ReviewDiffSide } from './code-panel/review-diffs.js';
 
 // The diff renderer pulls in `@pierre/diffs` (~177 kB), so it is loaded on demand — this dialog is in
 // the eager dashboard bundle and a static import would drag the library in. Same lazy boundary the
@@ -129,11 +130,62 @@ async function responseBody(response: Response): Promise<Record<string, unknown>
   return await response.json().then(value => value !== null && typeof value === 'object' ? value as Record<string, unknown> : {}).catch(() => ({}));
 }
 
+// Mirrors commentRangeLabel in review-diffs.tsx as a `file:lines` reference; kept here because that
+// module is lazy-loaded with the diff library and this dialog is in the eager bundle.
+function commentLocation(file: string, comment: ReviewDiffComment): string {
+  if (comment.startSide !== comment.endSide) return `${file} old ${comment.startLine} – new ${comment.endLine}`;
+  const lines = comment.startLine === comment.endLine ? `${comment.startLine}` : `${comment.startLine}-${comment.endLine}`;
+  return `${file}:${lines} (${comment.endSide === 'deletions' ? 'old' : 'new'})`;
+}
+
+const maxQuotedLines = 8;
+
+// The patch lines a comment covers, with their +/-/space prefixes, so the change request carries the
+// code itself — a removed line is not in the working tree for the agent to look up. Walks the hunks
+// counting old and new line numbers; capped, keeping the last lines (the comment sits under them).
+function quotedLines(patch: string, comment: ReviewDiffComment): string[] {
+  const rows: { old?: number; new?: number; text: string }[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  for (const text of patch.split('\n')) {
+    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(text);
+    if (header) { oldLine = Number(header[1]); newLine = Number(header[2]); continue; }
+    if (oldLine === 0 && newLine === 0) continue;
+    if (text.startsWith('-')) rows.push({ old: oldLine++, text });
+    else if (text.startsWith('+')) rows.push({ new: newLine++, text });
+    else if (text.startsWith(' ')) rows.push({ old: oldLine++, new: newLine++, text });
+  }
+  const lineOn = (side: ReviewDiffSide, row: { old?: number; new?: number }) => side === 'deletions' ? row.old : row.new;
+  const start = rows.findIndex(row => lineOn(comment.startSide, row) === comment.startLine);
+  const end = rows.findIndex(row => lineOn(comment.endSide, row) === comment.endLine);
+  if (start < 0 || end < start) return [];
+  const covered = rows.slice(start, end + 1).map(row => row.text);
+  return covered.length > maxQuotedLines ? ['…', ...covered.slice(-maxQuotedLines)] : covered;
+}
+
+// format one inline comment as a located, quoted note
+function commentNote(change: ReviewChange, comment: ReviewDiffComment): string {
+  const quoted = quotedLines(change.patch, comment);
+  const fence = '`'.repeat(Math.max(3, ...quoted.map(line => (line.match(/`+/gu) ?? []).reduce((longest, run) => Math.max(longest, run.length + 1), 0))));
+  return [`### ${commentLocation(change.file, comment)}`, ...(quoted.length === 0 ? [] : [`${fence}diff\n${quoted.join('\n')}\n${fence}`]), comment.body.trim()].join('\n');
+}
+
+// the characters of feedback recorded so far, against the shared aggregate cap
+function feedbackLength(feedback: Record<string, string>, comments: ReviewDiffComment[], orphanFeedback: string): number {
+  return Object.values(feedback).reduce((sum, note) => sum + note.length, orphanFeedback.length) + comments.reduce((sum, comment) => sum + comment.body.length, 0);
+}
+
 // format one consolidated change request
-function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, statuses: Record<string, StepState>, orphanFeedback: string): string {
+function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, comments: ReviewDiffComment[], statuses: Record<string, StepState>, orphanFeedback: string): string {
   const notes = tour.steps.flatMap(step => {
     const note = feedback[step.id]?.trim();
-    return note ? [`## ${step.title} (${statuses[step.id] ?? 'unvisited'})\n${note}`] : [];
+    // a step's inline comments follow its changes in tour order, then top to bottom
+    const inline = step.changeIds.flatMap(changeId => {
+      const change = tour.changes.find(candidate => candidate.id === changeId);
+      if (change === undefined) return [];
+      return comments.filter(comment => comment.changeId === changeId && comment.body.trim() !== '').sort((a, b) => a.endLine - b.endLine).map(comment => commentNote(change, comment));
+    });
+    return note || inline.length > 0 ? [[`## ${step.title} (${statuses[step.id] ?? 'unvisited'})`, ...(note ? [note] : []), ...inline].join('\n\n')] : [];
   });
   return [`Please address the feedback from my guided review of ${tour.scope === 'working' ? 'Working' : 'All PR'} changes against ${tour.base}.`, `Tour: ${displayedTourTitle(tour)}`, `Comparison: ${tour.fingerprint.slice(0, 12)}`, ...notes, ...(orphanFeedback.trim() === '' ? [] : [`## Feedback retained from regenerated steps\n${orphanFeedback.trim()}`])].join('\n\n');
 }
@@ -149,6 +201,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
   const [current, setCurrent] = useState(0);
   const [statuses, setStatuses] = useState<Record<string, StepState>>(initialTour === undefined ? {} : { [initialTour.steps[0]!.id]: 'visited' });
   const [feedback, setFeedback] = useState<Record<string, string>>({});
+  const [comments, setComments] = useState<ReviewDiffComment[]>([]);
   const [orphanFeedback, setOrphanFeedback] = useState('');
   const [dispatch, setDispatch] = useState('');
   const [dispatching, setDispatching] = useState(false);
@@ -234,13 +287,20 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
       if (response.ok && body.status === 'ready' && isReviewTour(body.tour) && body.tour.scope === launch.scope && body.tour.includeTests === includeTests && body.tour.includeDocs === includeDocs) {
         const ready = body.tour;
         const nextStepIds = new Set(ready.steps.map(candidate => candidate.id));
+        const nextChangeIds = new Set(ready.changes.map(candidate => candidate.id));
         const orphaned = tour?.steps.flatMap(candidate => {
           const note = feedback[candidate.id]?.trim();
           return note !== undefined && note !== '' && !nextStepIds.has(candidate.id) ? [`${candidate.title}: ${note}`] : [];
         }) ?? [];
+        // an inline comment follows its Change (ids are content digests), so only a reworked hunk detaches it
+        const orphanedComments = comments.flatMap(comment => {
+          const change = tour?.changes.find(candidate => candidate.id === comment.changeId);
+          return !nextChangeIds.has(comment.changeId) && change !== undefined && comment.body.trim() !== '' ? [`${commentLocation(change.file, comment)}: ${comment.body.trim()}`] : [];
+        });
         // preserve feedback detached by regeneration
-        if (orphaned.length > 0) setOrphanFeedback(current => [current.trim(), ...orphaned].filter(Boolean).join('\n\n'));
+        if (orphaned.length + orphanedComments.length > 0) setOrphanFeedback(current => [current.trim(), ...orphaned, ...orphanedComments].filter(Boolean).join('\n\n'));
         setFeedback(current => Object.fromEntries(Object.entries(current).filter(([id]) => nextStepIds.has(id))));
+        setComments(current => current.filter(comment => nextChangeIds.has(comment.changeId)));
         setTour(ready);
         setStatuses({ [ready.steps[0]!.id]: 'visited' });
         setCurrent(0);
@@ -323,23 +383,28 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
   const step = tour?.steps[current];
   const stepFeedback = step === undefined ? '' : feedback[step.id] ?? '';
   const changes = useMemo(() => step === undefined || tour === undefined ? [] : step.changeIds.map(id => tour.changes.find(change => change.id === id)).filter((change): change is ReviewChange => change !== undefined), [step, tour]);
-  const feedbackTotal = Object.values(feedback).reduce((sum, value) => sum + value.length, orphanFeedback.length);
+  const feedbackTotal = feedbackLength(feedback, comments, orphanFeedback);
   const complete = tour !== undefined && tour.steps.every(candidate => statuses[candidate.id] === 'visited' || statuses[candidate.id] === 'skipped');
 
   // enforce the aggregate feedback boundary
   const updateFeedback = (stepId: string, value: string) => {
-    setFeedback(currentFeedback => {
-      const nextTotal = Object.entries(currentFeedback).reduce((sum, [id, note]) => sum + (id === stepId ? 0 : note.length), orphanFeedback.length) + value.length;
-      return nextTotal <= maxFeedbackTotal ? { ...currentFeedback, [stepId]: value } : currentFeedback;
-    });
+    const nextFeedback = { ...feedback, [stepId]: value };
+    if (feedbackLength(nextFeedback, comments, orphanFeedback) <= maxFeedbackTotal) setFeedback(nextFeedback);
   };
 
   // edit retained regeneration feedback within the aggregate cap
   const updateOrphanFeedback = (value: string) => {
-    const activeTotal = Object.values(feedback).reduce((sum, note) => sum + note.length, 0);
     // always allow reductions from an over-limit retained label
-    if (activeTotal + value.length <= maxFeedbackTotal || value.length < orphanFeedback.length) setOrphanFeedback(value);
+    if (feedbackLength(feedback, comments, value) <= maxFeedbackTotal || value.length < orphanFeedback.length) setOrphanFeedback(value);
   };
+
+  // add, edit, and remove inline comments, holding edits to the aggregate cap
+  const addComment = useCallback((comment: ReviewDiffComment) => setComments(current => [...current, comment]), []);
+  const updateComment = (id: string, body: string) => {
+    const nextComments = comments.map(comment => comment.id === id ? { ...comment, body } : comment);
+    if (feedbackLength(feedback, nextComments, orphanFeedback) <= maxFeedbackTotal) setComments(nextComments);
+  };
+  const deleteComment = (id: string) => setComments(current => current.filter(comment => comment.id !== id));
 
   // confirm the bound comparison before completion or dispatch
   const comparisonCurrent = async (): Promise<boolean> => {
@@ -377,7 +442,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     if (!complete || stale || tour === undefined || feedbackTotal > maxFeedbackTotal) return;
     // reject changed Comparisons at the transition
     if (!await comparisonCurrent()) return;
-    setDispatch(feedbackDraft(tour, feedback, statuses, orphanFeedback));
+    setDispatch(feedbackDraft(tour, feedback, comments, statuses, orphanFeedback));
     setState('summary');
   };
   // dispatch one consolidated request
@@ -444,7 +509,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     {state === 'loading' && <div className="review-tour-message" role="status"><span className="spinner" /><strong>Building the narrated tour…</strong><p>The AI is organizing the selected implementation changes into logical steps.</p><button type="button" onClick={() => { generation.current += 1; if (job !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' }, false); setState('cancelled'); }}>Cancel</button></div>}
     {state === 'empty' && <div className="review-tour-message" role="status"><strong>No included changes</strong><p>Implementation changes are empty for this scope. Enable Tests or Docs if those are the only changed files.</p></div>}
     {(state === 'error' || state === 'cancelled') && <div className="review-tour-message error" role="alert"><strong>{state === 'cancelled' ? 'Tour cancelled' : 'Unable to build tour'}</strong><p>{error || 'Generate again when you are ready.'}</p><button type="button" onClick={() => { setRetry(value => value + 1); setState('loading'); }}>Try again</button></div>}
-    {tour && state === 'tour' && step && <><div className="review-tour-progress"><span>Step {current + 1} of {tour.steps.length}</span><span>{Object.values(statuses).filter(value => value === 'visited').length} visited · {Object.values(statuses).filter(value => value === 'skipped').length} skipped</span></div><main className="review-tour-step"><section className="review-tour-narration"><small>Logical change</small><h3>{step.title}</h3><p>{step.explanation}</p><label>Feedback for this change<textarea value={stepFeedback} maxLength={maxFeedback} onChange={event => updateFeedback(step.id, event.target.value)} />{stepFeedback.length >= maxFeedback && <span role="status">{maxFeedback.toLocaleString()} character limit reached</span>}</label>{orphanFeedback !== '' && <label>Feedback from regenerated steps<textarea value={orphanFeedback} maxLength={maxFeedbackTotal} onChange={event => updateOrphanFeedback(event.target.value)} />{orphanFeedback.length >= maxFeedbackTotal && <span role="status">{maxFeedbackTotal.toLocaleString()} retained feedback character limit reached</span>}</label>}</section><section className="review-tour-diffs" aria-label="Relevant changes"><Suspense fallback={<p className="review-tour-diff-loading" role="status">Loading diff…</p>}><ReviewDiffs changes={changes} /></Suspense></section></main><footer className="review-tour-actions"><button type="button" disabled={current === 0} onClick={back}>Back</button><button type="button" onClick={skip}>Skip</button><span>{feedbackTotal >= maxFeedbackTotal ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{complete ? <button type="button" disabled={stale || feedbackTotal > maxFeedbackTotal} onClick={() => void summarize()}>Review summary</button> : <button type="button" onClick={next}>Next</button>}</footer></>}
+    {tour && state === 'tour' && step && <><div className="review-tour-progress"><span>Step {current + 1} of {tour.steps.length}</span><span>{Object.values(statuses).filter(value => value === 'visited').length} visited · {Object.values(statuses).filter(value => value === 'skipped').length} skipped</span></div><main className="review-tour-step"><section className="review-tour-narration"><small>Logical change</small><h3>{step.title}</h3><p>{step.explanation}</p><label>Feedback for this change<textarea value={stepFeedback} maxLength={maxFeedback} onChange={event => updateFeedback(step.id, event.target.value)} />{stepFeedback.length >= maxFeedback && <span role="status">{maxFeedback.toLocaleString()} character limit reached</span>}</label>{orphanFeedback !== '' && <label>Feedback from regenerated steps<textarea value={orphanFeedback} maxLength={maxFeedbackTotal} onChange={event => updateOrphanFeedback(event.target.value)} />{orphanFeedback.length >= maxFeedbackTotal && <span role="status">{maxFeedbackTotal.toLocaleString()} retained feedback character limit reached</span>}</label>}</section><section className="review-tour-diffs" aria-label="Relevant changes"><Suspense fallback={<p className="review-tour-diff-loading" role="status">Loading diff…</p>}><ReviewDiffs changes={changes} comments={comments} onCommentAdd={addComment} onCommentChange={updateComment} onCommentDelete={deleteComment} /></Suspense></section></main><footer className="review-tour-actions"><button type="button" disabled={current === 0} onClick={back}>Back</button><button type="button" onClick={skip}>Skip</button><span>{feedbackTotal >= maxFeedbackTotal ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{complete ? <button type="button" disabled={stale || feedbackTotal > maxFeedbackTotal} onClick={() => void summarize()}>Review summary</button> : <button type="button" onClick={next}>Next</button>}</footer></>}
     {tour && state === 'summary' && <main className="review-tour-summary"><h3>Review complete</h3><ul>{tour.steps.map(candidate => <li key={candidate.id}><span className={statuses[candidate.id]}>{statuses[candidate.id]}</span><strong>{candidate.title}</strong></li>)}</ul>{orphanFeedback !== '' && <p>Feedback from regenerated steps is retained in the consolidated change request.</p>}{feedbackTotal === 0 ? <p>No feedback was recorded. You can finish without sending anything.</p> : <label>Consolidated change request<textarea value={dispatch} maxLength={maxDispatch} onChange={event => setDispatch(event.target.value)} />{dispatch.length >= maxDispatch && <span role="status">{maxDispatch.toLocaleString()} character limit reached</span>}</label>}{error && <p ref={dispatchError} className="review-tour-error" role="alert" tabIndex={-1}>{error}</p>}{sent && <p className="review-tour-sent" role="status">Change request sent to the implementation agent.</p>}<footer className="review-tour-actions"><button type="button" onClick={() => setState('tour')}>Back to tour</button><span />{feedbackTotal > 0 && !sent && <button type="button" disabled={dispatching || dispatch.trim() === '' || dispatch.length > maxDispatch} onClick={() => void send()}>{dispatching ? 'Sending…' : 'Send change request'}</button>}<button type="button" onClick={minimize}>Finish</button></footer></main>}
     </div>
     <div className="review-tour-filters" role="group" aria-label="Tour content"><span>{tour?.base ? `Compared with ${tour.base}` : scopeLabel}</span><label><input type="checkbox" checked={includeTests} onChange={event => setIncludeTests(event.target.checked)} />Tests</label><label><input type="checkbox" checked={includeDocs} onChange={event => setIncludeDocs(event.target.checked)} />Docs</label></div>

@@ -319,6 +319,121 @@ test('renders a placeholder for a binary or unparseable change', async ({ page }
   await expect(diffPane.locator('diffs-container')).toHaveCount(0);
 });
 
+// open a ready two-step tour whose first step is a small parseable patch, for the inline-comment tests
+async function openCommentTour(page: Page): Promise<{ dialog: ReturnType<Page['getByRole']>; prompts: string[] }> {
+  const routePatch = 'diff --git a/src/route.ts b/src/route.ts\nindex 1111111..2222222 100644\n--- a/src/route.ts\n+++ b/src/route.ts\n@@ -10,4 +10,5 @@\n const a = 1;\n-const b = 2;\n+const b = 3;\n+const c = 4;\n const d = 5;\n export {};\n';
+  const servicePatch = 'diff --git a/src/service.ts b/src/service.ts\nindex 3333333..4444444 100644\n--- a/src/service.ts\n+++ b/src/service.ts\n@@ -4 +4 @@\n-old service\n+new service\n';
+  const tour = { title: 'Comment tour', overview: 'Review the route constants.', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: 'comment-fingerprint-123456', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: routePatch }, { id: 'chg_service01', file: 'src/service.ts', category: 'implementation', kind: 'hunk', patch: servicePatch }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route renames its constants.', changeIds: ['chg_route0001'] }, { id: 'service', title: 'Apply the operation', explanation: 'The service performs the transition.', changeIds: ['chg_service01'] }] };
+  const prompts: string[] = [];
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // serve the review console fixture
+    if (await fulfillReviewConsole(route, url.pathname)) return;
+    if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') return route.fulfill({ status: 202, json: { status: 'pending', job: { id: 'job-comment', expiresAt: '2099-08-24T23:00:00.000Z', retryAfterMs: 10 } } });
+    if (url.pathname === '/api/review-tour/jobs/job-comment' && request.method() === 'GET') return route.fulfill({ json: { status: 'ready', tour } });
+    if (url.pathname === '/api/review-tour/jobs/job-comment' && request.method() === 'DELETE') return route.fulfill({ status: 204 });
+    if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') return route.fulfill({ json: { status: 'comparison', comparison: { scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: tour.fingerprint } } });
+    // capture the change request
+    if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') { prompts.push((request.postDataJSON() as { prompt: string }).prompt); return route.fulfill({ status: 204 }); }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  await branchButton.click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  await expect(branchButton).not.toHaveAttribute('aria-busy');
+  await branchButton.click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Comment tour' });
+  await expect(dialog).toBeVisible();
+  return { dialog, prompts };
+}
+
+// verify reviewers can comment on diff lines and the comments reach the change request
+test('records inline comments on diff lines and sends them located and quoted', async ({ page }) => {
+  const { dialog, prompts } = await openCommentTour(page);
+  const diffPane = dialog.getByLabel('Relevant changes');
+  await expect(diffPane.getByText('const c = 4;')).toBeVisible();
+
+  // hovering a line offers the gutter "+", which opens an editor under that line
+  await diffPane.getByText('const c = 4;').hover();
+  await diffPane.locator('[data-utility-button]').click();
+  const editor = dialog.getByLabel('Comment on line 12');
+  await expect(editor).toBeFocused();
+  await editor.fill('Rename this constant.');
+  await dialog.getByRole('button', { name: 'Done' }).click();
+  await expect(editor).toHaveCount(0);
+  const saved = diffPane.locator('.review-tour-inline-comment');
+  await expect(saved).toContainText('Line 12');
+  await expect(saved).toContainText('Rename this constant.');
+
+  // selecting a range of line numbers, then the "+", comments on the whole range
+  await diffPane.locator('[data-column-number="13"]').first().click();
+  await diffPane.locator('[data-column-number="14"]').first().click({ modifiers: ['Shift'] });
+  await diffPane.locator('[data-utility-button]').click();
+  const rangeEditor = dialog.getByLabel('Comment on lines 13–14');
+  await expect(rangeEditor).toBeFocused();
+  // closing an empty comment discards it
+  await dialog.getByRole('button', { name: 'Done' }).click();
+  await expect(diffPane.locator('.review-tour-inline-comment')).toHaveCount(1);
+  await diffPane.locator('[data-column-number="13"]').first().click();
+  await diffPane.locator('[data-column-number="14"]').first().click({ modifiers: ['Shift'] });
+  await diffPane.locator('[data-utility-button]').click();
+  await dialog.getByLabel('Comment on lines 13–14').fill('Drop the trailing export.');
+  await dialog.getByRole('button', { name: 'Done' }).click();
+  await expect(diffPane.locator('.review-tour-inline-comment')).toHaveCount(2);
+
+  // a saved comment reopens for editing and can be deleted
+  await saved.filter({ hasText: 'Drop the trailing export.' }).getByRole('button', { name: 'Edit' }).click();
+  await dialog.getByLabel('Comment on lines 13–14').fill('Keep the export; drop the blank line.');
+  await dialog.getByRole('button', { name: 'Done' }).click();
+  await diffPane.getByText('const b = 3;').hover();
+  await diffPane.locator('[data-utility-button]').click();
+  await dialog.getByLabel('Comment on line 11').fill('Throwaway');
+  await saved.filter({ hasText: 'Line 11' }).getByRole('button', { name: 'Delete' }).click();
+  await expect(diffPane.locator('.review-tour-inline-comment')).toHaveCount(2);
+
+  // comments belong to their change, so they survive moving between steps
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await expect(dialog.getByRole('heading', { name: 'Apply the operation' })).toBeVisible();
+  await expect(diffPane.locator('.review-tour-inline-comment')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Back' }).click();
+  await expect(diffPane.locator('.review-tour-inline-comment')).toHaveCount(2);
+  await dialog.getByLabel('Feedback for this change').fill('Constants read well overall.');
+
+  // both steps are visited, so the summary is already offered
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  const draft = dialog.getByLabel('Consolidated change request');
+  await expect(draft).toHaveValue(/Constants read well overall\./u);
+  const value = await draft.inputValue();
+  expect(value).toContain('## Accept the request (visited)\n\nConstants read well overall.\n\n### src/route.ts:12 (new)\n```diff\n+const c = 4;\n```\nRename this constant.\n\n### src/route.ts:13-14 (new)\n```diff\n const d = 5;\n export {};\n```\nKeep the export; drop the blank line.');
+  expect(value).not.toContain('Throwaway');
+  await dialog.getByRole('button', { name: 'Send change request' }).click();
+  await expect(dialog.getByText('Change request sent to the implementation agent.')).toBeVisible();
+  expect(prompts).toEqual([value]);
+});
+
+// verify the touch path: tapping a line number reveals the gutter "+" without any hover
+test('opens an inline comment from a tapped line number on touch screens', async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4173', viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  const { dialog } = await openCommentTour(page);
+  const diffPane = dialog.getByLabel('Relevant changes');
+  await expect(diffPane.getByText('const c = 4;')).toBeVisible();
+  await diffPane.locator('[data-column-number="12"]').first().tap();
+  await diffPane.locator('[data-utility-button]').tap();
+  const editor = dialog.getByLabel('Comment on line 12');
+  await expect(editor).toBeVisible();
+  await editor.fill('Tapped comment.');
+  await dialog.getByRole('button', { name: 'Done' }).tap();
+  await expect(diffPane.locator('.review-tour-inline-comment')).toContainText('Tapped comment.');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await context.close();
+});
+
 // verify actionable generator authentication feedback
 test('explains when the server Codex login expires', async ({ page }) => {
   await installAgentWebSocket(page);

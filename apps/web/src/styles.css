@@ -1914,6 +1914,15 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .review-tour-diff-toolbar { display: flex; flex: 0 0 auto; justify-content: flex-end; padding: .4rem .6rem; border-bottom: 1px solid var(--surface-1); background: var(--mantle); }
 /* the diff library owns its own scroll container; give it the remaining height to fill and scroll */
 .review-tour-diff-scroll { min-width: 0; min-height: 0; flex: 1 1 auto; overflow: auto; }
+/* an inline comment renders as a diff annotation: light-DOM content slotted under its line */
+.review-tour-inline-comment { display: grid; gap: .4rem; margin: .35rem .6rem .5rem; padding: .55rem .65rem; border: 1px solid color-mix(in srgb, var(--blue) 45%, var(--surface-1)); border-radius: var(--control-radius); background: var(--mantle); color: var(--text); font: 500 .76rem/1.45 var(--font-mono); white-space: normal; }
+.review-tour-inline-comment > small { color: var(--blue); font: 800 .62rem var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
+.review-tour-inline-comment > p { margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.review-tour-inline-comment > textarea { box-sizing: border-box; width: 100%; min-height: 5rem; resize: vertical; border: 1px solid var(--surface-2); border-radius: var(--control-radius); padding: .5rem; background: var(--crust); color: var(--text); font: inherit; }
+.review-tour-inline-comment > span { color: var(--overlay-0); font-size: .62rem; text-align: right; }
+.review-tour-inline-comment > div { display: flex; justify-content: flex-end; gap: .4rem; }
+.review-tour-inline-comment button { padding: .3rem .65rem; font-size: .68rem; box-shadow: none; }
+.review-tour-inline-comment button:first-child { border-color: var(--surface-2); background: transparent; color: var(--subtext-0); }
 .review-tour-diff-loading { margin: 0; padding: .8rem; color: var(--subtext-0); font: 500 .72rem var(--font-mono); }
 .review-tour-diff-placeholders { display: grid; gap: .3rem; margin: 0; padding: .6rem; list-style: none; }
 .review-tour-diff-placeholders li { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 1rem; padding: .4rem .55rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: var(--mantle); color: var(--subtext-1); font: 700 .66rem var(--font-mono); }
