@@ -659,6 +659,50 @@ The default server listener is `127.0.0.1:8787`; `/healthz` is loopback-only and
 
 ## Browser capabilities
 
+### Managed preview permissions
+
+Proxied Project previews opened in the console's Browser panel can request
+location and foreground notifications through RAC. The preview must ask through
+its usual `navigator.geolocation` or `Notification` APIs; RAC displays a consent
+request identifying the preview origin before using the console's browser
+permission. An existing browser grant to RAC does not automatically approve a
+preview. Allow or deny each capability explicitly.
+
+Locations are returned only to the requesting preview. Notifications belong to
+RAC's origin and identify the preview that requested them. Grants last only for
+the current preview document; loading another document, reloading, closing the
+Browser panel, or leaving the managed origin revokes them and stops active
+location watches.
+The parent accepts requests only from that Browser panel's frame and configured
+project origin. Only the direct managed frame opts into the permission shim;
+nested project frames and ordinary non-RAC embeddings keep their native APIs.
+The managed frame name is a compatibility marker, not permission authority.
+Project code that changes `window.name` disables forwarding on later documents.
+
+Direct external previews and sandboxed temporary previews do not receive this
+bridge. Opening a preview in its own tab continues to use its native browser
+permissions. The bridge does not share service-worker registrations, push
+subscriptions, or background notification permissions with project apps, and it
+does not change their native `navigator.permissions` results. Browser and device
+support still apply; use HTTPS for remote access.
+
+Notification forwarding supports bounded titles, bodies, tags, `silent`, and
+`requireInteraction` options. Icons, actions, and app-controlled notification
+data are not forwarded. A cancelled or timed-out broker request is an operation
+error, not a permission decision.
+When a mobile browser requires RAC's existing service worker to display a
+notification, clicking it opens RAC instead of forwarding a click event to the
+preview. Dismissed notices are reconciled on later notification requests.
+Closing worker-backed notifications during revocation is best-effort: browser
+API failures can leave a notification visible until it is dismissed.
+
+The injected APIs provide compatibility forwarding, not a sandbox for a
+project's own browser permissions. Project-controlled CSP or immutable browser
+APIs can prevent forwarding; native permissions previously granted directly to
+the project remain separate from RAC's grants.
+
+### Console alerts
+
 The console can be installed as a browser app. Select **Enable alerts** in the
 console to grant notification access; mobile browsers require that permission
 request to come from a tap. Alerts cover agent questions and completed prompts,

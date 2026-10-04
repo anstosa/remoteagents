@@ -2,6 +2,7 @@ import { request as sendHttpRequest, type IncomingHttpHeaders, type IncomingMess
 import { connect } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { Worktree } from './domain/models.js';
+import { projectBrowserPermissions } from './project-browser-permissions.js';
 
 const browserBridgePath = '/__rac/browser-bridge.js';
 const browserDevicePath = '/__rac/browser-device';
@@ -36,6 +37,11 @@ const upstreamCookie = (cookie: string | string[] | undefined) => {
 };
 // build a bridge restricted to the console origin
 const browserBridge = (parentOrigin: string, profile?: BrowserDeviceProfile) => `(() => {
+  const bridgeMarker = Symbol.for('rac.projectBrowserBridge');
+  // retain one document session when project html also loads the bridge
+  if (window[bridgeMarker] === true) return;
+  window[bridgeMarker] = true;
+  ${projectBrowserPermissions(parentOrigin)}
   ${profile === undefined ? '' : `// expose the selected browser identity before application scripts run
   const profile = ${JSON.stringify(profile)};
   const identityFailures = [];
@@ -365,12 +371,14 @@ const downstreamHeaders = (headers: IncomingHttpHeaders) => {
 
 // inject the cross-origin navigation bridge
 export const injectProjectBrowserBridge = (html: string) => {
-  // avoid duplicate injection
-  if (html.includes(browserBridgePath)) return html;
   const head = /<head(?:\s[^>]*)?>/iu.exec(html);
+  // retain a bridge already prepended to a document without a head
+  if (html.startsWith(browserBridgeTag)) return html;
   // prepend when no head exists
   if (head === null || head.index === undefined) return `${browserBridgeTag}${html}`;
   const insertion = head.index + head[0].length;
+  // avoid duplicate injection only at the early application-script boundary
+  if (html.slice(insertion).startsWith(browserBridgeTag)) return html;
   return `${html.slice(0, insertion)}${browserBridgeTag}${html.slice(insertion)}`;
 };
 

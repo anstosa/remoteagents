@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer, request as sendRequest, type IncomingHttpHeaders, type Server } from 'node:http';
 import { runInNewContext } from 'node:vm';
-import { ProjectProxy } from '../src/project-proxy.js';
+import { injectProjectBrowserBridge, ProjectProxy } from '../src/project-proxy.js';
 import { testWorktree } from './helpers/config.js';
 
 const servers: Server[] = [];
@@ -54,7 +54,12 @@ const executeBridge = (source: string, lockUserAgent = false) => {
     queueMicrotask: (callback: () => void) => callback()
   };
   runInNewContext(source, { window });
-  return { messages, navigator };
+  return {
+    messages,
+    navigator,
+    // retry a bridge script included later by project html
+    executeAgain: () => runInNewContext(source, { window })
+  };
 };
 
 type ThemeMeta = { content: string; media?: string; name: string };
@@ -187,6 +192,18 @@ afterEach(async () => {
 });
 
 describe('project browser proxy', () => {
+  // inject before app scripts even when project content mentions or loads the bridge later
+  it('does not mistake bridge text or a late script for early injection', () => {
+    const bridge = '<script src="/__rac/browser-bridge.js"></script>';
+    const mentioned = '<html><head><script>const path="/__rac/browser-bridge.js";</script></head><body>preview</body></html>';
+    const late = `<html><head><script src="/app.js"></script>${bridge}</head></html>`;
+    expect(injectProjectBrowserBridge(mentioned)).toContain(`<head>${bridge}<script>const path=`);
+    expect(injectProjectBrowserBridge(late)).toContain(`<head>${bridge}<script src="/app.js">`);
+    const injected = injectProjectBrowserBridge(mentioned);
+    expect(injectProjectBrowserBridge(injected)).toBe(injected);
+    expect(injectProjectBrowserBridge(bridge + 'preview')).toBe(bridge + 'preview');
+  });
+
   // reject arbitrary upstream destinations
   it('allows only local project gateways', () => {
     expect(() => new ProjectProxy(() => [], 'https://agents.example.com', 'example.com')).toThrow('invalid project proxy host');
@@ -216,6 +233,10 @@ describe('project browser proxy', () => {
     expect(page.body).toContain('<head><script src="/__rac/browser-bridge.js"></script>');
 
     const bridge = await request(proxyPort, '/__rac/browser-bridge.js');
+    const repeatedBridge = executeBridge(bridge.body);
+    const initialMessages = repeatedBridge.messages.length;
+    repeatedBridge.executeAgain();
+    expect(repeatedBridge.messages).toHaveLength(initialMessages);
     expect(bridge.status).toBe(200);
     expect(bridge.contentType).toContain('text/javascript');
     expect(bridge.body).toContain("wrap('pushState')");

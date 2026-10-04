@@ -766,13 +766,24 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .note-markdown th:last-child, .note-markdown td:last-child { border-right: 0; }
 .browser-pane { position: relative; z-index: 1; display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); padding-top: var(--panel-header-clearance); border-top: 1px solid color-mix(in srgb, var(--blue) 58%, var(--surface-1)); background: var(--browser-chrome-color, var(--crust)); box-shadow: inset 0 1px color-mix(in srgb, var(--text) 4%, transparent); animation: note-pane-appear .15s ease-out; }
 .browser-pane.expanded { width: 100%; height: 100%; border: 0; }
+.browser-pane:has(> .browser-permission-consent) { grid-template-rows: auto minmax(0, 1fr); }
 /* the address input is the complete left pill, not a framed field inside it */
 .panel-header .browser-address { flex: 1 1 0; width: 0; align-self: stretch; padding: .2rem .65rem; outline: 0; font-family: inherit; }
 .panel-header .browser-address:focus { border-color: var(--blue); color: var(--text); }
 .browser-device-error { flex: 0 0 auto; color: var(--red); font-size: .7rem; font-weight: 700; }
+.browser-permission-consent { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: .8rem; padding: .65rem .75rem; border-bottom: 1px solid color-mix(in srgb, var(--blue) 55%, var(--surface-1)); background: color-mix(in srgb, var(--mantle) 94%, var(--blue)); color: var(--text); box-shadow: 0 .4rem 1rem color-mix(in srgb, var(--crust) 50%, transparent); }
+.browser-permission-copy { min-width: 0; flex: 1 1 18rem; }
+.browser-permission-copy strong { color: var(--blue); font: 750 .76rem var(--font-mono); }
+.browser-permission-copy p { margin: .2rem 0 0; color: var(--subtext-0); font-size: .68rem; line-height: 1.35; overflow-wrap: anywhere; }
+.browser-permission-copy b { color: var(--text); font-weight: 650; }
+.browser-permission-actions { display: flex; min-width: 0; flex: 1 1 20rem; flex-wrap: wrap; justify-content: flex-end; gap: .35rem; }
+.browser-permission-actions button { min-height: 2rem; justify-content: center; border-color: color-mix(in srgb, var(--blue) 62%, var(--surface-1)); padding: .3rem .55rem; background: transparent; color: var(--blue); box-shadow: none; font: 700 .65rem var(--font-mono); }
+.browser-permission-actions button:not(:disabled):hover { background: color-mix(in srgb, var(--blue) 15%, transparent); color: var(--text); }
+.browser-permission-actions .browser-permission-deny { border-color: var(--surface-2); color: var(--subtext-0); }
 .browser-frame-shell { display: grid; min-width: 0; min-height: 0; overflow: auto; place-items: stretch center; background: color-mix(in srgb, var(--crust) 84%, black); }
 .browser-frame-shell iframe { display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: white; }
 .browser-frame-shell.mobile iframe { width: min(var(--split-pane-min-width), 100%); border-right: 1px solid var(--surface-1); border-left: 1px solid var(--surface-1); }
+@media (max-width: 700px) { .browser-permission-consent { align-items: stretch; flex-direction: column; }.browser-permission-copy, .browser-permission-actions { width: 100%; flex: none; }.browser-permission-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }.browser-permission-actions .browser-permission-deny { grid-column: 1 / -1; } }
 /* The Code panel: a Comparison's Changes rendered by @pierre/diffs. Shiki's Catppuccin themes
    already equal RAC's tokens, so only the font variables and the mauve line-selection override are
    set here; they inherit through the library's open shadow root (no unsafeCSS). The virtualiser's

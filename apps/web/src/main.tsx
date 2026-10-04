@@ -37,6 +37,7 @@ import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, ty
 import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
 import { AdaptersContext, AgentLaunchSettingsContext, CodexAccountsMenuContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, defaultSandboxed, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, originCopy, sandboxCopy, type AdapterCapabilities, type AgentKind, type AgentUpdateStatus, type LaunchMenuEntry, type LaunchResolution, type LaunchChoice } from './launch-profile.js';
 import { ScheduleEditor, defaultScheduleCron, lastRunNeedsAttention, scheduleInvalid, type Schedule, type ScheduleAdapterOption, type ScheduleSetBody, type ScheduleTarget, type ScheduleTargetOption } from './schedule-editor.js';
+import { useBrowserPermissionBroker } from './browser-permissions.js';
 import './styles.css';
 
 // reuse the sticky-note edit and delete glyphs across app controls
@@ -4555,6 +4556,16 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   const normalizedUrl = normalizeBrowserUrl(url, homeUrl) ?? normalizedHomeUrl;
   const managed = isManagedBrowserUrl(normalizedUrl, homeUrl, proxied);
   const atHome = normalizedUrl === normalizedHomeUrl && !frameAwayFromKnownUrl;
+  const homeOrigin = new URL(homeUrl).origin;
+  // trust permission messages only while the live source is a managed project preview
+  const permissionFrameIsManaged = useCallback(() => proxied && loadedFrameProxied.current, [proxied]);
+  const permissionBroker = useBrowserPermissionBroker({ frameRef, homeOrigin, isManaged: permissionFrameIsManaged });
+  // opt into compatibility forwarding without exposing a referrer
+  const permissionFrameName = proxied ? 'rac-managed-preview-v1' : undefined;
+  // revoke the current document before changing its source
+  const revokeFramePermissions = useCallback(() => {
+    permissionBroker.revoke();
+  }, [permissionBroker.revoke]);
   useEffect(() => setAddress(url), [url]);
   // scale one desktop layout viewport into the visible phone frame
   useEffect(() => {
@@ -4579,6 +4590,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   }, []);
   // navigate without replacing the frame
   const loadFrame = useCallback((target: string, device = mobile) => {
+    revokeFramePermissions();
     loadedFrameSource.current = target;
     loadedFrameProxied.current = isManagedBrowserUrl(target, homeUrl, proxied);
     const source = loadedFrameProxied.current ? browserDeviceUrl(target, device) : target;
@@ -4586,7 +4598,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     setChromeColor(undefined);
     setFrameSource(source);
     frameRef.current?.setAttribute('src', source);
-  }, [homeUrl, mobile, proxied]);
+  }, [homeUrl, mobile, proxied, revokeFramePermissions]);
   // refresh the retained location
   const refreshFrame = useCallback(() => {
     expectedFrameLoad.current = true;
@@ -4646,6 +4658,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   }, [homeUrl, loadFrame, onNavigate, proxied, refreshFrame]);
   // sync readable same-origin frame locations
   const syncFrameLocation = () => {
+    permissionBroker.frameLoaded();
     const expected = expectedFrameLoad.current;
     expectedFrameLoad.current = false;
     setLoading(false);
@@ -4719,6 +4732,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   const handleEscape = (event: React.KeyboardEvent<HTMLElement>) => {
     if (event.key !== 'Escape' || expanded) return;
     event.preventDefault();
+    revokeFramePermissions();
     onClose();
   };
   // apply both viewport and browser identity
@@ -4779,7 +4793,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     { key: 'device', label: deviceLabel, title: deviceTitle, className: 'browser-device-toggle', pressed: mobile, icon: <svg className="panel-header-icon" data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg>, onSelect: toggleDevice }
   ];
   const titleControl = <input className="panel-header-pill panel-header-title browser-address" type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onKeyDown={submitAddress} onBlur={navigate} />;
-  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} style={{ '--browser-chrome-color': chromeColor } as React.CSSProperties} role="dialog" aria-label="Browser" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={browserContextMenu} onKeyDown={handleEscape}><PanelHeader panelKey="browser" label="browser" titleControl={titleControl} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close browser', title: 'Close', className: 'browser-close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} /><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
+  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} style={{ '--browser-chrome-color': chromeColor } as React.CSSProperties} role="dialog" aria-label="Browser" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={browserContextMenu} onKeyDown={handleEscape}><PanelHeader panelKey="browser" label="browser" titleControl={titleControl} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close browser', title: 'Close', className: 'browser-close', icon: <PanelIcon path={panelIcons.close} />, onSelect: () => { /* revoke before hiding the frame */ revokeFramePermissions(); onClose(); } }} />{permissionBroker.consent}<div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} name={permissionFrameName} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
 }
 
 // reuse the owning view's note persistence and prompt draft
