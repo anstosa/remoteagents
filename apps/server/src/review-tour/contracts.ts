@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import type { ReviewCategory } from '../git/change-classification.js';
+import type { ReviewAgentKind } from '../review-runs/efforts.js';
+import type { ReviewRunCapability } from '../review-runs/runner.js';
 
 export const REVIEW_REQUEST_BODY_BYTES = 1_024;
 export const MAX_REVIEW_FILES = 100;
@@ -40,8 +42,10 @@ export type ReviewComparison = {
 export type GeneratedReviewStep = { id: string; title: string; explanation: string; changeIds: string[] };
 export type GeneratedReviewTour = { title: string; overview: string; steps: GeneratedReviewStep[] };
 export type ReviewTour = GeneratedReviewTour & Pick<ReviewComparison, 'scope' | 'base' | 'includeTests' | 'includeDocs' | 'fingerprint' | 'changes'>;
-export type ReviewTourInput = { scope: ReviewScope; includeTests: boolean; includeDocs: boolean };
-export type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable' | 'unsupported_cli' | 'configuration_invalid' | 'authentication_required' };
+// `effort` picks one of the tour agent's levels for this run; absent, the configured one applies
+export type ReviewTourInput = { scope: ReviewScope; includeTests: boolean; includeDocs: boolean; effort?: string };
+// whether the tour's configured agent can run, with its configured effort and every level it accepts
+export type ReviewTourCapability = ReviewRunCapability & { agent: ReviewAgentKind; effort?: string; efforts: string[] };
 export type StoredReviewTour = { worktreeId: string; branch: string; savedAt: string; tour: ReviewTour };
 export type StoredReviewTourSummary = Pick<StoredReviewTour, 'worktreeId' | 'branch' | 'savedAt'> & Pick<ReviewTour, 'title' | 'scope' | 'includeTests' | 'includeDocs' | 'fingerprint'>;
 export type ReviewErrorCode = 'invalid_request' | 'capability_unavailable' | 'authentication_required' | 'target_unavailable' | 'configured_worktree_required' | 'scope_unavailable' | 'conflicted_unavailable' | 'too_large' | 'generation_failed' | 'malformed_result' | 'generation_rejected' | 'timed_out' | 'cancelled' | 'stale_during_generation';
@@ -52,7 +56,7 @@ export class ReviewTourError extends Error {
   constructor(public readonly code: ReviewErrorCode, public readonly retryable: boolean) { super(code); }
 }
 
-const inputSchema = z.object({ scope: z.enum(['working', 'pr']), includeTests: z.boolean(), includeDocs: z.boolean() }).strict();
+const inputSchema = z.object({ scope: z.enum(['working', 'pr']), includeTests: z.boolean(), includeDocs: z.boolean(), effort: z.string().min(1).max(20).optional() }).strict();
 const requestIdSchema = z.string().min(16).max(128).regex(/^[A-Za-z0-9_-]+$/u);
 const generatedStepSchema = z.object({ id: z.string().min(1).max(80), title: z.string().trim().min(1).max(240), explanation: z.string().trim().min(1).max(4_000), changeIds: z.array(z.string().min(8).max(100)).min(1).max(MAX_REVIEW_CHANGES) }).strict();
 const generatedTourSchema = z.object({ title: z.string().trim().min(1).max(240), overview: z.string().trim().min(1).max(2_000), steps: z.array(generatedStepSchema).min(1).max(MAX_REVIEW_CHANGES) }).strict();

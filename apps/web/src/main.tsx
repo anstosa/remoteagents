@@ -97,7 +97,7 @@ type Project = { id: string; label: string; mode?: 'repository' | 'directory'; a
 type BranchOption = { name: string; ref: string; remote: boolean; checkedOut: boolean };
 // the fresh facts the Remove dialog decides with (GET /api/worktrees/:id/removal)
 type RemovalFacts = { main: boolean; detached: boolean; locked: boolean; lockedReason?: string; branch?: string; dirtyCount: number; pushed: boolean; merged: boolean; ahead?: number; behind?: number; blockers: string[]; stopsProcesses: string[] };
-type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
+type ReviewTourCapability = ({ available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required'|'interactive_unavailable' }) & { agent: 'codex'|'claude'; effort?: string; efforts: string[] };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
 // a directory-Project or Scratch Place, listed beside the Worktrees (a Worktree is a Place with the same id)

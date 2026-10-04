@@ -8,6 +8,7 @@ import { AgentNotificationCoordinator } from '../src/notifications.js';
 import { stated } from './helpers/agent.js';
 import { testProject, testWorktree } from './helpers/config.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
+import { resolveReviewConfig } from '../src/review-runs/config.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1413,6 +1414,35 @@ describe('guided review API boundary', () => {
       expect(dismissed.statusCode).toBe(204);
       expect(missing.statusCode).toBe(404);
     } finally { await reviewApp.close(); await rm(directory, { recursive: true, force: true }); }
+  }, 15_000);
+});
+
+describe('review tour capability', () => {
+  it('describes the configured tour agent, its effort levels and its run mode in the dashboard', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }) };
+    const review = resolveReviewConfig({ agents: { claude: { mode: 'interactive' } }, tour: { agent: 'claude', effort: 'high' } }, { claude: {} });
+    const capabilityApp = await buildApp({ ...config, review }, { auth: new AuthService(hash, Buffer.alloc(32, 21).toString('base64url')), discovery: discovery as never });
+    try {
+      const boot = await capabilityApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await capabilityApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const dashboard = await capabilityApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0] } });
+      expect(dashboard.json().reviewTour).toEqual({ available: false, reason: 'interactive_unavailable', agent: 'claude', effort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] });
+    } finally { await capabilityApp.close(); }
+  }, 15_000);
+
+  it('reports an unconfigured default Codex tour unavailable', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }) };
+    const saved = process.env.RAC_CODEX_BIN;
+    delete process.env.RAC_CODEX_BIN;
+    const capabilityApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 22).toString('base64url')), discovery: discovery as never });
+    try {
+      const boot = await capabilityApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await capabilityApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const dashboard = await capabilityApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0] } });
+      expect(dashboard.json().reviewTour).toEqual({ available: false, reason: 'configuration_invalid', agent: 'codex', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] });
+    } finally { await capabilityApp.close(); if (saved !== undefined) process.env.RAC_CODEX_BIN = saved; }
   }, 15_000);
 });
 

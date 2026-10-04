@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { classifyReviewPath } from '../src/git/change-classification.js';
-import { parseGeneratedReviewTour, parseReviewRequestId, parseReviewTourInput, prohibitedNarration, type ReviewComparison, type ReviewTour } from '../src/review-tour/contracts.js';
+import { parseGeneratedReviewTour, parseReviewRequestId, ReviewTourError, parseReviewTourInput, prohibitedNarration, type ReviewComparison, type ReviewTour } from '../src/review-tour/contracts.js';
 import { ReviewTourJobs } from '../src/review-tour/jobs.js';
-import type { PreparedReviewTour, ReviewTourService } from '../src/review-tour/service.js';
+import { ReviewTourService, type PreparedReviewTour } from '../src/review-tour/service.js';
+import type { ReviewTourGenerator } from '../src/review-tour/generator.js';
 
 const implementationChange = { id: 'chg_12345678', file: 'src/feature.ts', category: 'implementation' as const, kind: 'hunk' as const, patch: '@@ -1 +1 @@\n-old\n+new' };
 
@@ -34,6 +35,9 @@ describe('review tour contracts', () => {
     expect(parseReviewTourInput({ scope: 'working', includeTests: false, includeDocs: true })).toEqual({ scope: 'working', includeTests: false, includeDocs: true });
     expect(parseReviewTourInput({ scope: 'working', includeTests: false, includeDocs: true, unexpected: true })).toBeUndefined();
     expect(parseReviewTourInput({ scope: 'branch', includeTests: false, includeDocs: false })).toBeUndefined();
+    expect(parseReviewTourInput({ scope: 'pr', includeTests: true, includeDocs: false, effort: 'high' })).toEqual({ scope: 'pr', includeTests: true, includeDocs: false, effort: 'high' });
+    expect(parseReviewTourInput({ scope: 'pr', includeTests: true, includeDocs: false, effort: 3 })).toBeUndefined();
+    expect(parseReviewTourInput({ scope: 'pr', includeTests: true, includeDocs: false, effort: 'x'.repeat(21) })).toBeUndefined();
     expect(parseReviewRequestId('review-start_1234567890')).toBe('review-start_1234567890');
     expect(parseReviewRequestId('short')).toBeUndefined();
   });
@@ -85,6 +89,7 @@ describe('review tour jobs', () => {
       expect(prepares).toBe(1);
       expect(generations).toBe(1);
       await expect(jobs.start('owner-a', 'agent-cora', { ...input, includeTests: true }, 'review-start_1234567890')).rejects.toMatchObject({ code: 'invalid_request', retryable: false });
+      await expect(jobs.start('owner-a', 'agent-cora', { ...input, effort: 'high' }, 'review-start_1234567890')).rejects.toMatchObject({ code: 'invalid_request', retryable: false });
     } finally { jobs.close(); }
   });
 
@@ -122,6 +127,32 @@ describe('review tour jobs', () => {
       expect(jobs.get('owner-a', first.job.id)?.state.kind).toBe('pending');
       expect(jobs.get('owner-b', second.job.id)?.state.kind).toBe('pending');
     } finally { jobs.close(); }
+  });
+});
+
+describe('review tour effort', () => {
+  // a generator for the Codex tour agent that records the effort of each run, then fails it
+  const generator = (efforts: Array<string | undefined>): ReviewTourGenerator => ({
+    capability: async () => ({ available: true, agent: 'codex', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] }),
+    generate: async (_comparison, _signal, effort) => { efforts.push(effort); throw new ReviewTourError('generation_failed', true); }
+  });
+
+  it('refuses an effort the tour agent does not accept before touching the Worktree', async () => {
+    let targets = 0;
+    const discovery = { target: async () => { targets += 1; return undefined; } };
+    const service = new ReviewTourService(discovery as never, generator([]));
+    await expect(service.prepare('agent-cora', { scope: 'working', includeTests: false, includeDocs: false, effort: 'max' })).rejects.toMatchObject({ code: 'invalid_request', retryable: false });
+    expect(targets).toBe(0);
+    await expect(service.prepare('agent-cora', { scope: 'working', includeTests: false, includeDocs: false, effort: 'minimal' })).rejects.toMatchObject({ code: 'target_unavailable' });
+    expect(targets).toBe(1);
+  });
+
+  it('runs a prepared tour at its requested effort', async () => {
+    const efforts: Array<string | undefined> = [];
+    const service = new ReviewTourService({} as never, generator(efforts));
+    await expect(service.generate({ ...prepared(), effort: 'minimal' }, new AbortController().signal)).rejects.toMatchObject({ code: 'generation_failed' });
+    await expect(service.generate(prepared(), new AbortController().signal)).rejects.toMatchObject({ code: 'generation_failed' });
+    expect(efforts).toEqual(['minimal', undefined]);
   });
 });
 

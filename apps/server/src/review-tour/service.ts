@@ -4,7 +4,8 @@ import { captureReviewComparison } from './diff.js';
 import type { ReviewTourGenerator } from './generator.js';
 import { publicReviewComparison, ReviewTourError, type PublicReviewComparison, type ReviewComparison, type ReviewTour, type ReviewTourCapability, type ReviewTourInput } from './contracts.js';
 
-export type PreparedReviewTour = { resolved: ResolvedWorkspace; comparison: ReviewComparison };
+// `effort` is the run's requested effort, absent for the configured one
+export type PreparedReviewTour = { resolved: ResolvedWorkspace; comparison: ReviewComparison; effort?: string };
 
 export class ReviewTourService {
   constructor(private readonly discovery: DiscoveryService, private readonly generator: ReviewTourGenerator) {}
@@ -17,6 +18,8 @@ export class ReviewTourService {
     const capability = await this.capability();
     // fail closed without generation support
     if (!capability.available) throw new ReviewTourError('capability_unavailable', capability.reason === 'generator_unavailable');
+    // refuse an effort the tour agent does not accept
+    if (input.effort !== undefined && !capability.efforts.includes(input.effort)) throw new ReviewTourError('invalid_request', false);
     const target = await this.discovery.target(agentId);
     // distinguish missing and unconfigured targets
     if (target === undefined) throw new ReviewTourError('target_unavailable', true);
@@ -26,12 +29,12 @@ export class ReviewTourService {
     const comparison = await captureReviewComparison(resolved, input);
     // reject identity changes during capture
     if (!await sameConfiguredWorkspace(this.discovery, agentId, resolved)) throw new ReviewTourError('target_unavailable', true);
-    return { resolved, comparison };
+    return { resolved, comparison, ...(input.effort === undefined ? {} : { effort: input.effort }) };
   }
 
   // generate and revalidate one complete tour
   async generate(prepared: PreparedReviewTour, signal: AbortSignal): Promise<ReviewTour> {
-    const generated = await this.generator.generate(prepared.comparison, signal);
+    const generated = await this.generator.generate(prepared.comparison, signal, prepared.effort);
     // preserve caller cancellation
     if (signal.aborted) throw new ReviewTourError('cancelled', true);
     const current = await captureReviewComparison(prepared.resolved, { scope: prepared.comparison.scope, includeTests: prepared.comparison.includeTests, includeDocs: prepared.comparison.includeDocs });

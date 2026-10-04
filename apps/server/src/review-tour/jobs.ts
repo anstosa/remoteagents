@@ -188,6 +188,6 @@ export class ReviewTourJobs {
 
   // compare one fixed generation request
   private sameInput(left: ReviewTourInput, right: ReviewTourInput): boolean {
-    return left.scope === right.scope && left.includeTests === right.includeTests && left.includeDocs === right.includeDocs;
+    return left.scope === right.scope && left.includeTests === right.includeTests && left.includeDocs === right.includeDocs && left.effort === right.effort;
   }
 }
