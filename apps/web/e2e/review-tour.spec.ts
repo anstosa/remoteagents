@@ -837,3 +837,175 @@ test('hides the AI code review without Review presets and shows the start sheet 
   await sheet.getByRole('button', { name: 'Cancel' }).click();
   await expect(sheet).toHaveCount(0);
 });
+
+// a one-step stored tour and Code review fixture for the AI review chip
+const chipTour = { title: 'Route tour', overview: 'Follow the route change.', scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'chip-fingerprint-123456', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: 'diff --git a/src/route.ts b/src/route.ts\nindex 1111111..2222222 100644\n--- a/src/route.ts\n+++ b/src/route.ts\n@@ -1 +1 @@\n-old\n+new\n' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route delegates to the service.', changeIds: ['chg_route0001'] }] };
+const chipReview = { fingerprint: chipTour.fingerprint, preset: { id: 'correctness', label: 'Correctness', agent: 'claude' }, effort: 'high', findings: [{ id: 'f1', changeId: 'chg_route0001', side: 'additions', startLine: 1, endLine: 1, severity: 'high', title: 'Unchecked input', body: 'The route trusts the body.' }, { id: 'f2', changeId: 'chg_route0001', side: 'deletions', startLine: 1, endLine: 1, severity: 'low', title: 'Lost comment', body: 'The old line explained why.' }], general: [{ id: 'g1', severity: 'medium', title: 'No tests', body: 'Nothing covers the route.', file: null }], completedAt: '2026-10-04T12:00:00.000Z' };
+const pendingJob = (id: string) => ({ id, expiresAt: '2099-01-01T00:00:00.000Z', retryAfterMs: 250 });
+
+test('follows the AI review started with the tour, and cancels it with the tour', async ({ page }) => {
+  const tourStarts: unknown[] = [];
+  const deleted: string[] = [];
+  let tourReady = false;
+  let reviewReady = false;
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, ...claudeReviewCapabilities, agents: [startSheetAgent], projects: [] } });
+    if (await fulfillAgentSupport(route, url.pathname)) return;
+    if (request.method() === 'DELETE') { deleted.push(url.pathname); return route.fulfill({ status: 204 }); }
+    if (url.pathname === '/api/agents/agent-1/review-tour/jobs') {
+      tourStarts.push(request.postDataJSON());
+      return route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob(`job-${tourStarts.length}`), codeReview: { job: pendingJob(`review-${tourStarts.length}`) } } });
+    }
+    if (url.pathname.startsWith('/api/review-tour/jobs/')) return tourReady ? route.fulfill({ json: { status: 'ready', tour: chipTour } }) : route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob('job') } });
+    if (url.pathname.startsWith('/api/code-review/jobs/')) return reviewReady ? route.fulfill({ json: { status: 'ready', review: chipReview } }) : route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob('review') } });
+    if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') return route.fulfill({ json: { status: 'comparison', comparison: { scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: chipTour.fingerprint } } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  const statusPanel = page.getByRole('region', { name: 'Changed files' });
+  await branchButton.click();
+  await statusPanel.getByRole('button', { name: 'Review', exact: true }).click();
+  const sheet = page.getByRole('dialog', { name: 'Start guided review' });
+  await sheet.getByLabel('Add AI code review').check();
+  await sheet.getByRole('button', { name: 'Start', exact: true }).click();
+  await branchButton.click();
+  await statusPanel.getByRole('button', { name: 'Generating…' }).click();
+  const loading = page.getByRole('dialog', { name: 'Generating change tour' });
+  await expect(loading.getByText(/^AI review running · \d+s$/u)).toBeVisible();
+  // cancelling the tour cancels the review that started with it
+  await loading.getByRole('button', { name: 'Cancel' }).click();
+  await expect.poll(() => deleted).toEqual(expect.arrayContaining(['/api/review-tour/jobs/job-1', '/api/code-review/jobs/review-1']));
+  await expect(loading.getByText(/AI review running/u)).toHaveCount(0);
+
+  // Try again starts the same launch, review included
+  tourReady = true;
+  await loading.getByRole('button', { name: 'Try again' }).click();
+  await expect.poll(() => tourStarts).toEqual([
+    { scope: 'pr', includeTests: false, includeDocs: false, codeReview: { preset: 'correctness', effort: 'high' } },
+    { scope: 'pr', includeTests: false, includeDocs: false, codeReview: { preset: 'correctness', effort: 'high' } }
+  ]);
+  const dialog = page.getByRole('dialog', { name: 'Route tour' });
+  await expect(dialog.getByText(/^AI review running · \d+s$/u)).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Add AI review' })).toHaveCount(0);
+  reviewReady = true;
+  await expect(dialog.getByText('AI review · 2 findings · 1 general')).toBeVisible();
+  expect(deleted).not.toContain('/api/code-review/jobs/review-2');
+});
+
+test('adds an AI review to a restored tour and retries a failed one', async ({ page }) => {
+  const reviewStarts: unknown[] = [];
+  let pollFailure = true;
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, ...claudeReviewCapabilities, reviews: [{ worktreeId: 'owen', branch: 'feature/review-tour', savedAt: '2026-10-04T12:00:00.000Z', title: chipTour.title, scope: 'pr', includeTests: false, includeDocs: false, fingerprint: chipTour.fingerprint }], agents: [startSheetAgent], projects: [] } });
+    if (await fulfillAgentSupport(route, url.pathname)) return;
+    if (url.pathname === '/api/worktrees/owen/review-tour') return route.fulfill({ json: { status: 'ready', review: { worktreeId: 'owen', branch: 'feature/review-tour', savedAt: '2026-10-04T12:00:00.000Z', tour: chipTour } } });
+    if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') return route.fulfill({ json: { status: 'comparison', comparison: { scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: chipTour.fingerprint } } });
+    if (url.pathname === '/api/agents/agent-1/code-review/jobs' && request.method() === 'POST') {
+      reviewStarts.push(request.postDataJSON());
+      if (reviewStarts.length === 1) return route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob('review-1') } });
+      return route.fulfill({ status: 409, json: { status: 'error', error: { code: 'stale_during_generation', retryable: true } } });
+    }
+    if (url.pathname === '/api/code-review/jobs/review-1') return pollFailure ? route.fulfill({ status: 504, json: { status: 'error', jobId: 'review-1', error: { code: 'timed_out', retryable: true } } }) : route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob('review-1') } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Route tour' });
+  const add = dialog.getByRole('button', { name: 'Add AI review' });
+  await expect(add).toBeVisible();
+  // Escape closes the review-only sheet without minimizing the review
+  await add.click();
+  const sheet = page.getByRole('dialog', { name: 'Add AI review' });
+  await expect(sheet.getByLabel('Preset')).toBeFocused();
+  await expect(sheet.getByLabel('Add AI code review')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(sheet).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await add.click();
+  await sheet.getByLabel('Extra focus').fill('the error copy');
+  await sheet.getByRole('button', { name: 'Start review' }).click();
+  await expect(sheet).toHaveCount(0);
+  expect(reviewStarts).toEqual([{ scope: 'pr', includeTests: false, includeDocs: false, fingerprint: chipTour.fingerprint, preset: 'correctness', effort: 'high', focus: 'the error copy' }]);
+  await expect(dialog.getByText('AI review failed')).toBeVisible();
+  await expect(dialog.getByText('The AI review timed out.')).toBeVisible();
+  // Retry runs the same options against the tour's fingerprint; a moved Comparison marks the tour stale
+  await dialog.getByRole('button', { name: 'Retry' }).click();
+  await expect.poll(() => reviewStarts).toHaveLength(2);
+  expect(reviewStarts[1]).toEqual(reviewStarts[0]);
+  await expect(dialog.getByText('Changes updated')).toBeVisible();
+  await expect(dialog.getByText('The changes moved since this tour was built. Regenerate the tour to add an AI review.')).toBeVisible();
+  pollFailure = false;
+});
+
+test('resumes a stored AI review and a running one with the restored tour', async ({ page }) => {
+  let stored: Record<string, unknown> = { codeReview: chipReview };
+  let reviewReady = false;
+  const deleted: string[] = [];
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, ...claudeReviewCapabilities, reviews: [{ worktreeId: 'owen', branch: 'feature/review-tour', savedAt: '2026-10-04T12:00:00.000Z', title: chipTour.title, scope: 'pr', includeTests: false, includeDocs: false, fingerprint: chipTour.fingerprint }], agents: [startSheetAgent], projects: [] } });
+    if (await fulfillAgentSupport(route, url.pathname)) return;
+    if (request.method() === 'DELETE') { deleted.push(url.pathname); return route.fulfill({ status: 204 }); }
+    if (url.pathname === '/api/worktrees/owen/review-tour') return route.fulfill({ json: { status: 'ready', review: { worktreeId: 'owen', branch: 'feature/review-tour', savedAt: '2026-10-04T12:00:00.000Z', tour: chipTour, ...stored } } });
+    if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') return route.fulfill({ json: { status: 'comparison', comparison: { scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'moved-fingerprint-123456' } } });
+    if (url.pathname === '/api/code-review/jobs/review-9') return reviewReady ? route.fulfill({ json: { status: 'ready', review: { ...chipReview, general: [] } } }) : route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob('review-9') } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  await branchButton.click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Route tour' });
+  await expect(dialog.getByText('AI review · 2 findings · 1 general')).toBeVisible();
+  await page.reload();
+
+  stored = { codeReviewJob: pendingJob('review-9') };
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
+  await expect(dialog.getByText(/^AI review running · \d+s$/u)).toBeVisible();
+  // the stale tour offers no new review, and dismissing it cancels the running one
+  await expect(dialog.getByText('Changes updated')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Dismiss' }).click();
+  await expect.poll(() => deleted).toEqual(expect.arrayContaining(['/api/code-review/jobs/review-9', '/api/worktrees/owen/review-tour']));
+  reviewReady = true;
+});
+
+test('names the tour agent when guided review is unavailable', async ({ page }) => {
+  let reviewTour: Record<string, unknown> = { available: false, reason: 'authentication_required', agent: 'claude', efforts: [] };
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, reviewTour, agents: [startSheetAgent], projects: [] } });
+    if (await fulfillAgentSupport(route, url.pathname)) return;
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  for (const [capability, reason] of [
+    [{ available: false, reason: 'authentication_required', agent: 'claude', efforts: [] }, 'Authenticate Claude to use guided review'],
+    [{ available: false, reason: 'interactive_unavailable', agent: 'claude', efforts: [] }, 'Interactive review runs are not available yet'],
+    [{ available: false, reason: 'unsupported_cli', agent: 'codex', efforts: [] }, 'Guided review unavailable: The server\'s Codex CLI is too old']
+  ] as const) {
+    reviewTour = capability;
+    await page.goto('/');
+    await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+    const review = page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true });
+    await expect(review).toBeDisabled();
+    await expect(review).toHaveAttribute('title', reason);
+  }
+});

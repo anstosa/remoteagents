@@ -34,8 +34,8 @@ import { applyFlyoutMarkers, setFlyoutMarkers, useFlyoutMarkers } from './flyout
 import { UpstreamRebaseNotification, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTarget, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
-import { ReviewStartSheet, type ReviewTourCapability } from './review-start.js';
-import { codeReviewCapability, type CodeReviewCapability } from './code-review.js';
+import { ReviewStartSheet, reviewTourUnavailableText, type ReviewTourCapability } from './review-start.js';
+import { codeReviewCapability, codeReviewFrom, isCodeReviewJob, type CodeReview, type CodeReviewCapability, type CodeReviewJob } from './code-review.js';
 import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
 import { AdaptersContext, AgentLaunchSettingsContext, CodexAccountsMenuContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, defaultSandboxed, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, originCopy, sandboxCopy, type AdapterCapabilities, type AgentKind, type AgentUpdateStatus, type LaunchMenuEntry, type LaunchResolution, type LaunchChoice } from './launch-profile.js';
 import { ScheduleEditor, defaultScheduleCron, lastRunNeedsAttention, scheduleInvalid, type Schedule, type ScheduleAdapterOption, type ScheduleSetBody, type ScheduleTarget, type ScheduleTargetOption } from './schedule-editor.js';
@@ -6621,11 +6621,7 @@ function AgentPlaceCard({ agent, agents, onSelectAgent, active, tabBar, renderNo
   // explain review availability
   const reviewUnavailable = agent.worktreeId === undefined
     ? 'Guided review requires a configured worktree'
-    : reviewCapability?.available === true
-      ? undefined
-      : reviewCapability?.reason === 'authentication_required'
-        ? 'Authenticate Codex to use guided review'
-        : 'Guided review unavailable on this server';
+    : reviewTourUnavailableText(reviewCapability);
   const rebaseUpstream = agent.gitUpstream?.upstream;
   const queueRebase = rebaseUpstream === undefined ? undefined : async () => {
     const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: `$rebase ${rebaseUpstream}`, attachments: [] }) });
@@ -7692,6 +7688,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   // the Worktree whose start sheet is open
   const [reviewStart, setReviewStart] = useState<ReviewTarget>();
   const [reviewInitialTour, setReviewInitialTour] = useState<ReviewTour>();
+  // a restored tour's stored Code review, or the job still running one
+  const [reviewInitialCodeReview, setReviewInitialCodeReview] = useState<{ review?: CodeReview; job?: CodeReviewJob }>({});
   const [reviewMinimized, setReviewMinimized] = useState(false);
   const [reviewIndicator, setReviewIndicator] = useState<ReviewTourIndicator>({ generating: false, stale: false });
   const [reviewRestoringWorktreeId, setReviewRestoringWorktreeId] = useState<string>();
@@ -8676,6 +8674,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     setReviewStart(undefined);
     setReviewIndicator({ generating: true, stale: false });
     setReviewInitialTour(undefined);
+    setReviewInitialCodeReview({});
     setReviewStarts(count => count + 1);
     setReviewLaunch(launch);
     setReviewMinimized(true);
@@ -8695,10 +8694,13 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     try {
       const response = await request(`/api/worktrees/${encodeURIComponent(stored.worktreeId)}/review-tour`);
       const payload: unknown = await response.json().catch(() => undefined);
-      const review = payload !== null && typeof payload === 'object' && (payload as { review?: unknown }).review !== null && typeof (payload as { review?: unknown }).review === 'object' ? (payload as { review: { worktreeId?: unknown; branch?: unknown; tour?: unknown } }).review : undefined;
+      const review = payload !== null && typeof payload === 'object' && (payload as { review?: unknown }).review !== null && typeof (payload as { review?: unknown }).review === 'object' ? (payload as { review: { worktreeId?: unknown; branch?: unknown; tour?: unknown; codeReview?: unknown; codeReviewJob?: unknown } }).review : undefined;
       // require the dashboard-bound worktree and branch
       if (!response.ok || review?.worktreeId !== stored.worktreeId || review.branch !== stored.branch || !isReviewTour(review.tour)) throw new Error('invalid stored review');
       setReviewInitialTour(review.tour);
+      // resume the stored Code review, or poll the job still running one
+      const storedCodeReview = codeReviewFrom(review.codeReview);
+      setReviewInitialCodeReview({ ...(storedCodeReview === undefined ? {} : { review: storedCodeReview }), ...(isCodeReviewJob(review.codeReviewJob) ? { job: review.codeReviewJob } : {}) });
       setReviewLaunch({ agentId: agent.id, worktreeId: stored.worktreeId, scope: review.tour.scope, includeTests: review.tour.includeTests, includeDocs: review.tour.includeDocs });
       setReviewIndicator({ generating: false, stale: false });
       setReviewMinimized(false);
@@ -8841,7 +8843,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const pruneProject = pruneProjectId === undefined ? undefined : data.projects.find(project => project.id === pruneProjectId);
   const pruneDialog = pruneProject === undefined ? null : <PruneWorktreesDialog project={pruneProject} request={request} onClose={() => setPruneProjectId(undefined)} onPruned={() => void worktreesPruned()} />;
   const worktreeManagementDialogs = <>{renameWorkspace !== undefined && <RenameWorkspaceDialog key={renameWorkspace.key} workspace={renameWorkspace} onClose={() => setRenameWorkspace(undefined)} />}{newWorktreeDialog}{removeWorktreeDialog}{renameWorktreeDialog}{pruneDialog}</>;
-  const reviewDialog = reviewLaunch === undefined ? null : <ReviewTourDialog key={`${reviewLaunch.worktreeId}:${reviewInitialTour?.fingerprint ?? `start-${reviewStarts}`}`} launch={reviewLaunch} request={request} minimized={reviewMinimized} initialTour={reviewInitialTour} onMinimize={minimizeReview} onDismiss={dismissReview} onIndicatorChange={setReviewIndicator} onReady={notifyReviewReady} {...(data.editor === true ? { onOpenInEditor: (target: EditorTarget) => void openEditorAt(reviewLaunch.worktreeId, target) } : {})} />;
+  const reviewDialog = reviewLaunch === undefined ? null : <ReviewTourDialog key={`${reviewLaunch.worktreeId}:${reviewInitialTour?.fingerprint ?? `start-${reviewStarts}`}`} launch={reviewLaunch} request={request} minimized={reviewMinimized} initialTour={reviewInitialTour} tourAgent={data.reviewTour?.agent} {...(reviewInitialTour === undefined ? {} : { initialCodeReview: reviewInitialCodeReview.review, initialCodeReviewJob: reviewInitialCodeReview.job })} codeReviewCapability={codeReviewCapability(data.codeReview)} onMinimize={minimizeReview} onDismiss={dismissReview} onIndicatorChange={setReviewIndicator} onReady={notifyReviewReady} {...(data.editor === true ? { onOpenInEditor: (target: EditorTarget) => void openEditorAt(reviewLaunch.worktreeId, target) } : {})} />;
   const reviewStartSheet = reviewStart === undefined ? null : <ReviewStartSheet target={reviewStart} prBase={data.agents.find(candidate => candidate.id === reviewStart.agentId)?.gitPrStatus?.base} tour={data.reviewTour} codeReview={codeReviewCapability(data.codeReview)} onStart={launchReview} onCancel={cancelReviewStart} />;
   const storedReview = agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === agent.worktreeId);
   const localReview = agent?.worktreeId !== undefined && agent.worktreeId === reviewLaunch?.worktreeId;

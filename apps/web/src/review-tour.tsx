@@ -4,7 +4,8 @@ import { prefersReducedMotion } from './reduced-motion.js';
 import { usePhoneLayout } from './panel-header.js';
 import type { ReviewDiffComment, ReviewDiffSide } from './code-panel/review-diffs.js';
 import type { EditorTarget } from './code-panel/editor-jump.js';
-import type { CodeReviewOptions } from './code-review.js';
+import { codeReviewCount, codeReviewErrorMessage, failureCode, isCodeReviewJob, useCodeReviewPoll, useJobElapsed, type CodeReview, type CodeReviewCapability, type CodeReviewJob, type CodeReviewOptions, type CodeReviewOutcome } from './code-review.js';
+import { CodeReviewSheet, reviewAgentLabel, type ReviewAgentKind } from './review-start.js';
 
 // The diff renderer pulls in `@pierre/diffs` (~177 kB), so it is loaded on demand — this dialog is in
 // the eager dashboard bundle and a static import would drag the library in. Same lazy boundary the
@@ -96,8 +97,8 @@ function transientTransportFailure(response: Response, failure: ReviewFailure): 
   return response.status === 502 || response.status === 503 || response.status === 504 || response.status >= 520 && response.status <= 530;
 }
 
-// translate typed and transport failures
-function errorMessage(failure: ReviewFailure, status: number): string {
+// translate typed and transport failures; `agent` names the tour's agent
+function errorMessage(failure: ReviewFailure, status: number, agent: string): string {
   const { code, message } = failure;
   // select recoverable user copy
   if (code === 'scope_unavailable') return 'The selected Git comparison is unavailable.';
@@ -111,13 +112,13 @@ function errorMessage(failure: ReviewFailure, status: number): string {
   if (code === 'stale_during_generation') return 'The change moved while the tour was being generated.';
   if (code === 'capability_unavailable') return 'Guided review is unavailable on this server.';
   // explain expired generator credentials
-  if (code === 'authentication_required') return 'The server’s Codex login expired. Sign in to Codex on the server, then try again.';
+  if (code === 'authentication_required') return `The server’s ${agent} login expired. Sign in to ${agent} on the server, then try again.`;
   if (code === 'configured_worktree_required') return 'Guided review requires a configured worktree.';
   if (code === 'generation_rejected') return 'The generated response was not an explanatory tour. Try again.';
   if (code === 'cancelled') return 'Tour generation was cancelled.';
   if (code === 'malformed_result') return 'The generated tour was incomplete. Try again.';
   // explain unclassified process failures
-  if (code === 'generation_failed') return 'Codex exited before returning a guided tour. Try again; if it keeps failing, verify the server’s Codex login and network access.';
+  if (code === 'generation_failed') return `${agent} exited before returning a guided tour. Try again; if it keeps failing, verify the server’s ${agent} login and network access.`;
   // explain expired browser sessions
   if (status === 401) return 'Your console session expired. Sign in again, then try again.';
   // explain rejected browser authority
@@ -199,8 +200,11 @@ function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, comme
 }
 
 // render and manage one guided review
-// `onOpenInEditor`, given only with an `editor` configured, jumps from a diff to that line in it
-export function ReviewTourDialog({ launch, request, minimized, initialTour, onMinimize, onDismiss, onIndicatorChange, onReady, onOpenInEditor }: { launch: ReviewLaunch; request: ReviewRequest; minimized: boolean; initialTour?: ReviewTour; onMinimize: () => void; onDismiss: () => Promise<boolean>; onIndicatorChange: (indicator: ReviewTourIndicator) => void; onReady: (tour: ReviewTour) => void; onOpenInEditor?: (target: EditorTarget) => void }) {
+// `onOpenInEditor`, given only with an `editor` configured, jumps from a diff to that line in it.
+// A restored tour passes its stored Code review (`initialCodeReview`) or the job still running it
+// (`initialCodeReviewJob`); `codeReviewCapability` lists the presets "Add AI review" offers, and
+// `tourAgent` names the agent that narrates the tour in its failures.
+export function ReviewTourDialog({ launch, request, minimized, initialTour, tourAgent, initialCodeReview, initialCodeReviewJob, codeReviewCapability, onMinimize, onDismiss, onIndicatorChange, onReady, onOpenInEditor }: { launch: ReviewLaunch; request: ReviewRequest; minimized: boolean; initialTour?: ReviewTour; tourAgent?: ReviewAgentKind; initialCodeReview?: CodeReview; initialCodeReviewJob?: CodeReviewJob; codeReviewCapability?: CodeReviewCapability; onMinimize: () => void; onDismiss: () => Promise<boolean>; onIndicatorChange: (indicator: ReviewTourIndicator) => void; onReady: (tour: ReviewTour) => void; onOpenInEditor?: (target: EditorTarget) => void }) {
   // the Comparison is fixed for the dialog's lifetime: changing it means starting again
   const { includeTests, includeDocs } = launch;
   const [state, setState] = useState<ViewState>(initialTour === undefined ? 'loading' : 'tour');
@@ -226,6 +230,16 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
   const [closing, setClosing] = useState(false);
   const [dismissing, setDismissing] = useState(false);
   const [dismissError, setDismissError] = useState('');
+  // The AI Code review beside the tour: the job running it, the completed review (its Findings are
+  // what the diffs show), or why it failed. `codeReviewOptions` is what Retry runs again.
+  const [codeReviewJob, setCodeReviewJob] = useState<CodeReviewJob | undefined>(initialCodeReviewJob);
+  const [codeReview, setCodeReview] = useState<CodeReview | undefined>(initialCodeReview);
+  const [codeReviewError, setCodeReviewError] = useState('');
+  const [codeReviewOptions, setCodeReviewOptions] = useState<CodeReviewOptions | undefined>(launch.codeReview);
+  const [addingCodeReview, setAddingCodeReview] = useState(false);
+  const [retryingCodeReview, setRetryingCodeReview] = useState(false);
+  const codeReviewElapsed = useJobElapsed(codeReviewJob);
+  const agentName = reviewAgentLabel(tourAgent);
   const generation = useRef(0);
   const dialog = useRef<HTMLDivElement | null>(null);
   const dispatchError = useRef<HTMLParagraphElement | null>(null);
@@ -281,12 +295,19 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     const startDeadline = Date.now() + 30_000;
     const startRequestId = crypto.randomUUID();
     const run = ++generation.current;
+    let createdReviewJob: CodeReviewJob | undefined;
+    let tourSettled = false;
     setState('loading');
     setError('');
     setTour(undefined);
     setJob(undefined);
     setStale(false);
     setSent(false);
+    // a new start supersedes any Code review; one requested with this launch comes back with the job
+    setCodeReviewJob(undefined);
+    setCodeReview(undefined);
+    setCodeReviewError('');
+    setCodeReviewOptions(launch.codeReview);
     // poll one bounded job
     const poll = async (next: Job) => {
       // stop obsolete polls before transport
@@ -323,6 +344,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
         setStatuses({ [ready.steps[0]!.id]: 'visited' });
         setCurrent(0);
         setState('tour');
+        tourSettled = true;
         onReadyRef.current(ready);
         return;
       }
@@ -333,7 +355,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
         timer = window.setTimeout(() => void poll(next), Math.max(250, Math.min(5_000, next.retryAfterMs)));
         return;
       }
-      setError(errorMessage(failure, response.status));
+      setError(errorMessage(failure, response.status, agentName));
       setState(response.status === 410 ? 'cancelled' : 'error');
     };
     // create one generation job
@@ -343,10 +365,12 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
       const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/jobs`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': startRequestId }, body: JSON.stringify({ scope: launch.scope, includeTests, includeDocs, ...(launch.effort === undefined ? {} : { effort: launch.effort }), ...(launch.codeReview === undefined ? {} : { codeReview: launch.codeReview }) }) }, false);
       const body = await responseBody(response);
       const pending = body.job;
+      const reviewJob = body.codeReview !== null && typeof body.codeReview === 'object' ? (body.codeReview as { job?: unknown }).job : undefined;
       const failure = responseFailure(body);
       // reap jobs created after local closure
       if (closed || generation.current !== run) {
         if (response.status === 202 && body.status === 'pending' && isJob(pending)) void request(`/api/review-tour/jobs/${encodeURIComponent(pending.id)}`, { method: 'DELETE' }, false);
+        if (response.status === 202 && isCodeReviewJob(reviewJob)) void request(`/api/code-review/jobs/${encodeURIComponent(reviewJob.id)}`, { method: 'DELETE' }, false);
         return;
       }
       // publish an empty selection
@@ -355,6 +379,8 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
       if (response.status === 202 && body.status === 'pending' && isJob(pending)) {
         createdJob = pending;
         setJob(pending);
+        // follow the Code review that started from the same Comparison
+        if (isCodeReviewJob(reviewJob)) { createdReviewJob = reviewJob; setCodeReviewJob(reviewJob); }
         await poll(pending);
         return;
       }
@@ -365,15 +391,16 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
         timer = window.setTimeout(() => void start(), retryDelay);
         return;
       }
-      setError(errorMessage(failure, response.status));
+      setError(errorMessage(failure, response.status, agentName));
       setState('error');
     };
     void start();
-    // cancel obsolete generation jobs
+    // cancel obsolete generation jobs, and a Code review whose tour never arrived
     return () => {
       closed = true;
       if (timer !== undefined) window.clearTimeout(timer);
       if (createdJob !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(createdJob.id)}`, { method: 'DELETE' }, false);
+      if (createdReviewJob !== undefined && !tourSettled) void request(`/api/code-review/jobs/${encodeURIComponent(createdReviewJob.id)}`, { method: 'DELETE' }, false);
     };
   }, [launch, includeTests, includeDocs, retry, request, initialTour]);
 
@@ -397,6 +424,50 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     window.addEventListener('focus', focus);
     return () => { stopped = true; window.clearInterval(timer); window.removeEventListener('focus', focus); };
   }, [tour, state, launch.agentId, launch.scope, includeTests, includeDocs, request]);
+
+  // settle the running Code review into its Findings or its failure
+  const codeReviewSettled = useCallback((outcome: CodeReviewOutcome) => {
+    setCodeReviewJob(undefined);
+    if ('review' in outcome) { setCodeReview(outcome.review); setCodeReviewError(''); }
+    else if ('error' in outcome) setCodeReviewError(outcome.error);
+  }, []);
+  useCodeReviewPoll(request, codeReviewJob, codeReviewSettled);
+
+  // cancel a running Code review with the tour it belongs to
+  const cancelCodeReview = () => {
+    if (codeReviewJob !== undefined) void request(`/api/code-review/jobs/${encodeURIComponent(codeReviewJob.id)}`, { method: 'DELETE' }, false);
+    setCodeReviewJob(undefined);
+  };
+
+  // Start a Code review of the ready tour's Comparison ("Add AI review" or Retry). Resolves to the
+  // reason it did not start; a Comparison that moved since the tour marks the tour stale.
+  const startCodeReview = async (options: CodeReviewOptions): Promise<string | undefined> => {
+    // require a current tour to anchor the Findings on
+    if (tour === undefined) return 'The tour is not ready.';
+    const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/code-review/jobs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope: launch.scope, includeTests, includeDocs, fingerprint: tour.fingerprint, ...options }) }, false);
+    const body = await responseBody(response);
+    // follow the started job
+    if (response.status === 202 && isCodeReviewJob(body.job)) {
+      setCodeReviewOptions(options);
+      setCodeReview(undefined);
+      setCodeReviewError('');
+      setCodeReviewJob(body.job);
+      return undefined;
+    }
+    const code = failureCode(body);
+    if (code === 'stale_during_generation') setStale(true);
+    return codeReviewErrorMessage(code, response.status);
+  };
+  // run a failed Code review again with its options, or choose them again when they are unknown
+  const retryCodeReview = async () => {
+    if (codeReviewOptions === undefined) { setAddingCodeReview(true); return; }
+    setRetryingCodeReview(true);
+    const failure = await startCodeReview(codeReviewOptions);
+    setRetryingCodeReview(false);
+    if (failure !== undefined) setCodeReviewError(failure);
+  };
+  // close the Add AI review sheet, returning focus to the review
+  const closeCodeReviewSheet = () => { setAddingCodeReview(false); dialog.current?.focus(); };
 
   const step = tour?.steps[current];
   const stepFeedback = step === undefined ? '' : feedback[step.id] ?? '';
@@ -511,6 +582,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     if (dismissing) return;
     setDismissing(true);
     setDismissError('');
+    cancelCodeReview();
     const dismissed = await onDismiss().catch(() => false);
     // preserve the review when removal fails
     if (!dismissed) { setDismissError('The cached review could not be dismissed.'); setDismissing(false); }
@@ -549,13 +621,25 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
   const comparisonLabel = [scopeLabel, includeTests ? 'tests included' : 'tests excluded', includeDocs ? 'docs included' : 'docs excluded', ...(tour?.base ? [`vs ${tour.base}`] : [])].join(' · ');
   // the step's narration and feedback: a left column on desktop, the notes drawer on a phone
   const narration = step && <><small>Logical change</small><h3>{step.title}</h3><p>{step.explanation}</p><label>Feedback for this change<textarea value={stepFeedback} maxLength={maxFeedback} onChange={event => updateFeedback(step.id, event.target.value)} />{stepFeedback.length >= maxFeedback && <span role="status">{maxFeedback.toLocaleString()} character limit reached</span>}</label>{orphanFeedback !== '' && <label>Feedback from regenerated steps<textarea value={orphanFeedback} maxLength={maxFeedbackTotal} onChange={event => updateOrphanFeedback(event.target.value)} />{orphanFeedback.length >= maxFeedbackTotal && <span role="status">{maxFeedbackTotal.toLocaleString()} retained feedback character limit reached</span>}</label>}</>;
+  // The Code review's state in the header: running with its time, its Findings count, a failure with
+  // Retry, or "Add AI review" for a current tour with none.
+  const codeReviewChip = codeReviewJob !== undefined
+    ? <span className="review-tour-ai running" role="status"><span className="spinner" aria-hidden="true" />AI review running · {codeReviewElapsed}</span>
+    : codeReview !== undefined
+      ? <span className="review-tour-ai ready" role="status" title={`${codeReview.preset.label} review by ${reviewAgentLabel(codeReview.preset.agent)}`}>AI review · {codeReviewCount(codeReview)}</span>
+      : codeReviewError !== ''
+        ? <span className="review-tour-ai failed" role="alert"><span title={codeReviewError}>AI review failed</span><span className="review-tour-ai-reason">{codeReviewError}</span><button type="button" disabled={retryingCodeReview || stale || tour === undefined} onClick={() => void retryCodeReview()}>Retry</button></span>
+        : tour !== undefined && !stale && (state === 'tour' || state === 'summary') && codeReviewCapability !== undefined
+          ? <span className="review-tour-ai add"><button type="button" onClick={() => setAddingCodeReview(true)}>Add AI review</button></span>
+          : null;
+  const codeReviewSheet = addingCodeReview && codeReviewCapability !== undefined ? <CodeReviewSheet codeReview={codeReviewCapability} onStart={async options => { const failure = await startCodeReview(options); if (failure === undefined) closeCodeReviewSheet(); return failure; }} onCancel={closeCodeReviewSheet} /> : null;
   // keep generation and freshness polling mounted while minimized
   if (minimized) return null;
   const content = <div className={`review-tour-backdrop${closing ? ' closing' : ''}`}><div ref={dialog} className="review-tour" role="dialog" aria-modal="true" aria-labelledby="review-tour-title" tabIndex={-1} onKeyDown={dialogKey}>
-    <header className="review-tour-header"><div><small>{scopeLabel} guided review</small><h2 id="review-tour-title">{tour ? displayedTourTitle(tour) : 'Generating change tour'}</h2>{tour && <p>{tour.overview}</p>}</div><button type="button" aria-label="Minimize guided review" title="Minimize" onClick={minimize}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button></header>
+    <header className="review-tour-header"><div><small>{scopeLabel} guided review</small><h2 id="review-tour-title">{tour ? displayedTourTitle(tour) : 'Generating change tour'}</h2>{tour && <p>{tour.overview}</p>}</div>{codeReviewChip}<button type="button" aria-label="Minimize guided review" title="Minimize" onClick={minimize}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button></header>
     <div className="review-tour-content">
     {tour && stale && <div className="review-tour-stale" role="alert"><strong>Changes updated</strong><span>This cached review is out of date.</span>{dismissError && <span>{dismissError}</span>}<button type="button" disabled={dismissing} onClick={() => void dismiss()}>{dismissing ? 'Dismissing…' : 'Dismiss'}</button><button type="button" disabled={dismissing} onClick={() => { setStale(false); setRetry(value => value + 1); setState('loading'); }}>Regenerate</button></div>}
-    {state === 'loading' && <div className="review-tour-message" role="status"><span className="spinner" /><strong>Building the narrated tour…</strong><p>The AI is organizing the selected implementation changes into logical steps.</p><button type="button" onClick={() => { generation.current += 1; if (job !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' }, false); setState('cancelled'); }}>Cancel</button></div>}
+    {state === 'loading' && <div className="review-tour-message" role="status"><span className="spinner" /><strong>Building the narrated tour…</strong><p>The AI is organizing the selected implementation changes into logical steps.</p><button type="button" onClick={() => { generation.current += 1; if (job !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' }, false); cancelCodeReview(); setState('cancelled'); }}>Cancel</button></div>}
     {state === 'empty' && <div className="review-tour-message" role="status"><strong>No included changes</strong><p>Implementation changes are empty for this scope. Start again with Tests or Docs included if those are the only changed files.</p></div>}
     {(state === 'error' || state === 'cancelled') && <div className="review-tour-message error" role="alert"><strong>{state === 'cancelled' ? 'Tour cancelled' : 'Unable to build tour'}</strong><p>{error || 'Generate again when you are ready.'}</p><button type="button" onClick={() => { setRetry(value => value + 1); setState('loading'); }}>Try again</button></div>}
     {tour && state === 'tour' && step && <><div className="review-tour-progress"><span>Step {current + 1} of {tour.steps.length}</span><span>{Object.values(statuses).filter(value => value === 'visited').length} visited · {Object.values(statuses).filter(value => value === 'skipped').length} skipped</span></div><main className="review-tour-step">{phone
@@ -565,6 +649,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     {tour && state === 'summary' && <main className="review-tour-summary"><h3>Review complete</h3><ul>{tour.steps.map(candidate => <li key={candidate.id}><span className={statuses[candidate.id]}>{statuses[candidate.id]}</span><strong>{candidate.title}</strong></li>)}</ul>{orphanFeedback !== '' && <p>Feedback from regenerated steps is retained in the consolidated change request.</p>}{feedbackTotal === 0 ? <p>No feedback was recorded. You can finish without sending anything.</p> : <label>Consolidated change request<textarea value={dispatch} maxLength={maxDispatch} onChange={event => setDispatch(event.target.value)} />{dispatch.length >= maxDispatch && <span role="status">{maxDispatch.toLocaleString()} character limit reached</span>}</label>}{error && <p ref={dispatchError} className="review-tour-error" role="alert" tabIndex={-1}>{error}</p>}{sent && <p className="review-tour-sent" role="status">Change request sent to the implementation agent.</p>}<footer className="review-tour-actions"><button type="button" onClick={() => setState('tour')}>Back to tour</button><span />{feedbackTotal > 0 && !sent && <button type="button" disabled={dispatching || dispatch.trim() === '' || dispatch.length > maxDispatch} onClick={() => void send()}>{dispatching ? 'Sending…' : 'Send change request'}</button>}<button type="button" onClick={minimize}>Finish</button></footer></main>}
     </div>
     <p className="review-tour-comparison">{comparisonLabel}</p>
+    {codeReviewSheet}
   </div></div>;
   return createPortal(content, document.body);
 }

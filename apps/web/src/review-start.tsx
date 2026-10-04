@@ -20,9 +20,19 @@ export function reviewRunUnavailableText(reason: string | undefined, agent: Revi
   const name = reviewAgentLabel(agent);
   if (reason === 'authentication_required') return `Sign in to ${name} on the server`;
   if (reason === 'interactive_unavailable') return 'Interactive review runs are not available yet';
-  if (reason === 'unsupported_cli') return `The server's ${name} CLI is not supported`;
-  if (reason === 'configuration_invalid') return 'The review configuration is invalid';
+  if (reason === 'unsupported_cli') return `The server's ${name} CLI is too old`;
+  if (reason === 'configuration_invalid') return `The server's ${name} program path is invalid`;
+  if (reason === 'generator_unavailable') return `${name} is not installed on the server`;
   return `${name} is unavailable on this server`;
+}
+
+// Why guided review cannot start, naming the agent that narrates the tour.
+export function reviewTourUnavailableText(capability: ReviewTourCapability | undefined): string | undefined {
+  if (capability?.available === true) return undefined;
+  if (capability === undefined) return 'Guided review unavailable on this server';
+  if (capability.reason === 'authentication_required') return `Authenticate ${reviewAgentLabel(capability.agent)} to use guided review`;
+  if (capability.reason === 'interactive_unavailable') return 'Interactive review runs are not available yet';
+  return `Guided review unavailable: ${reviewRunUnavailableText(capability.reason, capability.agent)}`;
 }
 
 // An effort picker: "Default (…)" sends no effort, so the configured or agent default applies.
@@ -112,5 +122,26 @@ export function ReviewStartSheet({ target, prBase, tour, codeReview, onStart, on
     <div className="review-start-row" role="group" aria-labelledby="review-start-include"><span id="review-start-include">Include</span><span className="review-start-checks"><label><input type="checkbox" checked={includeTests} onChange={event => setIncludeTests(event.target.checked)} />Tests</label><label><input type="checkbox" checked={includeDocs} onChange={event => setIncludeDocs(event.target.checked)} />Docs</label></span></div>
     <section className="review-start-section" aria-labelledby="review-start-tour"><h3 id="review-start-tour">Tour</h3><p>Narrated by {reviewAgentLabel(tour?.agent)}</p><EffortSelect label="Tour effort" value={tourEffort} efforts={tourEfforts} fallback={tour?.effort} onChange={setTourEffort} /></section>
     {codeReview !== undefined && <section className="review-start-section" aria-label="AI code review"><label className="review-start-check"><input type="checkbox" checked={reviewEnabled} onChange={event => setReviewEnabled(event.target.checked)} />Add AI code review</label>{reviewEnabled && <CodeReviewFields choice={choice} />}</section>}
+  </StartSheetFrame>;
+}
+
+// Add an AI Code review to a ready tour: the review-only part of the start sheet. `onStart` resolves
+// to an error to show (the sheet stays open), or undefined once the review is running.
+export function CodeReviewSheet({ codeReview, onStart, onCancel }: { codeReview: CodeReviewCapability; onStart: (options: CodeReviewOptions) => Promise<string | undefined>; onCancel: () => void }) {
+  const choice = useCodeReviewChoice(codeReview);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+  // start once; a failure keeps the sheet open with its reason
+  const start = async () => {
+    if (choice.options === undefined) return;
+    setPending(true);
+    setError(undefined);
+    choice.remember();
+    const failure = await onStart(choice.options).catch(() => 'The AI review could not be started.');
+    if (failure !== undefined) { setError(failure); setPending(false); }
+  };
+  return <StartSheetFrame title="Add AI review" eyebrow="Guided review" submitLabel="Start review" submitDisabled={choice.options === undefined} pending={pending} error={error} onSubmit={() => void start()} onCancel={onCancel}>
+    <p>The review reads this tour’s changes and suggests Findings on its diffs.</p>
+    <CodeReviewFields choice={choice} />
   </StartSheetFrame>;
 }
