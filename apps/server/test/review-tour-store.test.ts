@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReviewTour } from '../src/review-tour/contracts.js';
 import { ReviewTourStore } from '../src/review-tour/store.js';
 
@@ -68,6 +68,37 @@ describe('review tour store', () => {
     expect(await store.current('cora', 'feature/two')).toBeUndefined();
     expect(await store.codeReview('cora', 'feature/one', tour.fingerprint)).toBeUndefined();
     expect(JSON.parse(await readFile(join(directory, 'reviews.code-reviews.json'), 'utf8'))).toEqual({});
+  });
+
+  it('reads a corrupt Code reviews file as empty, with a warning, without breaking tour operations', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-review-tour-corrupt-'));
+    directories.push(directory);
+    const file = join(directory, 'reviews.json');
+    await writeFile(join(directory, 'reviews.code-reviews.json'), '{"cora": {"broken": true');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const store = new ReviewTourStore(file);
+      await store.save('cora', 'feature/one', tour);
+      expect(await store.summaries([{ worktreeId: 'cora', branch: 'feature/one' }])).toEqual([expect.not.objectContaining({ codeReview: 'ready' })]);
+      expect(await store.current('cora', 'feature/one')).toMatchObject({ branch: 'feature/one' });
+      expect(await store.invalidate('cora', 'feature/one')).toBe(1);
+      expect(await store.dismiss('cora')).toBe(false);
+      // read once and then cached: one warning for the whole session
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('serves the Code reviews from memory once read, refreshing the cache on its own writes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-review-tour-cache-'));
+    directories.push(directory);
+    const store = new ReviewTourStore(join(directory, 'reviews.json'));
+    const review = { fingerprint: tour.fingerprint, preset: { id: 'correctness', label: 'Correctness', agent: 'codex' as const }, findings: [], general: [], completedAt: new Date().toISOString() };
+    await store.save('cora', 'feature/one', tour);
+    await store.saveCodeReviewIfCurrent('cora', 'feature/one', review, store.beginCodeReview('cora'));
+    // a later outside change to the file is not re-read on every dashboard refresh
+    await writeFile(join(directory, 'reviews.code-reviews.json'), '{}');
+    expect(await store.summaries([{ worktreeId: 'cora', branch: 'feature/one' }])).toEqual([expect.objectContaining({ codeReview: 'ready', findings: 0 })]);
+    expect(await store.codeReview('cora', 'feature/one', tour.fingerprint)).toMatchObject({ fingerprint: tour.fingerprint });
   });
 
   it('dismisses a current cached review idempotently', async () => {

@@ -1,4 +1,4 @@
-import type { Agent, Dashboard } from '../domain/models.js';
+import { isReviewRun, type Agent, type Dashboard } from '../domain/models.js';
 
 // A launched agent can take up to a minute to appear on the dashboard, so every
 // launch route (and the Run primitive) polls discovery for that long before giving up.
@@ -21,11 +21,11 @@ export type AgentWaiter = (before: Set<string>, matches: (agent: Agent) => boole
 
 // the waiter match for an Agent launched at a directory-Project or Scratch Place. Neither Place
 // match takes a Review run's Agent, which its own run launched alongside (ADR 0010).
-export const atPlace = (placeId: string) => (agent: Agent): boolean => agent.placeId === placeId && agent.reviewRun === undefined;
+export const atPlace = (placeId: string) => (agent: Agent): boolean => agent.placeId === placeId && !isReviewRun(agent);
 // the waiter match for an Agent launched in a Worktree: the same Place match (discovery sets
 // `worktreeId` exactly when the Agent's Place is that Worktree), kept on the field every Worktree
 // flow already reads
-export const inWorktree = (worktreeId: string) => (agent: Agent): boolean => agent.worktreeId === worktreeId && agent.reviewRun === undefined;
+export const inWorktree = (worktreeId: string) => (agent: Agent): boolean => agent.worktreeId === worktreeId && !isReviewRun(agent);
 // the waiter match for the Agent one interactive Review run launched, by its pane mark
 export const reviewRunAgent = (runId: string) => (agent: Agent): boolean => agent.reviewRun === runId;
 

@@ -104,9 +104,11 @@ export function anchorRange(change: ReviewChange, side: FindingSide): { first: n
     if (start === undefined || count === undefined || count < 1) return undefined;
     return { first: start, last: start + count - 1 };
   }
-  // an untracked file is new: only its added lines, 1 to the patch's line count
+  // an untracked file is new: only its added lines, 1 to the count its `@@ -0,0 +1,N @@` header
+  // gives (1 when omitted, per unified diff); a content line may itself start with `++ `
   if (change.kind === 'untracked' && side === 'additions') {
-    const count = change.patch.split('\n').filter(text => text.startsWith('+') && !text.startsWith('+++ ')).length;
+    const header = /^@@ -\d+(?:,\d+)? \+\d+(?:,(\d+))? @@/mu.exec(change.patch);
+    const count = header === null ? 0 : Number(header[1] ?? 1);
     return count < 1 ? undefined : { first: 1, last: count };
   }
   return undefined;

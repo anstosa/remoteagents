@@ -60,6 +60,16 @@ describe('GET /api/worktrees/:id/removal', () => {
     } finally { await server.close(); }
   });
 
+  it('still blocks on a Review run\'s Agent, named as a Review run', async () => {
+    const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }) } as never;
+    const reviewer = stated({ id: 'agent-r', paneId: '%2', sessionId: 's:$1', socketFingerprint: 's', home: linked.identity, worktreeId: linked.id, title: 'Ready', reviewRun: 'run_abcdefgh1234' });
+    const server = await app({ discovery: discoveryStub([reviewer]), worktreeManagement, ...(await stores()) });
+    try {
+      const response = await server.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent(linked.id)}/removal`, headers: readHeaders });
+      expect(response.json()).toEqual({ ...cleanFacts, blockers: ['a Review run'], stopsProcesses: [] });
+    } finally { await server.close(); }
+  });
+
   // a running Stack process is no blocker: Remove stops it, and the dialog says so
   it('names the running Stack process Remove will stop, never as a blocker', async () => {
     const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }) } as never;

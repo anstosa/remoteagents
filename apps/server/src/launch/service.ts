@@ -533,13 +533,20 @@ export class LaunchService {
       const site = this.worktreeSite(worktree);
       const workspace = (await this.placePanes(worktree))[0];
       const joined = await this.placeSession(worktree) ?? (workspace === undefined ? undefined : { socket: workspace.socket, session: workspace.sessionId });
-      if (joined !== undefined) {
-        const pane = await this.launchInSessionWindow(site, command, id, false, joined, worktree.identity);
-        return pane !== undefined && await this.markReviewRun(joined.socket.path, pane, review);
-      }
       // tmux turns `.` into `_` in a session name, so the free-name check compares what it lists
-      const pane = await this.startLaunchSession(site, command, id, await this.availableSessionName(worktreeSessionName(worktreeHostRoot(worktree)).replaceAll('.', '_')));
-      return pane !== undefined && await this.markSessionPlace(this.hostSocket, pane, worktree.id) && await this.markConsoleManaged(this.hostSocket, pane) && await this.markReviewRun(this.hostSocket, pane, review);
+      const socketPath = joined === undefined ? this.hostSocket : joined.socket.path;
+      const pane = joined === undefined
+        ? await this.startLaunchSession(site, command, id, await this.availableSessionName(worktreeSessionName(worktreeHostRoot(worktree)).replaceAll('.', '_')))
+        : await this.openSessionWindow(site, command, id, joined, worktree.identity);
+      if (pane === undefined) return false;
+      // tmux starts the program with the pane, so the marks follow it; the run's own mark goes first,
+      // and a pane any mark misses is killed rather than left running as an unmarked read-only agent
+      const marked = await this.markReviewRun(socketPath, pane, review) && (joined !== undefined || await this.markSessionPlace(socketPath, pane, worktree.id)) && await this.markConsoleManaged(socketPath, pane);
+      if (!marked) {
+        console.error(`[launch] ${worktree.identity}: could not mark review run pane ${pane}; closing it`);
+        await run(this.tmux, [...(socketPath === undefined ? [] : ['-S', socketPath]), 'kill-pane', '-t', pane]).catch(() => undefined);
+      }
+      return marked;
     } finally {
       this.pending.delete(worktreeId);
     }
@@ -665,7 +672,14 @@ export class LaunchService {
   // Place's Console shells or live Agent), mirroring the fresh-session dispatch but with
   // `new-window` — the same host bootstrap / local runner split. Returns the new pane, marked
   // console-managed (and Sandboxed when asked), or undefined; `logName` names the Place in logs.
-  private async launchInSessionWindow(site: LaunchSite, command: string, id: string, sandboxed: boolean, { socket, session }: TmuxSession, logName: string): Promise<string | undefined> {
+  private async launchInSessionWindow(site: LaunchSite, command: string, id: string, sandboxed: boolean, joined: TmuxSession, logName: string): Promise<string | undefined> {
+    const pane = await this.openSessionWindow(site, command, id, joined, logName);
+    return pane !== undefined && await this.markConsoleManaged(joined.socket.path, pane) && await this.markSandboxed(joined.socket.path, pane, sandboxed) ? pane : undefined;
+  }
+
+  // open a detached window running the composed launch in an existing session and return its pane
+  // id, unmarked: the program starts with the window
+  private async openSessionWindow(site: LaunchSite, command: string, id: string, { socket, session }: TmuxSession, logName: string): Promise<string | undefined> {
     const logFailure = (created: { code: number; stderr: string }) => console.error(`[launch] ${logName}: tmux new-window in '${session}' failed (code ${created.code})${created.stderr.trim() === '' ? '' : `: ${created.stderr.trim()}`}`);
     let pane: string;
     if (this.hostSocket !== undefined) {
@@ -678,7 +692,7 @@ export class LaunchService {
       if (created.code !== 0) { logFailure(created); await unlink(descriptor).catch(() => {}); return undefined; }
       pane = created.stdout.trim();
     }
-    return await this.markConsoleManaged(socket.path, pane) && await this.markSandboxed(socket.path, pane, sandboxed) ? pane : undefined;
+    return pane;
   }
 
   // Write the local-runner launch descriptor (the composed command wrapped in the interactive

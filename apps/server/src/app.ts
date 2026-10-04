@@ -30,7 +30,7 @@ import { PullRequestSwitchService } from './pull-requests/switch-service.js';
 import { NewTaskService } from './new-task/service.js';
 import { WorktreeManagementService } from './worktrees/management.js';
 import { agentAttentionState, AgentNotificationCoordinator, reviewNotification, scheduleNotification, type AgentNotificationContext } from './notifications.js';
-import { agentTmuxSession, stackActions, type Agent, type Pane, type SocketRef, type StackAction, type Worktree } from './domain/models.js';
+import { agentTmuxSession, isReviewRun, stackActions, worktreeAgents, type Agent, type Pane, type SocketRef, type StackAction, type Worktree } from './domain/models.js';
 import { CommandCatalogService } from './commands/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
 import { boundedViewport } from './logs/viewport.js';
@@ -53,6 +53,7 @@ import { ClaudeHeadlessReviewRunner } from './review-runs/claude-headless.js';
 import { ModeDispatchReviewRunner } from './review-runs/dispatch.js';
 import { beginReplyTurn } from './review-runs/final-reply.js';
 import { InteractiveReviewRunner } from './review-runs/interactive.js';
+import { codexMcpDisableArgs, codexMcpServers } from './review-runs/launch-args.js';
 import type { ReviewRunner } from './review-runs/runner.js';
 import { CodeReviewer } from './code-review/reviewer.js';
 import { CodeReviewJobs } from './code-review/jobs.js';
@@ -125,7 +126,7 @@ const promptAttachments = (value: unknown): PromptAttachment[] | undefined => {
 const noteAttachmentBodyLimit = Math.ceil(maxPromptAttachmentBytes * 1.4);
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore, undefined, config.scratchDirectory); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow(), () => paneStream.openPaneKeys(), async placeId => await placeAgentSession(placeId)); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const comparison = deps.comparison ?? new ComparisonService(async worktreeId => worktreePrBase(await discovery.dashboard(), worktreeId)); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboardFingerprint); const codexProgram = resolveCodexProgram(config); const review = reviewConfig(config); const reviewRunner = deps.reviewRunner ?? new ModeDispatchReviewRunner(review.agents, { codex: new CodexHeadlessReviewRunner(codexProgram ?? ''), claude: new ClaudeHeadlessReviewRunner(resolveClaudeProgram(config) ?? '') }, interactiveReviewRunner()); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new ConfiguredReviewTourGenerator(reviewRunner, review.tour, review.agents[review.tour.agent].mode === 'interactive' ? INTERACTIVE_REVIEW_GENERATION_TIMEOUT_MS : REVIEW_GENERATION_TIMEOUT_MS)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore, undefined, config.scratchDirectory); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow(), () => paneStream.openPaneKeys(), async placeId => await placeAgentSession(placeId)); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const comparison = deps.comparison ?? new ComparisonService(async worktreeId => worktreePrBase(await discovery.dashboard(), worktreeId)); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboardFingerprint); const codexProgram = resolveCodexProgram(config); const review = reviewConfig(config); const interactiveRunner = interactiveReviewRunner(); const reviewRunner = deps.reviewRunner ?? new ModeDispatchReviewRunner(review.agents, { codex: new CodexHeadlessReviewRunner(codexProgram ?? ''), claude: new ClaudeHeadlessReviewRunner(resolveClaudeProgram(config) ?? '') }, interactiveRunner); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new ConfiguredReviewTourGenerator(reviewRunner, review.tour, review.agents[review.tour.agent].mode === 'interactive' ? INTERACTIVE_REVIEW_GENERATION_TIMEOUT_MS : REVIEW_GENERATION_TIMEOUT_MS)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
   const temporaryPreviews = deps.temporaryPreviews ?? new TemporaryPreviewService();
   // freeze the checkout identity serving this process
   const deployedRevision = serverAdmin.revision();
@@ -358,6 +359,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // publish current pane observations on each dashboard update
   const dashboard = async (): Promise<DashboardPayload> => {
     const discovered = await discovery.dashboard(false, true);
+    // a Review run pane whose run is not in flight (a restart forgot it) goes back to the operator
+    void interactiveRunner.releaseOrphans(discovered.agents);
     const queuedCounts = await queuedPromptCounts(discovered.agents);
     await Promise.all(discovered.agents.map(agent => prompts.observe(agent).catch(() => undefined)));
     // suppress completions while more work waits
@@ -1755,13 +1758,24 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         return process.env.RAC_HOST_TMUX_DIR === undefined ? { available: true } : { available: false, reason: 'interactive_unavailable' };
       },
       agentIds: async () => new Set((await discovery.dashboard()).agents.map(agent => agent.id)),
-      launch: (worktreeId, kind, review) => launch.launchReviewRun(worktreeId, kind, review),
+      launch: async (worktreeId, kind, review) => {
+        const codex = kind === 'codex' ? config.adapters.codex : undefined;
+        const worktree = configuredWorktree(worktreeId);
+        if (codex === undefined || worktree === undefined) return await launch.launchReviewRun(worktreeId, kind, review);
+        // a Codex run disables every MCP server it would load there; one it cannot list or address refuses the launch
+        const names = await codexMcpServers(codex.program, worktree.identity, codex.env);
+        const disabled = names === undefined ? undefined : codexMcpDisableArgs(names);
+        if (disabled === undefined) { console.warn(`[review] ${worktree.identity}: could not disable Codex MCP servers; the run is not launched`); return false; }
+        return await launch.launchReviewRun(worktreeId, kind, { ...review, extraArgs: [...review.extraArgs, ...disabled] });
+      },
       waitForAgent: (before, runId) => waitForAgent(before, reviewRunAgent(runId)),
       waitForReadiness: agent => waitForReadiness(agent),
       name: (agentId, name) => nameAgentConversation(agentId, name),
       beginTurn: (agent, maxBytes) => beginReplyTurn(discovery, agent, maxBytes),
       submit: (agentId, text) => prompts.submit(agentId, text),
-      attention: async agentId => { const target = await discovery.target(agentId, true); return target === undefined ? undefined : agentAttentionState(target.agent); },
+      // the cached discovery snapshot (rescanned once over 2 s old, which the dashboard poll keeps it
+      // under); an Agent missing from it is confirmed gone by a forced scan inside `target`
+      attention: async agentId => { await discovery.refresh(); const target = await discovery.target(agentId); return target === undefined ? undefined : agentAttentionState(target.agent); },
       close: agentId => prompts.close(agentId),
       release: async agentId => { const target = await discovery.target(agentId); return target !== undefined && await tmux.unmarkReviewRun(target.socket, target.agent.paneId); },
       delay: async () => await new Promise(resolve => setTimeout(resolve, 1_000))
@@ -1790,7 +1804,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const worktree = configuredWorktree(target.worktreeId);
       if (worktree === undefined) return undefined;
       return {
-        matches: agent => worktreeMatchesWorkspace(worktree, agent.home),
+        matches: agent => !isReviewRun(agent) && worktreeMatchesWorkspace(worktree, agent.home),
         launch: () => launch.launch(target.worktreeId, kind),
         waitForNewAgent: before => waitForAgent(before, inWorktree(target.worktreeId)),
       };
@@ -2159,7 +2173,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       // With other Agents at the Worktree, "continue the latest" could pick up a sibling's
       // Conversation: a restart resumes this Agent's own, and starts fresh when it cannot (another
       // kind, or no Conversation reported yet).
-      const hasSiblings = current.agents.some(agent => agent.id !== id && agent.worktreeId === worktree.id);
+      const hasSiblings = worktreeAgents(current.agents, worktree.id).some(agent => agent.id !== id);
       const ownConversation = threadId === undefined && hasSiblings && (kind === undefined || kind === observed.kind) && observed.conversationId !== undefined && adapterFor(observed.kind)?.conversations?.validId(observed.conversationId) === true ? observed.conversationId : undefined;
       const resumeThread = threadId ?? ownConversation;
       const resumeKind = ownConversation === undefined ? kind : observed.kind;
@@ -2239,8 +2253,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const byWorktree = new Map<string, Agent[]>();
       // group only open configured worktrees
       for (const agent of discovered.agents) {
-        // ignore scratch and stale configured identifiers
-        if (agent.worktreeId === undefined || discovery.worktreesNow().every(worktree => worktree.id !== agent.worktreeId)) continue;
+        // ignore scratch, stale configured identifiers and Review runs' own Agents
+        if (agent.worktreeId === undefined || isReviewRun(agent) || discovery.worktreesNow().every(worktree => worktree.id !== agent.worktreeId)) continue;
         const group = byWorktree.get(agent.worktreeId) ?? [];
         group.push(agent);
         byWorktree.set(agent.worktreeId, group);
@@ -2365,7 +2379,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!launch.canResumeConversation(worktree.id)) return reply.code(409).send({ error: 'Exact chat resume is not configured for this worktree.' });
     const selectionMutationGeneration = prompts.mutationGeneration();
     const current = await discovery.dashboard(true);
-    const open = current.agents.filter(agent => agent.worktreeId === worktree.id);
+    const open = worktreeAgents(current.agents, worktree.id);
     // avoid an ambiguous destructive handoff
     if (open.length > 1) return reply.code(409).send({ error: 'Close duplicate worktree agents before switching chats.' });
     const activeAgent = open[0];
@@ -2628,7 +2642,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // missed (CONTRIBUTING: validate immediately before a destructive operation).
   const worktreeRemovalBlockers = async (worktree: Worktree, fresh = false): Promise<string[]> => {
     const blockers: string[] = [];
-    if ((await discovery.dashboard(fresh)).agents.some(agent => agent.worktreeId === worktree.id)) blockers.push('a running agent');
+    // a Review run's Agent also reads the checkout, so it blocks too, named for what it is
+    const running = (await discovery.dashboard(fresh)).agents.filter(agent => agent.worktreeId === worktree.id);
+    if (worktreeAgents(running, worktree.id).length > 0) blockers.push('a running agent');
+    else if (running.length > 0) blockers.push('a Review run');
     if (await stackCommands.sessionRunning(worktree)) blockers.push('a running stack command');
     return blockers;
   };

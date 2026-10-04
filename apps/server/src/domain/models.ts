@@ -49,6 +49,11 @@ export type GitUpstreamSummary = { upstream: string; ahead: number; behind: numb
 export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; paneMode?: string; reviewRun?: string };
 // An Agent's `sessionId` is the console's composite id `${socketFingerprint}:${tmuxSession}`
 // (discovery keys agents that way). Recover the raw tmux session name a command targets.
+// whether an Agent is an interactive Review run's own (ADR 0010): it belongs to its run, so the
+// Worktree's own flows (launch matching, Restart, switch chat, a Run's reuse) never count or take it
+export const isReviewRun = (agent: Pick<Agent, 'reviewRun'>): boolean => agent.reviewRun !== undefined;
+// the operator's own Agents in one Worktree: every Agent there but a Review run's
+export const worktreeAgents = <T extends Pick<Agent, 'worktreeId' | 'reviewRun'>>(agents: readonly T[], worktreeId: string): T[] => agents.filter(agent => agent.worktreeId === worktreeId && !isReviewRun(agent));
 export const agentTmuxSession = (agent: Pick<Agent, 'sessionId' | 'socketFingerprint'>): string => agent.sessionId.slice(agent.socketFingerprint.length + 1);
 /**
  * A configured directory the console manages (config `projects[]`). A `repository`

@@ -60,6 +60,8 @@ export class ReviewTourStore {
   private readonly generations = new Map<string, number>();
   private readonly generationBranches = new Map<string, string>();
   private readonly codeReviewGenerations = new Map<string, number>();
+  // the Code reviews as last read or written; this store is the file's only writer
+  private codeReviews?: StoredCodeReviews;
 
   constructor(private readonly file = process.env.RAC_REVIEW_TOURS_FILE ?? '.data/review-tours.json', private readonly codeReviewFile = codeReviewFileFor(file)) {}
 
@@ -72,7 +74,7 @@ export class ReviewTourStore {
       const review = { worktreeId, branch, savedAt: new Date().toISOString(), tour };
       stored[worktreeId] = review;
       return { value: review, changed: true };
-    });
+    }, false);
   }
 
   // serialize one new generation identity
@@ -104,7 +106,7 @@ export class ReviewTourStore {
       const review = { worktreeId, branch, savedAt: new Date().toISOString(), tour };
       stored[worktreeId] = review;
       return { value: review, changed: true };
-    });
+    }, false);
   }
 
   // invalidate one still-current generation
@@ -118,7 +120,7 @@ export class ReviewTourStore {
       const changed = stored[worktreeId] !== undefined;
       if (changed) delete stored[worktreeId];
       return { value: true, changed };
-    });
+    }, false);
   }
 
   // read only a review from the current branch
@@ -223,14 +225,17 @@ export class ReviewTourStore {
     return existed;
   }
 
-  // serialize all file mutations
-  private async mutate<T>(change: (stored: StoredReviews, codeReviews: StoredCodeReviews) => Mutation<T>): Promise<T> {
+  // Serialize all file mutations. A change that leaves the Code reviews alone (`withCodeReviews`
+  // false) gets an empty record it must not modify. The others get a copy of the cached Code
+  // reviews (a change only adds, replaces or deletes whole records), cached again once written.
+  private async mutate<T>(change: (stored: StoredReviews, codeReviews: StoredCodeReviews) => Mutation<T>, withCodeReviews = true): Promise<T> {
     const operation = this.mutation.then(async () => {
-      const [stored, codeReviews] = await Promise.all([this.read(), this.readCodeReviews()]);
+      const [stored, cached] = await Promise.all([this.read(), withCodeReviews ? this.cachedCodeReviews() : {}]);
+      const codeReviews = { ...cached };
       const result = change(stored, codeReviews);
       // avoid writes for pure reads
       if (result.changed) await this.write(this.file, stored);
-      if (result.codeReviewsChanged === true) await this.write(this.codeReviewFile, codeReviews);
+      if (withCodeReviews && result.codeReviewsChanged === true) { await this.write(this.codeReviewFile, codeReviews); this.codeReviews = codeReviews; }
       return result.value;
     });
     this.mutation = operation.then(() => undefined, () => undefined);
@@ -265,7 +270,18 @@ export class ReviewTourStore {
     return stored;
   }
 
-  // read and validate the durable Code reviews, failing closed like the tours
+  // the Code reviews, read from the file once; an unreadable or corrupt file reads as empty, with a
+  // warning, so it never breaks the tour operations sharing the store
+  private async cachedCodeReviews(): Promise<StoredCodeReviews> {
+    if (this.codeReviews !== undefined) return this.codeReviews;
+    this.codeReviews = await this.readCodeReviews().catch((error: unknown) => {
+      console.warn(`[review] ignoring the unreadable Code reviews file ${this.codeReviewFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return {};
+    });
+    return this.codeReviews;
+  }
+
+  // read and validate the durable Code reviews, rejecting a corrupt file as a whole
   private async readCodeReviews(): Promise<StoredCodeReviews> {
     let serialized: string;
     try { serialized = await readFile(this.codeReviewFile, 'utf8'); }
@@ -283,7 +299,7 @@ export class ReviewTourStore {
     // validate every stored worktree
     for (const [worktreeId, value] of Object.entries(raw)) {
       const review = validWorktreeId(worktreeId) ? parseStoredCodeReview(value, worktreeId) : undefined;
-      // fail closed on corrupt state
+      // reject corrupt state
       if (review === undefined) throw new Error('invalid code review store');
       stored[worktreeId] = review;
     }

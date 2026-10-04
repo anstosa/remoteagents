@@ -74,6 +74,34 @@ describe('conversations switch API', () => {
     }
   }, 15_000);
 
+  it('does not count a Review run\'s Agent as a duplicate worktree agent', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const cora = testWorktree({ id: 'potato:/wt/cora', projectId: 'potato', label: 'Cora', path: '/wt/cora', identity: '/wt/cora', hostPath: '/host/cora' });
+    const firstAgent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/host/cora', projectId: 'potato', worktreeId: cora.id, title: 'Ready' });
+    const reviewer = { ...firstAgent, id: 'agent-r', paneId: '%9', reviewRun: 'run_abcdefgh1234' };
+    const replacement = { ...firstAgent, id: 'agent-2', paneId: '%2', sessionId: 'socket:$2' };
+    const events: string[] = [];
+    let resumed = false;
+    const discovery = {
+      target: async (id: string) => id === firstAgent.id ? { agent: firstAgent, socket } : undefined,
+      worktreesNow: () => [cora],
+      conversations: conversationsIn([{ kind: 'claude', id: conversationId, name: 'alpha', lastActiveAt: 100, directory: '/host/cora' }]),
+      dashboard: async () => ({ generation: resumed ? 2 : 1, places: [], adapters: {}, agents: [reviewer, resumed ? replacement : firstAgent], projects: [] }),
+    };
+    const launch = { canResumeConversation: () => true, resumeConversation: async (worktreeId: string, id: string, kind?: AgentKind) => { events.push(`resume:${worktreeId}:${id}:${kind}`); resumed = true; return true; } };
+    const queuedPrompts = { list: async () => [], resets: { get: async () => undefined } };
+    const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 54).toString('base64url')), discovery: discovery as never, launch: launch as never, queuedPrompts: queuedPrompts as never, tmux: { close: async () => { events.push(`close:${firstAgent.id}`); return true; } } as never, launchPollDelay: async () => undefined });
+    try {
+      const headers = await authenticatedHeaders(app);
+      const switched = await app.inject({ method: 'POST', url: `/api/worktrees/${encodeURIComponent(cora.id)}/conversations/switch`, headers, payload: { kind: 'claude', id: conversationId } });
+      expect(switched.statusCode).toBe(201);
+      expect(switched.json()).toEqual({ agentId: replacement.id });
+      expect(events).toEqual([`close:${firstAgent.id}`, `resume:${cora.id}:${conversationId}:claude`]);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+
   it('refuses when more than one agent is open on the Worktree', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const cora = testWorktree({ id: 'potato:/wt/cora', projectId: 'potato', label: 'Cora', path: '/wt/cora', identity: '/wt/cora', hostPath: '/host/cora' });

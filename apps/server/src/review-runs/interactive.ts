@@ -94,10 +94,25 @@ type WatchEnd = 'finished' | 'vanished' | 'timed-out' | 'cancelled';
 export class InteractiveReviewRunner implements ReviewRunner {
   private readonly now: () => number;
   private readonly startWindowMs: number;
+  // the ids of the runs in flight here, and the Agents an orphan release is handing back
+  private readonly live = new Set<string>();
+  private readonly releasing = new Set<string>();
 
   constructor(private readonly host: InteractiveReviewHost, private readonly options: InteractiveReviewOptions) {
     this.now = options.now ?? Date.now;
     this.startWindowMs = options.startWindowMs ?? managedRunStartWindowMs;
+  }
+
+  // Hand back every listed Agent marked for a Review run not in flight here (one a server restart
+  // orphaned, or one whose close failed) through the release a run that gives up uses: it becomes an
+  // ordinary Agent the operator can see, answer, close and be notified by. Never closed, since the
+  // operator may be mid-answer in it.
+  async releaseOrphans(agents: readonly Agent[]): Promise<void> {
+    const orphans = agents.filter(candidate => candidate.reviewRun !== undefined && !this.live.has(candidate.reviewRun) && !this.releasing.has(candidate.id));
+    await Promise.all(orphans.map(async orphan => {
+      this.releasing.add(orphan.id);
+      try { await this.host.release(orphan.id); } catch { /* the next sweep retries */ } finally { this.releasing.delete(orphan.id); }
+    }));
   }
 
   // the kind's adapter is configured and runnable; no login probe
@@ -111,16 +126,19 @@ export class InteractiveReviewRunner implements ReviewRunner {
     const runId = randomBytes(12).toString('base64url');
     const maxBytes = request.maxOutputBytes ?? MAX_REVIEW_GENERATED_BYTES;
     const { text, file } = await this.composePrompt(runId, request);
+    const settings = { ...(request.model === undefined ? {} : { model: request.model }), ...(request.effort === undefined ? {} : { effort: request.effort }) };
     let agent: Agent | undefined;
     let read: (() => Promise<string | undefined>) | undefined;
     let keepFile = false;
     // close the pane on success or cancellation; hand it to the operator when the run gives up
     const close = async (id: string) => { await this.host.close(id).catch(() => undefined); };
     const giveUp = async (id: string, code: 'timed_out' | 'malformed_result'): Promise<never> => { keepFile = true; await this.host.release(id).catch(() => undefined); throw new ReviewRunError(code, true); };
+    // in flight from before its pane can exist, so an orphan sweep never takes it
+    this.live.add(runId);
     try {
       const launched = await launchFresh({
         agentIds: () => this.host.agentIds(),
-        launch: () => this.host.launch(request.worktreeId, request.kind, { runId, label: request.label, extraArgs: reviewRunArgs(request.kind, { ...(request.model === undefined ? {} : { model: request.model }), ...(request.effort === undefined ? {} : { effort: request.effort }), readDirectory: this.options.promptDirectory }), replacedFlags: reviewReplacedFlags[request.kind] }),
+        launch: () => this.host.launch(request.worktreeId, request.kind, { runId, label: request.label, extraArgs: reviewRunArgs(request.kind, { ...settings, readDirectory: this.options.promptDirectory }), replacedFlags: reviewReplacedFlags(request.kind, settings) }),
         waitForNewAgent: before => this.host.waitForAgent(before, runId),
         waitForReadiness: candidate => this.host.waitForReadiness(candidate),
         close: id => this.host.close(id),
@@ -155,6 +173,7 @@ export class InteractiveReviewRunner implements ReviewRunner {
       if (agent !== undefined) await close(agent.id);
       throw new ReviewRunError(signal.aborted ? 'cancelled' : 'generation_failed', true);
     } finally {
+      this.live.delete(runId);
       if (file !== undefined && !keepFile) await unlink(file).catch(() => undefined);
     }
   }

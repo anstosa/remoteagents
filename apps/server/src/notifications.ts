@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Agent } from './domain/models.js';
+import { isReviewRun, type Agent } from './domain/models.js';
 import type { AttentionState } from './adapters/types.js';
 
 export type AgentAttentionState = AttentionState;
@@ -111,7 +111,7 @@ export function agentNotification(previous: AgentAttentionState | undefined, cur
     };
   }
   // a Review run's Agent finishing is covered by the tour's own ready state (ADR 0010); its question still notifies
-  if (previous === 'working' && current === 'finished' && agent.reviewRun === undefined) {
+  if (previous === 'working' && current === 'finished' && !isReviewRun(agent)) {
     return { ...shared, kind: 'finished', title: `Done working in ${projectName}`, body: `${worktreeName} is ready for a new prompt` };
   }
   return undefined;

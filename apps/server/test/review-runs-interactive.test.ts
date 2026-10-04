@@ -102,6 +102,23 @@ describe('interactive Review runner', () => {
     expect(world.calls).toContain('close:agent-9');
   });
 
+  it('hands back an Agent marked for a run not in flight, never a live run\'s', async () => {
+    const controller = new AbortController();
+    let runner: InteractiveReviewRunner | undefined;
+    let sweep: Promise<void> | undefined;
+    const world = fakeHost({ attention: ['working'], onAttention: () => {
+      if (sweep !== undefined) return controller.abort();
+      sweep = runner!.releaseOrphans([{ ...agent, reviewRun: world.launches[0]!.runId }, { ...agent, id: 'agent-old', reviewRun: 'run_left_by_a_restart' }, { ...agent, id: 'agent-plain' }]);
+    } });
+    runner = new InteractiveReviewRunner(world.host, { promptDirectory: '/tmp/runs' });
+    await expect(runner.run(request(), controller.signal)).rejects.toMatchObject({ code: 'cancelled' });
+    await sweep;
+    expect(world.calls.filter(call => call.startsWith('release:'))).toEqual(['release:agent-old']);
+    // once its run has ended, a pane still marked for it (its close failed) is an orphan too
+    await runner.releaseOrphans([{ ...agent, reviewRun: world.launches[0]!.runId }]);
+    expect(world.calls.filter(call => call.startsWith('release:'))).toEqual(['release:agent-old', 'release:agent-9']);
+  });
+
   it('fails a run whose Agent vanished, a refused launch and an unavailable kind', async () => {
     const vanished = fakeHost({ attention: ['working', undefined] });
     await expect(new InteractiveReviewRunner(vanished.host, { promptDirectory: '/tmp/runs' }).run(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'generation_failed' });
@@ -180,11 +197,14 @@ describe('interactive Review run reply turns', () => {
     const saved = process.env.RAC_CLAUDE_CONFIG_DIR;
     process.env.RAC_CLAUDE_CONFIG_DIR = configDir;
     try {
-      const sources = { target: async () => ({ agent: { conversationId: sessionId } as Agent }), paneProcessId: () => undefined, paneWorkingDirectory: () => undefined, paneDirectory: () => '/worktrees/cora' };
+      const forced: Array<boolean | undefined> = [];
+      const sources = { target: async (_id: string, force?: boolean) => { forced.push(force); return { agent: { conversationId: sessionId } as Agent }; }, paneProcessId: () => undefined, paneWorkingDirectory: () => undefined, paneDirectory: () => '/worktrees/cora' };
       const read = await beginReplyTurn(sources, { id: 'agent-9', kind: 'claude' }, 1_000);
       await expect(read()).resolves.toBeUndefined();
       await appendFile(transcript, message('msg_2', '{"ok":true}'));
       await expect(read()).resolves.toBe('{"ok":true}');
+      // one fresh pane read pins the session before the prompt; the reader's polls take the snapshot
+      expect(forced).toEqual([true, false, false]);
     } finally { if (saved === undefined) delete process.env.RAC_CLAUDE_CONFIG_DIR; else process.env.RAC_CLAUDE_CONFIG_DIR = saved; }
   });
 });

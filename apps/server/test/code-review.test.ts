@@ -8,7 +8,7 @@ import type { ReviewChange, ReviewComparison } from '../src/review-tour/contract
 // a hunk replacing old lines 10-12 with new lines 20-23
 const hunk: ReviewChange = { id: 'chg_hunk0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', oldStart: 10, oldLines: 3, newStart: 20, newLines: 4, patch: '@@ -10,3 +20,4 @@\n-a\n-b\n-c\n+a\n+b\n+c\n+d' };
 const added: ReviewChange = { id: 'chg_added001', file: 'src/new.ts', category: 'implementation', kind: 'hunk', oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, patch: '@@ -0,0 +1,2 @@\n+one\n+two' };
-const untracked: ReviewChange = { id: 'chg_untrack1', file: 'notes.txt', category: 'implementation', kind: 'untracked', patch: '--- /dev/null\n+++ b/notes.txt\n+one\n+two\n+three\n' };
+const untracked: ReviewChange = { id: 'chg_untrack1', file: 'notes.txt', category: 'implementation', kind: 'untracked', patch: '--- /dev/null\n+++ b/notes.txt\n@@ -0,0 +1,3 @@\n+one\n+two\n+three\n' };
 const binary: ReviewChange = { id: 'chg_binary01', file: 'logo.png', category: 'implementation', kind: 'binary', patch: 'new binary file logo.png (12 bytes)' };
 const changes = [hunk, added, untracked, binary];
 const finding = (changeId: string, side: 'additions' | 'deletions', startLine: number, endLine: number, title = 'Off by one') => ({ changeId, side, startLine, endLine, severity: 'high' as const, title, body: 'The loop skips the last item.' });
@@ -38,6 +38,10 @@ describe('code review anchoring', () => {
   it('anchors untracked additions to the patch line count and refuses binary changes', () => {
     expect(anchorRange(untracked, 'additions')).toEqual({ first: 1, last: 3 });
     expect(anchorRange(untracked, 'deletions')).toBeUndefined();
+    // a content line starting with `++ ` reads as `+++ ` in the patch and still counts
+    expect(anchorRange({ ...untracked, patch: '--- /dev/null\n+++ b/c.txt\n@@ -0,0 +1,2 @@\n+++ counter\n+x\n' }, 'additions')).toEqual({ first: 1, last: 2 });
+    expect(anchorRange({ ...untracked, patch: '--- /dev/null\n+++ b/one.txt\n@@ -0,0 +1 @@\n+only\n' }, 'additions')).toEqual({ first: 1, last: 1 });
+    expect(anchorRange({ ...untracked, patch: '--- /dev/null\n+++ b/empty.txt\n@@ -0,0 +1,0 @@\n' }, 'additions')).toBeUndefined();
     expect(anchorRange(binary, 'additions')).toBeUndefined();
     const parsed = parseGeneratedCodeReview({ findings: [finding(untracked.id, 'additions', 1, 3), finding(untracked.id, 'additions', 3, 4, 'Past end'), finding(binary.id, 'additions', 1, 1, 'Binary')], general: [] }, changes);
     expect(parsed?.findings.map(item => item.changeId)).toEqual([untracked.id]);

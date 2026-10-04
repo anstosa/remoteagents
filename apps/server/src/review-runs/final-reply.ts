@@ -20,12 +20,14 @@ export type ReplySources = {
 // reply still reads as too long).
 export async function beginReplyTurn(sources: ReplySources, agent: Pick<Agent, 'id' | 'kind'>, maxBytes: number): Promise<() => Promise<string | undefined>> {
   if (agent.kind === 'claude') {
-    const read = async () => {
-      const conversationId = (await sources.target(agent.id, true))?.agent.conversationId;
+    // the session is pinned by one fresh pane read before the prompt; the reader's repeated reads
+    // take the discovery snapshot the dashboard poll keeps current
+    const read = async (fresh: boolean) => {
+      const conversationId = (await sources.target(agent.id, fresh))?.agent.conversationId;
       return conversationId === undefined ? undefined : await claudeLastAssistantText(conversationId, sources.paneDirectory(agent.id));
     };
-    const before = await read();
-    return async () => { const text = await read(); return text === before ? undefined : text; };
+    const before = await read(true);
+    return async () => { const text = await read(false); return text === before ? undefined : text; };
   }
   // the pane's rollout baseline: the exact fd-walk by pid, the unshared cwd as the fallback
   const baseline = async (): Promise<CompletionBaseline | undefined> => {
