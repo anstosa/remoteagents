@@ -28,8 +28,8 @@ const saveSplit = (worktreeId: string | undefined, key: string | undefined) => {
   catch { /* browser storage is optional */ }
 };
 
-// move one split for a deliberate horizontal touch, leaving taps and vertical scrolling alone
-export function usePanelSwipe(carousel: PanelCarousel) {
+// move one ordered item for a deliberate horizontal touch, leaving taps and vertical scrolling alone
+export function usePanelSwipe(carousel: { panels: readonly { key: string }[]; visibleKey: string | undefined; show: (key: string) => void }) {
   const start = useRef<{ pointerId: number; x: number; y: number } | undefined>(undefined);
   const touchStart = useRef<{ identifier: number; x: number; y: number } | undefined>(undefined);
   const swiped = useRef(false);

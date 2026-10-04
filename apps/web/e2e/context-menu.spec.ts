@@ -1,8 +1,9 @@
-import { expect, test, type Page, type Request } from '@playwright/test';
+import { expect, test, type Page, type Request, type Locator } from '@playwright/test';
 import { installPaneMock, paneInputText, pushBytes, pushQuestion, seedPaneSize } from './pane-stream-mock.js';
 
 type Mutation = { method: string; path: string; body: unknown };
-type ClipboardWindow = Window & { __contextClipboard: {
+// retain browser globals alongside the injected clipboard fixture
+type ClipboardWindow = typeof window & { __contextClipboard: {
   text: string;
   image: boolean;
   denied: boolean;
@@ -520,6 +521,123 @@ test('note menu preserves selection mode, enters edit mode for paste and exposes
   await expect(menu.getByRole('menuitem', { name: 'Add to prompt' })).toBeVisible();
 });
 
+// preserve both invocation paths and exercise the keyboard dismissal lifecycle once
+test('note context menu keeps editing through selection and dismissal', async ({ page }) => {
+  await installClipboardMock(page);
+  await mountConsole(page);
+  await page.getByRole('button', { name: 'Notes (1)' }).click();
+  await page.getByRole('button', { name: 'Plan', exact: true }).click();
+  await page.getByLabel('Note preview').click();
+  const editor = page.getByRole('textbox', { name: 'Note content' });
+  await expect(editor).toBeFocused();
+  const menu = page.getByRole('menu', { name: 'Note actions' });
+  const edit = menu.getByRole('menuitemradio', { name: 'Edit', exact: true });
+  // both pointer and keyboard menus must keep select-all in edit mode
+  for (const invocation of ['pointer', 'keyboard'] as const) {
+    await editor.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(0, 7));
+    // open the same actions through each supported desktop gesture
+    if (invocation === 'keyboard') await editor.press('Shift+F10');
+    else await editor.click({ button: 'right' });
+    await expect(edit).toHaveAttribute('aria-checked', 'true');
+    // allow keyboard focus to settle before checking the source editor
+    if (invocation === 'keyboard') await expect(edit).toBeFocused();
+    await expect(editor).toBeVisible();
+    await menu.getByRole('menuitem', { name: 'Select all', exact: true }).click();
+    await expect(editor).toBeFocused();
+    await expect.poll(() => editor.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([0, 'Context menu plan'.length]);
+  }
+
+  // dismissing a keyboard menu restores the unchanged editor
+  await editor.press('Shift+F10');
+  await expect(edit).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(editor).toBeFocused();
+
+  // leaving the keyboard menu for another field still performs an ordinary blur
+  await editor.press('Shift+F10');
+  await expect(edit).toBeFocused();
+  await page.getByRole('textbox', { name: 'Prompt' }).click();
+  await expect(menu).toHaveCount(0);
+  await expect(editor).toHaveCount(0);
+  await expect(page.getByLabel('Note preview')).toBeVisible();
+
+  // explicit mode choices still switch to preview
+  await page.getByLabel('Note preview').click();
+  await editor.press('Shift+F10');
+  await expect(edit).toBeFocused();
+  await menu.getByRole('menuitemradio', { name: 'Selection', exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  await expect(page.getByLabel('Note preview')).toBeVisible();
+
+  // tab navigation leaves the menu and editor normally
+  await page.getByLabel('Note preview').click();
+  await editor.press('Shift+F10');
+  await expect(edit).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(menu).toHaveCount(0);
+  await expect(editor).toHaveCount(0);
+});
+
+// cover mobile selection events separately from desktop focus navigation
+test.describe('touch note context menu', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+
+  // exercise touch context events without relying on headless native-menu support
+  test('keeps editing through touch context events and select all', async ({ page }) => {
+    await installClipboardMock(page);
+    await mountConsole(page);
+    await page.getByRole('button', { name: 'Notes (1)' }).tap();
+    await page.getByRole('button', { name: 'Plan', exact: true }).tap();
+    await page.getByLabel('Note preview').tap();
+    const editor = page.getByRole('textbox', { name: 'Note content' });
+    await expect(editor).toBeFocused();
+    // model the selected word and context event produced by a long press
+    await editor.evaluate((element: HTMLTextAreaElement) => {
+      element.setSelectionRange(0, 7);
+      const bounds = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      element.dispatchEvent(new PointerEvent('contextmenu', { bubbles: true, cancelable: true, pointerType: 'touch', button: 0, clientX: bounds.x + parseFloat(style.paddingLeft) + 20, clientY: bounds.y + parseFloat(style.paddingTop) + parseFloat(style.lineHeight) / 2 }));
+    });
+    const menu = page.getByRole('menu', { name: 'Note actions' });
+    await expect(menu).toBeVisible();
+    // a native selection or clipboard popup can temporarily blur the editor
+    await editor.evaluate((element: HTMLTextAreaElement) => element.blur());
+    await expect(editor).toBeVisible();
+    await expect(menu.getByRole('menuitemradio', { name: 'Edit', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await menu.getByRole('menuitem', { name: 'Select all', exact: true }).tap();
+    await expect(editor).toBeFocused();
+    await expect.poll(() => editor.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([0, 'Context menu plan'.length]);
+  });
+});
+
+// keyboard menu focus must not turn output mode into prompt mode
+test('agent keyboard context menu preserves output mode until an explicit mode choice', async ({ page }) => {
+  await installClipboardMock(page);
+  await mountConsole(page);
+  const panel = page.locator('.agent-panel');
+  const canvas = page.locator('.log-canvas');
+  const input = canvas.getByRole('textbox', { name: 'Terminal input' });
+  const menu = page.getByRole('menu', { name: 'Agent actions' });
+  await canvas.click({ button: 'right' });
+  await menu.getByRole('menuitemradio', { name: 'Output', exact: true }).click();
+  await expect(input).toBeFocused();
+  await expect(panel).toHaveClass(/\binput-active\b/u);
+  await input.press('ContextMenu');
+  await expect(menu.getByRole('menuitemradio', { name: 'Prompt', exact: true })).toBeFocused();
+  await expect(panel).toHaveClass(/\binput-active\b/u);
+  await page.keyboard.press('Escape');
+  await expect(input).toBeFocused();
+  await expect(panel).toHaveClass(/\binput-active\b/u);
+
+  // restore the source before choosing a different focus destination
+  await input.press('ContextMenu');
+  await expect(menu.getByRole('menuitemradio', { name: 'Prompt', exact: true })).toBeFocused();
+  await menu.getByRole('menuitemradio', { name: 'Prompt', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeFocused();
+  await expect(panel).not.toHaveClass(/\binput-active\b/u);
+});
+
 test('agent output menu preserves selection, copies without gutter columns and pastes in output mode', async ({ page }) => {
   await installClipboardMock(page);
   await mountConsole(page);
@@ -588,6 +706,12 @@ test('terminal menu preserves neutral mode until paste explicitly enters output 
   await menu.getByRole('menuitem', { name: 'Paste plain', exact: true }).click();
   await expect(terminal.locator('textarea')).toBeFocused();
   await expect.poll(() => paneInputText(page, '%5')).toContain('shell paste');
+  // a keyboard-opened menu temporarily borrows terminal focus without changing its mode
+  await terminal.locator('textarea').press('ContextMenu');
+  await expect(menu.getByRole('menuitemradio', { name: 'Output', exact: true })).toBeFocused();
+  await expect(terminal).toHaveClass(/\bfocused\b/u);
+  await page.keyboard.press('Escape');
+  await expect(terminal.locator('textarea')).toBeFocused();
   expect(browserErrors).toEqual([]);
 });
 
@@ -626,4 +750,130 @@ test('Code select all reaches rendered text across diff shadow roots from header
   await rendered.click({ button: 'right' });
   menu = page.getByRole('menu', { name: 'Code options' });
   await expect(menu.getByRole('menuitem', { name: 'Copy', exact: true })).toBeEnabled();
+});
+
+// exercise the address gesture with browser-delivered touch input
+test.describe('browser address long press', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+
+  // open a loaded preview without external network access
+  const openBrowser = async (page: Page) => {
+    await installClipboardMock(page);
+    await page.route('https://project.example.test/**', route => route.fulfill({ contentType: 'text/html', body: '<main>Preview</main>' }));
+    await mountConsole(page);
+    await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'More options' }).click();
+    await page.getByRole('button', { name: 'Browser', exact: true }).click();
+    const browser = page.getByRole('dialog', { name: 'Browser', exact: true });
+    await expect(browser.locator('iframe')).toHaveAttribute('src', /project\.example\.test/u);
+    return { browser, address: browser.getByRole('textbox', { name: 'Browser address' }) };
+  };
+
+  // deliver deterministic touch lifecycle events for timer cancellation checks
+  const dispatchAddressTouch = (address: Locator, type: string, x = 10) => address.evaluate((input, gesture) => {
+    const touches = gesture.type === 'touchstart' || gesture.type === 'touchmove'
+      ? [new Touch({ identifier: 1, target: input, clientX: gesture.x, clientY: 10 })] : [];
+    input.dispatchEvent(new TouchEvent(gesture.type, { bubbles: true, cancelable: true, touches }));
+  }, { type, x });
+
+  // copy the entire address once without submitting edited text or opening another menu
+  test('copies the full URL on a touch hold and preserves tap-to-edit navigation', async ({ page }) => {
+    const { browser, address } = await openBrowser(page);
+    const target = 'https://project.example.test/path?query=one%20two#details';
+    await address.tap();
+    await expect(address).toBeFocused();
+    await address.fill(target);
+    await address.press('Enter');
+    await expect.poll(async () => new URL((await browser.locator('iframe').getAttribute('src'))!).searchParams.get('location')).toBe('/path?query=one%20two#details');
+    const source = (await browser.locator('iframe').getAttribute('src'))!;
+    // keep only a substring selected so copying must not depend on the selection
+    await address.evaluate(input => (input as HTMLInputElement).setSelectionRange(8, 15));
+    const bounds = (await address.boundingBox())!;
+    const touch = await page.context().newCDPSession(page);
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: bounds.x + 10, y: bounds.y + bounds.height / 2 }] });
+    await expect.poll(() => page.evaluate(() => (window as ClipboardWindow).__contextClipboard.writes)).toEqual([target]);
+    // native contextmenu may follow the hold timer and must not copy twice
+    await address.evaluate(input => input.dispatchEvent(new PointerEvent('contextmenu', { bubbles: true, cancelable: true, pointerType: 'touch', button: 0 })));
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await expect(browser.getByRole('status')).toHaveText('URL copied');
+    await expect(page.getByRole('menu', { name: 'Browser options' })).toHaveCount(0);
+    await expect(address).toHaveValue(target);
+    await expect(browser.locator('iframe')).toHaveAttribute('src', source);
+    expect(await page.evaluate(() => (window as ClipboardWindow).__contextClipboard.writes)).toEqual([target]);
+    await page.screenshot({ path: '/tmp/browser-url-copy-mobile.png' });
+    // keyboard menus still offer editing commands after a completed touch hold
+    await address.press('Shift+F10');
+    await expect(page.getByRole('menu', { name: 'Browser options' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    // a new tap remains an ordinary edit rather than another copy
+    await address.tap();
+    await address.fill('https://project.example.test/next');
+    await address.press('Enter');
+    await expect.poll(async () => new URL((await browser.locator('iframe').getAttribute('src'))!).searchParams.get('location')).toBe('/next');
+    await touch.detach();
+  });
+
+  // canceled, moved and short gestures must never reach the clipboard
+  test('cancels copying after taps, drags, cancellation and closing the browser', async ({ page }) => {
+    const { address } = await openBrowser(page);
+    await page.clock.install();
+    // isolate each termination path while advancing beyond the hold threshold
+    for (const ending of ['touchend', 'touchmove', 'touchcancel']) {
+      await dispatchAddressTouch(address, 'touchstart');
+      await dispatchAddressTouch(address, ending, 40);
+      await page.clock.runFor(1000);
+      expect(await page.evaluate(() => (window as ClipboardWindow).__contextClipboard.writes)).toEqual([]);
+    }
+    // native selection can cancel pointer delivery without ending the stationary touch
+    await dispatchAddressTouch(address, 'touchstart');
+    await address.dispatchEvent('pointercancel', { pointerId: 1, pointerType: 'touch' });
+    await page.clock.runFor(500);
+    expect(await page.evaluate(() => (window as ClipboardWindow).__contextClipboard.writes)).toEqual([await address.inputValue()]);
+    await dispatchAddressTouch(address, 'touchend');
+    await page.evaluate(() => { (window as ClipboardWindow).__contextClipboard.writes = []; });
+    await dispatchAddressTouch(address, 'touchstart');
+    await page.getByRole('button', { name: 'Close browser', exact: true }).click();
+    await page.clock.runFor(1000);
+    expect(await page.evaluate(() => (window as ClipboardWindow).__contextClipboard.writes)).toEqual([]);
+  });
+
+  // older clipboard support must not submit a draft through its temporary textarea focus
+  test('copies an edited URL through the fallback without navigating or losing selection', async ({ page }) => {
+    const { browser, address } = await openBrowser(page);
+    const source = await browser.locator('iframe').getAttribute('src');
+    const draft = 'https://project.example.test/draft?one=two#three';
+    await address.fill(draft);
+    await address.evaluate(input => (input as HTMLInputElement).setSelectionRange(8, 15));
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+      // observe the legacy command while preserving the real temporary focus transfer
+      document.execCommand = command => {
+        const input = document.activeElement as HTMLTextAreaElement;
+        if (command !== 'copy' || input.tagName !== 'TEXTAREA') return false;
+        (window as ClipboardWindow).__contextClipboard.writes.push(input.value);
+        return true;
+      };
+    });
+    await address.evaluate(input => input.dispatchEvent(new PointerEvent('contextmenu', { bubbles: true, cancelable: true, pointerType: 'touch', button: 0 })));
+    await expect(browser.getByRole('status')).toHaveText('URL copied');
+    await expect(address).toBeFocused();
+    await expect(address).toHaveValue(draft);
+    expect(await address.evaluate(input => [(input as HTMLInputElement).selectionStart, (input as HTMLInputElement).selectionEnd])).toEqual([8, 15]);
+    expect(await page.evaluate(() => (window as ClipboardWindow).__contextClipboard.writes)).toEqual([draft]);
+    await expect(browser.locator('iframe')).toHaveAttribute('src', source!);
+  });
+
+  // report permission failures honestly and let the next hold retry
+  test('reports clipboard denial and allows a later hold to succeed', async ({ page }) => {
+    const { browser, address } = await openBrowser(page);
+    await page.evaluate(() => { (window as ClipboardWindow).__contextClipboard.writeDenied = true; });
+    await address.evaluate(input => input.dispatchEvent(new PointerEvent('contextmenu', { bubbles: true, cancelable: true, pointerType: 'touch', button: 0 })));
+    await expect(browser.getByRole('alert')).toHaveText('Copy failed');
+    expect(await page.evaluate(() => (window as ClipboardWindow).__contextClipboard.writes)).toEqual([]);
+    await page.evaluate(() => { (window as ClipboardWindow).__contextClipboard.writeDenied = false; });
+    await dispatchAddressTouch(address, 'touchstart');
+    await address.evaluate(input => input.dispatchEvent(new PointerEvent('contextmenu', { bubbles: true, cancelable: true, pointerType: 'touch', button: 0 })));
+    await dispatchAddressTouch(address, 'touchend');
+    await expect(browser.getByRole('status')).toHaveText('URL copied');
+    expect(await page.evaluate(() => (window as ClipboardWindow).__contextClipboard.writes)).toEqual([await address.inputValue()]);
+  });
 });

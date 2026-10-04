@@ -45,6 +45,12 @@ let menuId = 0;
 let revision = 0;
 const listeners = new Set<() => void>();
 
+// keep a source's interaction mode while its menu temporarily owns focus
+export function contextMenuOwnsFocus(source: Element): boolean {
+  const origin = activeMenu?.origin;
+  return origin !== undefined && origin !== null && source.contains(origin);
+}
+
 // notify the mounted host about menu changes
 function notifyContextMenuHost() {
   revision += 1;
@@ -157,17 +163,14 @@ export function ContextMenuHost(): ReactPortal | null {
   const selected = items.find(item => item.type === 'action' && item.id === activeId && !item.disabled);
   const effectiveActiveId = selected?.type === 'action' ? selected.id : firstEnabled?.type === 'action' ? firstEnabled.id : undefined;
 
-  // share focus restoration across pointer and keyboard activation
-  const dismiss = (restoreFocus: boolean) => {
+  // restore displaced focus before an action or outside gesture chooses its destination
+  const dismiss = () => {
     // ignore an already closed menu
     if (menu === undefined) return;
-    const shouldRestore = restoreFocus && menuRef.current?.contains(document.activeElement) === true && menu.origin?.isConnected === true;
+    const shouldRestore = menuRef.current?.contains(document.activeElement) === true && menu.origin?.isConnected === true;
     closeContextMenu(menu.id);
-    // restore only focus displaced into this menu
-    if (shouldRestore) requestAnimationFrame(() => {
-      // preserve focus chosen by the action or outside click
-      if (activeMenu === undefined && document.activeElement === document.body) menu.origin?.focus({ preventScroll: true });
-    });
+    // subsequent focus changes must produce a real blur on the source
+    if (shouldRestore) menu.origin?.focus({ preventScroll: true });
   };
 
   useLayoutEffect(() => {
@@ -230,7 +233,7 @@ export function ContextMenuHost(): ReactPortal | null {
     const select = (item: Extract<ContextMenuItem, { type: 'action' }>) => {
       // ignore stale or unavailable actions
       if (item.disabled || activeMenu?.id !== menu.id) return;
-      dismiss(true);
+      dismiss();
       invokeContextMenuAction(item);
     };
     const focusItem = (item: Extract<ContextMenuItem, { type: 'action' }>) => {
@@ -243,17 +246,17 @@ export function ContextMenuHost(): ReactPortal | null {
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
-        dismiss(true);
+        dismiss();
         return;
       }
       // let normal tab navigation choose its next target
       if (event.key === 'Tab') {
-        dismiss(false);
+        dismiss();
         return;
       }
       // dismiss before passing browser shortcuts or modified input to the source
       if (event.ctrlKey || event.metaKey || event.altKey || /^F\d+$/u.test(event.key)) {
-        dismiss(false);
+        dismiss();
         return;
       }
       // prevent typing from changing a captured selection or reaching the terminal
@@ -283,7 +286,7 @@ export function ContextMenuHost(): ReactPortal | null {
     };
     const dismissOutside = (event: Event) => {
       // allow the outside interaction to choose focus normally
-      if (event.target instanceof Node && !menuRef.current?.contains(event.target)) dismiss(false);
+      if (event.target instanceof Node && !menuRef.current?.contains(event.target)) dismiss();
     };
     document.addEventListener('keydown', handleKeyDown, true);
     document.addEventListener('pointerdown', dismissOutside, true);
@@ -346,7 +349,7 @@ export function ContextMenuHost(): ReactPortal | null {
             const currentItem = currentItems.find(candidate => candidate.type === 'action' && candidate.id === item.id);
             // run only a still-available action
             if (currentItem?.type === 'action' && !currentItem.disabled) {
-              dismiss(true);
+              dismiss();
               invokeContextMenuAction(currentItem);
             }
           }}

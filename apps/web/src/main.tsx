@@ -9,7 +9,7 @@ import { mountStreamedTerminal } from './streamed-terminal.js';
 import { attachTerminalSelection, type TerminalSelection, type TerminalSelectionController } from './terminal-selection.js';
 import { createAgentPaneConnector, createWorktreePaneConnector } from './pane-socket-client.js';
 import { FlyoutPortal } from './flyout-portal.js';
-import { ContextMenuHost, openContextMenu, type ContextMenuItem } from './context-menu.js';
+import { ContextMenuHost, contextMenuOwnsFocus, openContextMenu, type ContextMenuItem } from './context-menu.js';
 import { SelectionActionsContext, openSelectionContextMenu, preserveContextMenuPress, useSelectionActions, type ClipboardContents, type SelectionActions } from './selection-context-menu.js';
 import { ContextFlyoutEvents } from './context-flyouts.js';
 import { agentSplitHidden, setAgentSplitHidden, workspaceAlias, setWorkspaceAlias, useWorkspaceViewRevision, workspaceViews, pendingWorkspaceJumps, type WorkspaceSplit } from './workspace-view.js';
@@ -3643,7 +3643,8 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
     setDraft(text);
     setActiveNote(opened);
     const stayExpanded = keepExpansion && expanded;
-    if (!stayExpanded) setExpanded(false);
+    // reveal notes hidden by an expanded sibling while preserving picker navigation
+    if (!keepExpansion) expansion.restore();
     // retain this context's open note
     if (noteViewId !== undefined) setWorktreeNoteView(noteViewId, { noteId: note.id, expanded: stayExpanded });
     setEditing(editingOnOpen);
@@ -4355,7 +4356,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   // expansion with its view
   const paneExpanded = expanded || expansion.immersive;
   // Esc closes the note, unless it is expanded: then the Workspace restores its siblings first
-  const pane = activeNote === undefined ? null : <><section className={`note-pane${paneExpanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={openNoteContextMenu} onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !paneExpanded && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><PanelHeader panelKey="note" label="note" title={noteTitlePill} actions={noteSendAction} secondary={noteSecondary} menuContent={scheduleMenu} expandDisabled={noteFilesDisabled} close={{ key: 'close', label: 'Close note', className: 'note-close', disabled: noteFilesDisabled, icon: <PanelIcon path={panelIcons.close} />, onSelect: close }} /><div className="note-pane-head">{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}{notePicker}</>;
+  const pane = activeNote === undefined ? null : <><section className={`note-pane${paneExpanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={openNoteContextMenu} onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !paneExpanded && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><PanelHeader panelKey="note" label="note" title={noteTitlePill} actions={noteSendAction} secondary={noteSecondary} menuContent={scheduleMenu} expandDisabled={noteFilesDisabled} close={{ key: 'close', label: 'Close note', className: 'note-close', disabled: noteFilesDisabled, icon: <PanelIcon path={panelIcons.close} />, onSelect: close }} /><div className="note-pane-head">{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={event => { flush(); /* menu focus must not unmount the source editor */ if (!contextMenuOwnsFocus(event.currentTarget)) setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}{notePicker}</>;
   return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, canClose: activeNote !== undefined && !noteFilesDisabled, close, initialNotesLoaded, control, createWithText: create, pane, toggleMenu: toggle };
 }
 type WorktreeNotes = ReturnType<typeof useWorktreeNotes>;
@@ -4544,6 +4545,10 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   const [deviceError, setDeviceError] = useState<string>();
   const [chromeColor, setChromeColor] = useState<string>();
   const [address, setAddress] = useState(url);
+  const [addressCopyStatus, setAddressCopyStatus] = useState<'copied' | 'failed'>();
+  const addressHold = useRef<{ x: number; y: number; timer: number } | undefined>(undefined);
+  const addressHoldCopied = useRef(false);
+  const copyingAddress = useRef(false);
   const [frameSource, setFrameSource] = useState(() => isManagedBrowserUrl(url, homeUrl, proxied) ? browserDeviceUrl(url, mobile) : url);
   const [frameAwayFromKnownUrl, setFrameAwayFromKnownUrl] = useState(false);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -4567,6 +4572,13 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     permissionBroker.revoke();
   }, [permissionBroker.revoke]);
   useEffect(() => setAddress(url), [url]);
+  // discard unfinished holds when this browser closes
+  useEffect(() => () => window.clearTimeout(addressHold.current?.timer), []);
+  // keep clipboard feedback brief without altering the editable url
+  useEffect(() => {
+    const timer = window.setTimeout(() => setAddressCopyStatus(undefined), 2000);
+    return () => window.clearTimeout(timer);
+  }, [addressCopyStatus]);
   // scale one desktop layout viewport into the visible phone frame
   useEffect(() => {
     const shell = frameShellRef.current;
@@ -4702,6 +4714,63 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   };
   // update the editable address
   const changeAddress = (event: React.ChangeEvent<HTMLInputElement>) => setAddress(event.target.value);
+  // cancel a tap, drag or interrupted hold
+  const cancelAddressHold = () => {
+    window.clearTimeout(addressHold.current?.timer);
+    addressHold.current = undefined;
+  };
+  // copy the full visible address without submitting it through fallback clipboard focus
+  const copyAddress = (input: HTMLInputElement) => {
+    window.clearTimeout(addressHold.current?.timer);
+    // native contextmenu can arrive after the hold timer for the same gesture
+    if (addressHoldCopied.current) return;
+    addressHoldCopied.current = true;
+    setAddressCopyStatus(undefined);
+    const focused = document.activeElement === input;
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    copyingAddress.current = true;
+    const result = copyText(input.value);
+    copyingAddress.current = false;
+    // the legacy clipboard fallback temporarily focuses a hidden textarea
+    if (focused && document.activeElement !== input) {
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(start, end);
+    }
+    void result.then(() => setAddressCopyStatus('copied'), () => setAddressCopyStatus('failed'));
+  };
+  // track touch directly because native text selection can cancel pointer delivery
+  const startAddressHold = (event: React.TouchEvent<HTMLInputElement>) => {
+    cancelAddressHold();
+    addressHoldCopied.current = false;
+    // leave multi-finger gestures to the browser
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0]!;
+    const input = event.currentTarget;
+    addressHold.current = { x: touch.clientX, y: touch.clientY, timer: window.setTimeout(() => copyAddress(input), 450) };
+  };
+  // allow scrolling and selection drags without copying
+  const moveAddressHold = (event: React.TouchEvent<HTMLInputElement>) => {
+    const hold = addressHold.current;
+    const touch = event.touches[0];
+    // abandon gestures that move beyond tap slop
+    if (hold !== undefined && (event.touches.length !== 1 || touch === undefined || Math.hypot(touch.clientX - hold.x, touch.clientY - hold.y) > 10)) cancelAddressHold();
+  };
+  // replace touch callouts with copying while retaining desktop editing menus
+  const addressContextMenu = (event: React.MouseEvent<HTMLInputElement>) => {
+    const pointerType = (event.nativeEvent as PointerEvent).pointerType;
+    // mouse and keyboard menus retain paste and selection commands
+    if (pointerType !== 'touch' && addressHold.current === undefined) return;
+    event.preventDefault();
+    event.stopPropagation();
+    copyAddress(event.currentTarget);
+  };
+  // submit genuine focus changes rather than clipboard or menu focus transfers
+  const blurAddress = (event: React.FocusEvent<HTMLInputElement>) => {
+    cancelAddressHold();
+    // temporary focus changes must not navigate the preview
+    if (!copyingAddress.current && !contextMenuOwnsFocus(event.currentTarget)) navigate();
+  };
   // return to the configured root
   const goHome = () => {
     expectedFrameLoad.current = true;
@@ -4782,6 +4851,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   const deviceLabel = managed ? mobile ? 'Use desktop viewport and user agent' : 'Use mobile viewport and user agent' : mobile ? 'Use desktop viewport' : 'Use mobile viewport';
   const deviceTitle = managed ? mobile ? 'Desktop viewport and user agent' : 'Mobile viewport and user agent' : mobile ? 'Desktop viewport' : 'Mobile viewport';
   const actions = <>
+    {addressCopyStatus && <span className={`browser-copy-status${addressCopyStatus === 'failed' ? ' error' : ''}`} role={addressCopyStatus === 'failed' ? 'alert' : 'status'}>{addressCopyStatus === 'copied' ? 'URL copied' : 'Copy failed'}</span>}
     {deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}
     {managed
       ? <button className={`panel-header-action browser-refresh${loading ? ' loading' : ''}`} type="button" aria-label={loading ? 'Stop loading browser' : 'Refresh browser'} aria-busy={loading} title={loading ? 'Stop' : 'Refresh'} onClick={toggleFrameLoad}><PanelIcon path={loading ? 'm6 6 12 12M18 6 6 18' : 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'} /></button>
@@ -4792,7 +4862,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     { key: 'home', label: 'Go to project home', title: 'Home', className: 'browser-home', disabled: atHome, icon: <PanelIcon path="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7" />, onSelect: goHome },
     { key: 'device', label: deviceLabel, title: deviceTitle, className: 'browser-device-toggle', pressed: mobile, icon: <svg className="panel-header-icon" data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg>, onSelect: toggleDevice }
   ];
-  const titleControl = <input className="panel-header-pill panel-header-title browser-address" type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onKeyDown={submitAddress} onBlur={navigate} />;
+  const titleControl = <input className="panel-header-pill panel-header-title browser-address" type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onKeyDown={submitAddress} onBlur={blurAddress} onTouchStart={startAddressHold} onTouchMove={moveAddressHold} onTouchEnd={cancelAddressHold} onTouchCancel={cancelAddressHold} onContextMenu={addressContextMenu} />;
   return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} style={{ '--browser-chrome-color': chromeColor } as React.CSSProperties} role="dialog" aria-label="Browser" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={browserContextMenu} onKeyDown={handleEscape}><PanelHeader panelKey="browser" label="browser" titleControl={titleControl} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close browser', title: 'Close', className: 'browser-close', icon: <PanelIcon path={panelIcons.close} />, onSelect: () => { /* revoke before hiding the frame */ revokeFramePermissions(); onClose(); } }} />{permissionBroker.consent}<div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} name={permissionFrameName} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
 }
 
@@ -5298,7 +5368,8 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
     exitTerminalInput.set(paneId, blur);
     terminalFocusers.set(paneId, handle.focus);
     const onFocusIn = () => setFocused(true);
-    const onFocusOut = () => setFocused(false);
+    // preserve terminal mode while its contextual menu owns focus
+    const onFocusOut = () => { if (!contextMenuOwnsFocus(container)) setFocused(false); };
     container.addEventListener('focusin', onFocusIn);
     container.addEventListener('focusout', onFocusOut);
     // the + menu's Terminal asked for this pane before its panel mounted
@@ -6008,7 +6079,8 @@ function Log({ id, embedded = false, onQuestion, onMetadata, header, composer, n
     // Focusing the pane drives `.input-active` (which collapses the composer to the
     // terminal helper keys on a phone); blurring it, or focusing the composer, reverts.
     const onFocusIn = () => { if (!disposed) setInputActive(true); };
-    const onFocusOut = () => { if (!disposed) setInputActive(false); };
+    // preserve output mode while its contextual menu owns focus
+    const onFocusOut = () => { if (!disposed && canvas.current !== null && !contextMenuOwnsFocus(canvas.current)) setInputActive(false); };
     canvas.current!.addEventListener('focusin', onFocusIn);
     canvas.current!.addEventListener('focusout', onFocusOut);
     // share selection freezing and copy feedback with terminal panels
@@ -7235,13 +7307,21 @@ function workspaceSheetDetail(entry: DashboardItem): string {
 function WorkspaceDropdown({ items, current, onSelect, onNewWorkspace, onRenameWorktree, renameDisabled, onContextMenu }: { items: readonly DashboardItem[]; current: number; onSelect: (index: number) => void; onNewWorkspace: () => void; onRenameWorktree: (worktreeId: string) => void; renameDisabled: boolean; onContextMenu: (event: React.MouseEvent<HTMLButtonElement>, entry: DashboardItem) => void }) {
   const [open, setOpen] = useState(false);
   const entry = items[current];
+  // reuse single-step split swipes in the dropdown's workspace order
+  const swipe = usePanelSwipe({
+    panels: items,
+    visibleKey: entry?.key,
+    // use the same selection path as the workspace sheet
+    show: key => { setOpen(false); onSelect(items.findIndex(candidate => candidate.key === key)); }
+  });
+  // omit the selector when no workspace remains
   if (entry === undefined) return null;
   const { transition, label, className } = tabStatus(entry);
   const { questions, unread } = otherWorkspacesWaiting(items, entry);
   const waiting = questions + unread;
   const waitingLabel = `Other Workspaces: ${questions} need an answer, ${unread} unread`;
   const choose = (action: () => void) => { setOpen(false); action(); };
-  return <><button id={`tab-${current}`} type="button" role="tab" aria-selected="true" aria-controls={`panel-${current}`} className={`workspace-dropdown active ${className}`} aria-haspopup="dialog" aria-expanded={open} aria-busy={transition !== undefined} aria-label={`${entry.label} — ${label}`} aria-description={waiting > 0 ? waitingLabel : undefined} title="Switch Workspace" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => onContextMenu(event, entry)} onClick={() => setOpen(value => !value)}>
+  return <><button id={`tab-${current}`} type="button" role="tab" aria-selected="true" aria-controls={`panel-${current}`} className={`workspace-dropdown active ${className}`} aria-haspopup="dialog" aria-expanded={open} aria-busy={transition !== undefined} aria-label={`${entry.label} — ${label}`} aria-description={waiting > 0 ? waitingLabel : undefined} title="Switch Workspace" onPointerDown={swipe.onPointerDown} onPointerUp={swipe.onPointerUp} onPointerCancel={swipe.onPointerCancel} onTouchStart={swipe.onTouchStart} onTouchEnd={swipe.onTouchEnd} onTouchCancel={swipe.onTouchCancel} onClickCapture={swipe.onClickCapture} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => onContextMenu(event, entry)} onClick={() => setOpen(value => !value)}>
     <TabKindStack entry={entry} />
     <span className="workspace-dropdown-label tab-label">{transition !== undefined && <span className="spinner" aria-hidden="true" />}{entry.label}</span>
     {waiting > 0 && <span className={`workspace-dropdown-badge${questions > 0 ? ' question' : ''}`} title={waitingLabel} aria-hidden="true">{waiting}</span>}

@@ -416,11 +416,11 @@ test('the phone workspace flyout moves only a working row background and borders
   expect([paint.dotWidth, paint.dotHeight]).toEqual(['6px', '6px']);
   expect(paint.labelMotion).toBe('none');
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  const reduced = await row.evaluate(element => {
+  // wait for the browser to apply the changed media preference
+  await expect.poll(() => row.evaluate(element => {
     const entry = element.querySelector('.workspace-sheet-entry')!;
     return { animations: element.getAnimations({ subtree: true }).length, dotMotion: getComputedStyle(entry, '::after').animationName, labelMotion: getComputedStyle(entry.querySelector('strong')!).animationName };
-  });
-  expect(reduced).toEqual({ animations: 0, dotMotion: 'none', labelMotion: 'none' });
+  })).toEqual({ animations: 0, dotMotion: 'none', labelMotion: 'none' });
 });
 
 test('a phone shows only the current Workspace, as a dropdown over a sheet of every Workspace', async ({ page }) => {
@@ -515,7 +515,8 @@ test('a phone shows only the current Workspace, as a dropdown over a sheet of ev
   expect(statusPaint[3].labelMotion).toBe('none');
   // disable completion motion without changing workspace state
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  expect(await sheet.locator('.workspace-sheet-row').evaluateAll(rows => rows.flatMap(row => row.getAnimations({ subtree: true })).length)).toBe(0);
+  // wait for the media preference and active transitions to settle
+  await expect.poll(() => sheet.locator('.workspace-sheet-row').evaluateAll(rows => rows.flatMap(row => row.getAnimations({ subtree: true })).length)).toBe(0);
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   // a sheet across the screen's bottom edge, once it has risen into place
   await expect.poll(async () => { const box = (await sheet.boundingBox())!; return [box.x, box.width, box.y + box.height].map(Math.round); }).toEqual([0, 390, 844]);
@@ -536,7 +537,7 @@ test('a phone shows only the current Workspace, as a dropdown over a sheet of ev
   await expect(badge).toHaveText('1');
   await expect(badge).toHaveClass(/\bquestion\b/u);
   // once Cora's question is answered elsewhere, the next dashboard clears the badge
-  dashboard = { ...workspacesDashboard, generation: 2, agents: workspacesDashboard.agents.map(agent => agent.id === 'agent-1' ? { ...agent, attention: 'finished' } : agent.id === 'agent-2' ? { ...agent, unread: false } : agent) };
+  dashboard = { ...workspacesDashboard, generation: 2, agents: workspacesDashboard.agents.map(agent => agent.id === 'agent-1' ? { ...agent, attention: 'finished' } : agent.unread ? { ...agent, unread: false } : agent) };
   await expect(badge).toHaveCount(0, { timeout: 10_000 });
 
   // New Workspace… opens the + menu
