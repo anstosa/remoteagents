@@ -35,6 +35,14 @@ async function fulfillReviewConsole(route: Route, pathname: string, editor = fal
   return await fulfillAgentSupport(route, pathname);
 }
 
+// open the start sheet from the Git flyout's Review button and start with its defaults
+async function startReview(page: Page): Promise<void> {
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  const sheet = page.getByRole('dialog', { name: 'Start guided review' });
+  await sheet.getByRole('button', { name: 'Start', exact: true }).click();
+  await expect(sheet).toHaveCount(0);
+}
+
 // verify generation, notification, and feedback flow
 test('guides a human through active-scope implementation changes and sends consolidated feedback', async ({ page }) => {
   const jobRequests: Array<{ scope: string; includeTests: boolean; includeDocs: boolean }> = [];
@@ -96,6 +104,21 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect(statusPanel.getByRole('button', { name: 'Review', exact: true })).toBeVisible();
   await expect(statusPanel.getByRole('button', { name: 'All PR' })).toHaveAttribute('aria-pressed', 'true');
   await statusPanel.getByRole('button', { name: 'Review', exact: true }).click();
+  // the button opens the start sheet first: the scope defaults to the flyout's, Tests and Docs are off
+  const startSheet = page.getByRole('dialog', { name: 'Start guided review' });
+  await expect(startSheet.getByRole('button', { name: 'Working' })).toBeFocused();
+  await expect(startSheet.getByRole('button', { name: 'All PR' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(startSheet.getByLabel('Tests')).not.toBeChecked();
+  await expect(startSheet.getByLabel('Docs')).not.toBeChecked();
+  await expect(startSheet.getByText('Narrated by Codex')).toBeVisible();
+  expect(jobRequests).toHaveLength(0);
+  // Escape closes it without starting
+  await page.keyboard.press('Escape');
+  await expect(startSheet).toHaveCount(0);
+  expect(jobRequests).toHaveLength(0);
+  await branchButton.click();
+  await statusPanel.getByRole('button', { name: 'Review', exact: true }).click();
+  await startSheet.getByRole('button', { name: 'Start', exact: true }).click();
 
   const loadingDialog = page.getByRole('dialog', { name: 'Generating change tour' });
   await expect(loadingDialog).toBeHidden();
@@ -139,9 +162,11 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveCSS('animation-name', 'review-tour-slide-up');
   await expect(dialog.getByText('All PR guided review')).toBeVisible();
-  await expect(dialog.getByLabel('Tests')).not.toBeChecked();
-  await expect(dialog.getByLabel('Docs')).not.toBeChecked();
-  const toolbarBelowContent = await dialog.getByRole('group', { name: 'Tour content' }).evaluate((toolbar, content) => Boolean(content.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING), await dialog.locator('.review-tour-content').elementHandle());
+  // the Comparison is a read-only line under the content; changing it means starting again
+  const comparisonLine = dialog.locator('.review-tour-comparison');
+  await expect(comparisonLine).toHaveText('All PR · tests excluded · docs excluded · vs origin/main');
+  await expect(dialog.getByLabel('Tests')).toHaveCount(0);
+  const toolbarBelowContent = await comparisonLine.evaluate((toolbar, content) => Boolean(content.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING), await dialog.locator('.review-tour-content').elementHandle());
   expect(toolbarBelowContent).toBe(true);
   await expect(dialog.getByText('Step 1 of 2')).toBeVisible();
   const reviewStep = dialog.locator('.review-tour-step');
@@ -190,23 +215,6 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect(dialog.getByText('4,000 character limit reached')).toBeVisible();
   await stepFeedback.fill('');
   await expect(dialog.getByText(/character limit reached/u)).toHaveCount(0);
-  await dialog.getByLabel('Tests').check();
-  await expect.poll(() => jobRequests.length).toBe(2);
-  await expect(dialog.getByText('Step 1 of 2')).toBeVisible();
-  expect(jobRequests[1]).toEqual({ scope: 'pr', includeTests: true, includeDocs: false });
-  await dialog.getByLabel('Tests').uncheck();
-  await expect.poll(() => jobRequests.length).toBe(3);
-  await expect(dialog.getByText('Step 1 of 2')).toBeVisible();
-  expect(jobRequests[2]).toEqual({ scope: 'pr', includeTests: false, includeDocs: false });
-  await dialog.getByLabel('Docs').check();
-  await expect.poll(() => jobRequests.length).toBe(4);
-  await expect(dialog.getByText('Step 1 of 2')).toBeVisible();
-  expect(jobRequests[3]).toEqual({ scope: 'pr', includeTests: false, includeDocs: true });
-  await dialog.getByLabel('Docs').uncheck();
-  await expect.poll(() => jobRequests.length).toBe(5);
-  await expect.poll(() => latestReadyJob).toBe(5);
-  await expect(dialog.getByText('Step 1 of 2')).toBeVisible();
-  expect(jobRequests[4]).toEqual({ scope: 'pr', includeTests: false, includeDocs: false });
   await expect(branchButton).not.toHaveAttribute('aria-busy');
 
   await dialog.getByLabel('Feedback for this change').fill('Keep the route error copy aligned with the existing API.');
@@ -221,7 +229,9 @@ test('guides a human through active-scope implementation changes and sends conso
   await statusPanel.getByRole('button', { name: 'Open Review' }).click();
   await expect(dialog.getByText('Changes updated')).toBeVisible();
   await dialog.getByRole('button', { name: 'Regenerate' }).click();
-  await expect.poll(() => jobRequests.length).toBe(6);
+  // Regenerate starts again with the same launch
+  await expect.poll(() => jobRequests.length).toBe(2);
+  expect(jobRequests[1]).toEqual({ scope: 'pr', includeTests: false, includeDocs: false });
   await expect(dialog.getByText('Step 1 of 2')).toBeVisible();
   await expect(dialog.getByLabel('Feedback for this change')).toHaveValue('Keep the route error copy aligned with the existing API.');
   await page.emulateMedia({ reducedMotion: 'reduce' });
@@ -322,7 +332,7 @@ test('renders a placeholder for a binary or unparseable change', async ({ page }
   const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
   await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
-  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  await startReview(page);
   await expect(branchButton).not.toHaveAttribute('aria-busy');
   await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
@@ -363,7 +373,7 @@ async function openCommentTour(page: Page, { editor = false } = {}): Promise<{ d
   const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
   await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
-  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  await startReview(page);
   await expect(branchButton).not.toHaveAttribute('aria-busy');
   await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
@@ -522,7 +532,7 @@ test('explains when the server Codex login expires', async ({ page }) => {
   await page.goto('/');
   const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
   await branchButton.click();
-  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  await startReview(page);
   await expect(branchButton).not.toHaveAttribute('aria-busy');
   await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
@@ -576,7 +586,7 @@ test('keeps polling through temporary console failures', async ({ page }) => {
   const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
   await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
-  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  await startReview(page);
   await expect(branchButton).not.toHaveAttribute('aria-busy');
   expect(polls).toBe(6);
   await branchButton.click();
@@ -615,7 +625,7 @@ test('retries temporary failures while starting a tour', async ({ page }) => {
   const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
   await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
-  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  await startReview(page);
   await expect(branchButton).not.toHaveAttribute('aria-busy');
   expect(starts).toBe(3);
   expect(new Set(requestIds).size).toBe(1);
@@ -650,7 +660,7 @@ test('does not retry a tour start after cancellation', async ({ page }) => {
   const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
   await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
-  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  await startReview(page);
   await expect.poll(() => starts).toBe(1);
   await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Generating…' }).click();
@@ -680,7 +690,7 @@ test('explains when another browser controls the console', async ({ page }) => {
   await page.goto('/');
   const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
   await branchButton.click();
-  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  await startReview(page);
   await expect(branchButton).not.toHaveAttribute('aria-busy');
   await branchButton.click();
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
@@ -733,4 +743,97 @@ test('restores the worktree review after reload and dismisses it when stale', as
   await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
   await expect(page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true })).toBeVisible();
   expect(generationRequests).toBe(0);
+});
+
+// the dashboard capabilities a configured Claude tour with Review presets reports
+const claudeReviewCapabilities = {
+  reviewTour: { available: true, agent: 'claude', effort: 'low', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  codeReview: { defaultPreset: 'correctness', presets: [
+    { id: 'correctness', label: 'Correctness', agent: 'claude', effort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], available: true },
+    { id: 'security', label: 'Security', agent: 'codex', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], available: true },
+    { id: 'performance', label: 'Performance', agent: 'codex', efforts: [], available: false, reason: 'authentication_required' }
+  ] }
+};
+const startSheetAgent = { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', branch: 'feature/review-tour', title: 'Ready', gitStatus: { files: 1, staged: 0, unstaged: 1, untracked: 0, conflicted: 0, changes: [{ code: ' M', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] }, gitPrStatus: { base: 'origin/main', files: 1, changes: [{ code: 'M ', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] } };
+
+test('starts a tour with the chosen comparison, tour effort and AI code review', async ({ page }) => {
+  const jobRequests: unknown[] = [];
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, ...claudeReviewCapabilities, agents: [startSheetAgent], projects: [] } });
+    if (await fulfillAgentSupport(route, url.pathname)) return;
+    if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') {
+      jobRequests.push(request.postDataJSON());
+      return route.fulfill({ status: 202, json: { status: 'pending', job: { id: 'job-1', expiresAt: '2099-01-01T00:00:00.000Z', retryAfterMs: 1_000 }, codeReview: { job: { id: 'review-1', expiresAt: '2099-01-01T00:00:00.000Z', retryAfterMs: 1_000 } } } });
+    }
+    if (/^\/api\/(review-tour|code-review)\/jobs\/[\w-]+$/u.test(url.pathname)) return route.fulfill({ status: 202, json: { status: 'pending', job: { id: 'job-1', expiresAt: '2099-01-01T00:00:00.000Z', retryAfterMs: 1_000 } } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  const sheet = page.getByRole('dialog', { name: 'Start guided review' });
+  await expect(sheet.getByText('Narrated by Claude')).toBeVisible();
+  await expect(sheet.getByLabel('Tour effort').locator('option').first()).toHaveText('Default (low)');
+  const addReview = sheet.getByLabel('Add AI code review');
+  await expect(addReview).not.toBeChecked();
+  await expect(sheet.getByLabel('Preset')).toHaveCount(0);
+  await sheet.getByLabel('Tests').check();
+  await sheet.getByLabel('Tour effort').selectOption('high');
+  await addReview.check();
+  // the default preset opens on its configured effort; an unavailable preset is listed disabled with its reason
+  await expect(sheet.getByLabel('Preset')).toHaveValue('correctness');
+  await expect(sheet.getByLabel('Review effort')).toHaveValue('high');
+  await expect(sheet.getByRole('option', { name: 'Performance (Sign in to Codex on the server)' })).toHaveAttribute('disabled', '');
+  await sheet.getByLabel('Preset').selectOption('security');
+  await expect(sheet.getByLabel('Review effort')).toHaveValue('');
+  await sheet.getByLabel('Review effort').selectOption('medium');
+  await sheet.getByLabel('Extra focus').fill('look hard at the migration');
+  await sheet.getByRole('button', { name: 'Start', exact: true }).click();
+  await expect(sheet).toHaveCount(0);
+  await expect.poll(() => jobRequests).toEqual([{ scope: 'pr', includeTests: true, includeDocs: false, effort: 'high', codeReview: { preset: 'security', effort: 'medium', focus: 'look hard at the migration' } }]);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('rac.code-review-choice') ?? 'null'))).toEqual({ preset: 'security', efforts: { security: 'medium' } });
+
+  // the next start opens unchecked, on the last preset and effort, with no extra focus
+  await page.reload();
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  await expect(sheet.getByLabel('Add AI code review')).not.toBeChecked();
+  await sheet.getByLabel('Add AI code review').check();
+  await expect(sheet.getByLabel('Preset')).toHaveValue('security');
+  await expect(sheet.getByLabel('Review effort')).toHaveValue('medium');
+  await expect(sheet.getByLabel('Extra focus')).toHaveValue('');
+  await page.keyboard.press('Escape');
+  await expect(sheet).toHaveCount(0);
+  expect(jobRequests).toHaveLength(1);
+});
+
+test('hides the AI code review without Review presets and shows the start sheet as a phone bottom sheet', async ({ page }) => {
+  await installAgentWebSocket(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, reviewTour: { available: true }, codeReview: { defaultPreset: 'correctness', presets: [] }, agents: [{ ...startSheetAgent, gitPrStatus: undefined }], projects: [] } });
+    if (await fulfillAgentSupport(route, url.pathname)) return;
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  const sheet = page.getByRole('dialog', { name: 'Start guided review' });
+  await expect(sheet.getByRole('button', { name: 'All PR' })).toBeDisabled();
+  await expect(sheet.getByRole('button', { name: 'All PR' })).toHaveAttribute('title', 'Merge target unavailable');
+  await expect(sheet.getByRole('button', { name: 'Working' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(sheet.getByLabel('Add AI code review')).toHaveCount(0);
+  await sheet.locator(':scope > div').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+  const bounds = await sheet.locator(':scope > div').boundingBox();
+  expect(Math.abs(bounds!.y + bounds!.height - 844)).toBeLessThanOrEqual(1);
+  expect(bounds!.width).toBeGreaterThan(385);
+  await sheet.getByRole('button', { name: 'Cancel' }).click();
+  await expect(sheet).toHaveCount(0);
 });

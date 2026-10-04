@@ -1749,6 +1749,25 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 /* keep the pending save glyph circular inside its flex button */
 .client-rename-dialog footer .spinner { box-sizing: border-box; flex: 0 0 .8rem; }
 .client-rename-dialog footer .worktree-rename-reset { margin-right: auto; }
+/* the guided review's start sheet: the rename dialog's frame, a bottom sheet on a phone */
+.review-start-dialog > div { width: min(30rem, 100%); max-height: min(90vh, 46rem); overflow-y: auto; }
+.review-start-dialog header > div { display: grid; min-width: 0; }
+.review-start-dialog header svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
+.review-start-row { display: flex; align-items: center; justify-content: space-between; gap: .75rem; color: var(--subtext-0); font: 700 .68rem var(--font-mono); }
+.review-start-checks { display: inline-flex; gap: 1rem; }
+.client-rename-dialog form .review-start-checks label, .client-rename-dialog form label.review-start-check { display: inline-flex; align-items: center; gap: .4rem; color: var(--text); }
+.review-start-dialog input[type='checkbox'] { accent-color: var(--blue); }
+.review-start-section { display: grid; gap: .55rem; padding-top: .75rem; border-top: 1px solid var(--surface-1); }
+.review-start-section h3 { margin: 0; color: var(--text); font: 800 .74rem var(--font-mono); }
+.review-start-section > p { margin: 0; color: var(--subtext-0); font-size: .74rem; }
+.review-start-dialog select { min-width: 0; padding: .45rem .5rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: var(--mantle); color: var(--text); font: 500 .78rem var(--font-mono); }
+.review-start-dialog textarea { box-sizing: border-box; width: 100%; min-height: 5rem; font-size: .76rem; }
+.review-start-dialog option:disabled { color: var(--overlay-0); }
+.review-start-hint { color: var(--overlay-0); font-size: .62rem; text-align: right; }
+.review-start-error { margin: 0; color: var(--red); font-size: .74rem; line-height: 1.4; }
+@media (max-width: 600px) { .review-start-dialog { place-items: end stretch; padding: 0; }.review-start-dialog > div { width: 100%; max-height: 88dvh; border-bottom: 0; border-radius: .9rem .9rem 0 0; padding-bottom: env(safe-area-inset-bottom); animation: workspace-sheet-up .18s ease-out; } }
+@media (prefers-reduced-motion: reduce) { .review-start-dialog > div { animation: none; } }
+:root[data-motion="reduced"] .review-start-dialog > div { animation: none; }
 .server-update-progress { display: flex; min-height: 6rem; align-items: center; justify-content: center; gap: .65rem; padding: 1rem; color: var(--subtext-0); }
 .server-update-progress > button { margin-left: auto; }
 /* server update review */
@@ -1904,10 +1923,7 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .review-tour-header p { max-width: 72rem; color: var(--subtext-0); font-size: .76rem; line-height: 1.45; }
 .review-tour-header > button { flex: 0 0 2rem; width: 2rem; height: 2rem; justify-content: center; border: 0; padding: 0; background: transparent; box-shadow: none; color: var(--overlay-1); font-size: 1.35rem; }
 .review-tour-header > button svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
-.review-tour-filters { display: flex; align-items: center; gap: .8rem; padding: .5rem 1.1rem; border-top: 1px solid var(--surface-1); background: var(--mantle); color: var(--subtext-0); font: 700 .68rem var(--font-mono); }
-.review-tour-filters > span { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.review-tour-filters label { display: inline-flex; align-items: center; gap: .35rem; color: var(--text); }
-.review-tour-filters input { accent-color: var(--blue); }
+.review-tour-comparison { min-width: 0; margin: 0; overflow: hidden; padding: .45rem 1.1rem; border-top: 1px solid var(--surface-1); background: var(--mantle); color: var(--overlay-1); font: 700 .65rem var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .review-tour-content { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
 .review-tour-message { display: grid; flex: 1 1 auto; min-height: 0; align-content: center; justify-items: center; gap: .65rem; padding: 2rem; color: var(--subtext-0); text-align: center; }
 .review-tour-message > .spinner { width: 1.5rem; height: 1.5rem; }

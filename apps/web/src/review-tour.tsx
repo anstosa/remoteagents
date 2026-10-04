@@ -4,6 +4,7 @@ import { prefersReducedMotion } from './reduced-motion.js';
 import { usePhoneLayout } from './panel-header.js';
 import type { ReviewDiffComment, ReviewDiffSide } from './code-panel/review-diffs.js';
 import type { EditorTarget } from './code-panel/editor-jump.js';
+import type { CodeReviewOptions } from './code-review.js';
 
 // The diff renderer pulls in `@pierre/diffs` (~177 kB), so it is loaded on demand — this dialog is in
 // the eager dashboard bundle and a static import would drag the library in. Same lazy boundary the
@@ -11,7 +12,12 @@ import type { EditorTarget } from './code-panel/editor-jump.js';
 const ReviewDiffs = lazy(() => import('./code-panel/review-diffs.js'));
 
 export type ReviewScope = 'working' | 'pr';
-export type ReviewLaunch = { agentId: string; worktreeId: string; scope: ReviewScope };
+// the Worktree and default scope the Review button asks for, before the start sheet's choices
+export type ReviewTarget = { agentId: string; worktreeId: string; scope: ReviewScope };
+// one tour start: the Comparison (scope, Tests, Docs), the tour's effort and the opt-in Code review
+// that runs beside it; a restored tour's launch carries its stored Comparison, and Retry and
+// Regenerate start again with the same launch
+export type ReviewLaunch = ReviewTarget & { includeTests: boolean; includeDocs: boolean; effort?: string; codeReview?: CodeReviewOptions };
 export type ReviewTourIndicator = { generating: boolean; stale: boolean };
 type ReviewChange = { id: string; file: string; originalFile?: string; category: 'implementation' | 'test' | 'doc'; kind: 'hunk' | 'binary' | 'rename' | 'metadata' | 'untracked'; patch: string };
 type ReviewStep = { id: string; title: string; explanation: string; changeIds: string[] };
@@ -195,8 +201,8 @@ function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, comme
 // render and manage one guided review
 // `onOpenInEditor`, given only with an `editor` configured, jumps from a diff to that line in it
 export function ReviewTourDialog({ launch, request, minimized, initialTour, onMinimize, onDismiss, onIndicatorChange, onReady, onOpenInEditor }: { launch: ReviewLaunch; request: ReviewRequest; minimized: boolean; initialTour?: ReviewTour; onMinimize: () => void; onDismiss: () => Promise<boolean>; onIndicatorChange: (indicator: ReviewTourIndicator) => void; onReady: (tour: ReviewTour) => void; onOpenInEditor?: (target: EditorTarget) => void }) {
-  const [includeTests, setIncludeTests] = useState(initialTour?.includeTests ?? false);
-  const [includeDocs, setIncludeDocs] = useState(initialTour?.includeDocs ?? false);
+  // the Comparison is fixed for the dialog's lifetime: changing it means starting again
+  const { includeTests, includeDocs } = launch;
   const [state, setState] = useState<ViewState>(initialTour === undefined ? 'loading' : 'tour');
   const [tour, setTour] = useState<ReviewTour | undefined>(initialTour);
   const [job, setJob] = useState<Job>();
@@ -255,9 +261,9 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     return () => window.cancelAnimationFrame(frame);
   }, [state, error]);
 
-  // generate for the fixed scope and current filters
+  // generate for the launch's fixed Comparison
   useEffect(() => {
-    const restored = initialTour !== undefined && retry === 0 && includeTests === initialTour.includeTests && includeDocs === initialTour.includeDocs;
+    const restored = initialTour !== undefined && retry === 0;
     // display the restored artifact before any requested regeneration
     if (restored) {
       setTour(initialTour);
@@ -334,7 +340,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     const start = async () => {
       // stop obsolete retries before transport
       if (closed || generation.current !== run) return;
-      const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/jobs`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': startRequestId }, body: JSON.stringify({ scope: launch.scope, includeTests, includeDocs }) }, false);
+      const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/jobs`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': startRequestId }, body: JSON.stringify({ scope: launch.scope, includeTests, includeDocs, ...(launch.effort === undefined ? {} : { effort: launch.effort }), ...(launch.codeReview === undefined ? {} : { codeReview: launch.codeReview }) }) }, false);
       const body = await responseBody(response);
       const pending = body.job;
       const failure = responseFailure(body);
@@ -369,7 +375,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
       if (timer !== undefined) window.clearTimeout(timer);
       if (createdJob !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(createdJob.id)}`, { method: 'DELETE' }, false);
     };
-  }, [launch.agentId, launch.scope, includeTests, includeDocs, retry, request, initialTour]);
+  }, [launch, includeTests, includeDocs, retry, request, initialTour]);
 
   // poll comparison freshness while reviewing
   useEffect(() => {
@@ -539,6 +545,8 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
   };
 
   const scopeLabel = launch.scope === 'working' ? 'Working' : 'All PR';
+  // the launch's Comparison, read-only: changing it means starting again from the Review button
+  const comparisonLabel = [scopeLabel, includeTests ? 'tests included' : 'tests excluded', includeDocs ? 'docs included' : 'docs excluded', ...(tour?.base ? [`vs ${tour.base}`] : [])].join(' · ');
   // the step's narration and feedback: a left column on desktop, the notes drawer on a phone
   const narration = step && <><small>Logical change</small><h3>{step.title}</h3><p>{step.explanation}</p><label>Feedback for this change<textarea value={stepFeedback} maxLength={maxFeedback} onChange={event => updateFeedback(step.id, event.target.value)} />{stepFeedback.length >= maxFeedback && <span role="status">{maxFeedback.toLocaleString()} character limit reached</span>}</label>{orphanFeedback !== '' && <label>Feedback from regenerated steps<textarea value={orphanFeedback} maxLength={maxFeedbackTotal} onChange={event => updateOrphanFeedback(event.target.value)} />{orphanFeedback.length >= maxFeedbackTotal && <span role="status">{maxFeedbackTotal.toLocaleString()} retained feedback character limit reached</span>}</label>}</>;
   // keep generation and freshness polling mounted while minimized
@@ -548,7 +556,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     <div className="review-tour-content">
     {tour && stale && <div className="review-tour-stale" role="alert"><strong>Changes updated</strong><span>This cached review is out of date.</span>{dismissError && <span>{dismissError}</span>}<button type="button" disabled={dismissing} onClick={() => void dismiss()}>{dismissing ? 'Dismissing…' : 'Dismiss'}</button><button type="button" disabled={dismissing} onClick={() => { setStale(false); setRetry(value => value + 1); setState('loading'); }}>Regenerate</button></div>}
     {state === 'loading' && <div className="review-tour-message" role="status"><span className="spinner" /><strong>Building the narrated tour…</strong><p>The AI is organizing the selected implementation changes into logical steps.</p><button type="button" onClick={() => { generation.current += 1; if (job !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' }, false); setState('cancelled'); }}>Cancel</button></div>}
-    {state === 'empty' && <div className="review-tour-message" role="status"><strong>No included changes</strong><p>Implementation changes are empty for this scope. Enable Tests or Docs if those are the only changed files.</p></div>}
+    {state === 'empty' && <div className="review-tour-message" role="status"><strong>No included changes</strong><p>Implementation changes are empty for this scope. Start again with Tests or Docs included if those are the only changed files.</p></div>}
     {(state === 'error' || state === 'cancelled') && <div className="review-tour-message error" role="alert"><strong>{state === 'cancelled' ? 'Tour cancelled' : 'Unable to build tour'}</strong><p>{error || 'Generate again when you are ready.'}</p><button type="button" onClick={() => { setRetry(value => value + 1); setState('loading'); }}>Try again</button></div>}
     {tour && state === 'tour' && step && <><div className="review-tour-progress"><span>Step {current + 1} of {tour.steps.length}</span><span>{Object.values(statuses).filter(value => value === 'visited').length} visited · {Object.values(statuses).filter(value => value === 'skipped').length} skipped</span></div><main className="review-tour-step">{phone
       ? <><button ref={notesBar} type="button" className="review-tour-notes-bar" aria-label="Show step notes" aria-expanded={notesOpen} onClick={() => setNotesOpen(true)}><span><strong>{step.title}</strong><span>{step.explanation}</span></span><small className={stepFeedback.trim() === '' ? undefined : 'has-feedback'}>{stepFeedback.trim() === '' ? 'Notes' : 'Feedback'}</small></button>
@@ -556,7 +564,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
       : <section className="review-tour-narration">{narration}</section>}<section className="review-tour-diffs" aria-label="Relevant changes"><Suspense fallback={<p className="review-tour-diff-loading" role="status">Loading diff…</p>}><ReviewDiffs changes={changes} comments={comments} openCommentIds={openCommentIds} onCommentAdd={addComment} onCommentChange={updateComment} onCommentOpen={openComment} onCommentClose={closeComment} onCommentDelete={deleteComment} {...(onOpenInEditor === undefined ? {} : { onOpenInEditor })} /></Suspense></section></main><footer className="review-tour-actions"><button type="button" disabled={current === 0} onClick={back}>Back</button><button type="button" onClick={skip}>Skip</button><span>{feedbackTotal >= maxFeedbackTotal ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{complete ? <button type="button" disabled={stale || feedbackTotal > maxFeedbackTotal} onClick={() => void summarize()}>Review summary</button> : <button type="button" onClick={next}>Next</button>}</footer></>}
     {tour && state === 'summary' && <main className="review-tour-summary"><h3>Review complete</h3><ul>{tour.steps.map(candidate => <li key={candidate.id}><span className={statuses[candidate.id]}>{statuses[candidate.id]}</span><strong>{candidate.title}</strong></li>)}</ul>{orphanFeedback !== '' && <p>Feedback from regenerated steps is retained in the consolidated change request.</p>}{feedbackTotal === 0 ? <p>No feedback was recorded. You can finish without sending anything.</p> : <label>Consolidated change request<textarea value={dispatch} maxLength={maxDispatch} onChange={event => setDispatch(event.target.value)} />{dispatch.length >= maxDispatch && <span role="status">{maxDispatch.toLocaleString()} character limit reached</span>}</label>}{error && <p ref={dispatchError} className="review-tour-error" role="alert" tabIndex={-1}>{error}</p>}{sent && <p className="review-tour-sent" role="status">Change request sent to the implementation agent.</p>}<footer className="review-tour-actions"><button type="button" onClick={() => setState('tour')}>Back to tour</button><span />{feedbackTotal > 0 && !sent && <button type="button" disabled={dispatching || dispatch.trim() === '' || dispatch.length > maxDispatch} onClick={() => void send()}>{dispatching ? 'Sending…' : 'Send change request'}</button>}<button type="button" onClick={minimize}>Finish</button></footer></main>}
     </div>
-    <div className="review-tour-filters" role="group" aria-label="Tour content"><span>{tour?.base ? `Compared with ${tour.base}` : scopeLabel}</span><label><input type="checkbox" checked={includeTests} onChange={event => setIncludeTests(event.target.checked)} />Tests</label><label><input type="checkbox" checked={includeDocs} onChange={event => setIncludeDocs(event.target.checked)} />Docs</label></div>
+    <p className="review-tour-comparison">{comparisonLabel}</p>
   </div></div>;
   return createPortal(content, document.body);
 }
