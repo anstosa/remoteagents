@@ -19,12 +19,15 @@ export const launchPollDelay = async (): Promise<void> => await new Promise(reso
  */
 export type AgentWaiter = (before: Set<string>, matches: (agent: Agent) => boolean) => Promise<Agent | undefined>;
 
-// the waiter match for an Agent launched at a directory-Project or Scratch Place
-export const atPlace = (placeId: string) => (agent: Agent): boolean => agent.placeId === placeId;
+// the waiter match for an Agent launched at a directory-Project or Scratch Place. Neither Place
+// match takes a Review run's Agent, which its own run launched alongside (ADR 0010).
+export const atPlace = (placeId: string) => (agent: Agent): boolean => agent.placeId === placeId && agent.reviewRun === undefined;
 // the waiter match for an Agent launched in a Worktree: the same Place match (discovery sets
 // `worktreeId` exactly when the Agent's Place is that Worktree), kept on the field every Worktree
 // flow already reads
-export const inWorktree = (worktreeId: string) => (agent: Agent): boolean => agent.worktreeId === worktreeId;
+export const inWorktree = (worktreeId: string) => (agent: Agent): boolean => agent.worktreeId === worktreeId && agent.reviewRun === undefined;
+// the waiter match for the Agent one interactive Review run launched, by its pane mark
+export const reviewRunAgent = (runId: string) => (agent: Agent): boolean => agent.reviewRun === runId;
 
 export function createAgentWaiter(discovery: { dashboard(force?: boolean): Promise<Dashboard> }, pollDelay: () => Promise<void>): AgentWaiter {
   return async (before, matches) => {

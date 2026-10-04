@@ -9,7 +9,9 @@ export type SocketRef = { fingerprint: string; path: string; device: number; ino
 // then falls back to `command · ~/path`).
 // `placeMark` is the pane's session's `@rac_place`, the id of the Place whose Workspace the
 // session is: every pane of the session belongs there, wherever its shell has `cd`'d.
-export type Pane = { paneId: string; sessionId: string; sessionName?: string; windowId?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; role?: string; processName?: string; paneName?: string; paneMode?: string; placeMark?: string; socket: SocketRef };
+// `reviewRun` is the pane's `@rac_review_run`, the id of the interactive Review run that
+// launched it (ADR 0010); the Agent carries it too.
+export type Pane = { paneId: string; sessionId: string; sessionName?: string; windowId?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; role?: string; processName?: string; paneName?: string; paneMode?: string; placeMark?: string; reviewRun?: string; socket: SocketRef };
 export type PullRequestIssues = { mergeConflicts?: boolean; failingChecks?: boolean; unresolvedComments?: boolean };
 export type PullRequestCheckStatus = 'passed' | 'pending' | 'failed';
 export type PullRequestSummary = { number: number; title: string; status: 'draft' | 'open' | 'merged'; url: string; baseBranch?: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
@@ -44,7 +46,7 @@ export type GitStatusChange = { code: string; path: string; originalPath?: strin
 export type GitStatusSummary = { files: number; staged: number; unstaged: number; untracked: number; conflicted: number; changes?: GitStatusChange[] };
 export type GitComparisonSummary = { base: string; files: number; changes?: GitStatusChange[] };
 export type GitUpstreamSummary = { upstream: string; ahead: number; behind: number };
-export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; paneMode?: string };
+export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; paneMode?: string; reviewRun?: string };
 // An Agent's `sessionId` is the console's composite id `${socketFingerprint}:${tmuxSession}`
 // (discovery keys agents that way). Recover the raw tmux session name a command targets.
 export const agentTmuxSession = (agent: Pick<Agent, 'sessionId' | 'socketFingerprint'>): string => agent.sessionId.slice(agent.socketFingerprint.length + 1);

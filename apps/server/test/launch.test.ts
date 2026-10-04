@@ -5,10 +5,12 @@ const { run } = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/tmux/command.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../src/tmux/command.js')>()), run }));
 
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LaunchService, composeCommand, composeLaunch, expandCommand, expandHomeCommand, scratchLabel, type TmuxSession } from '../src/launch/service.js';
+import { LaunchService, composeCommand, composeLaunch, expandCommand, expandHomeCommand, scratchLabel, withoutFlags, type TmuxSession } from '../src/launch/service.js';
+import { atPlace, inWorktree, reviewRunAgent } from '../src/launch/wait.js';
+import { reviewReplacedFlags, reviewRunArgs } from '../src/review-runs/launch-args.js';
 import { hostCommand, interactiveShellBootstrap, interactiveShellPath } from '../src/tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../src/tmux/session-name.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
@@ -1176,5 +1178,92 @@ describe('hostile checkout paths', () => {
     expect(created('new-session')).toEqual(expect.arrayContaining(['-s', 'x##(touch pwned)']));
     const restored = run.mock.calls.map(call => call[1] as string[]).filter(args => args.includes('rename-session')).at(-1);
     expect(restored?.at(-1)).toBe('x##(touch pwned)');
+  });
+});
+
+describe('Review run launches', () => {
+  const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+  const runId = 'run_abcdefgh1234';
+
+  it('drops replaced operator flags with their values and appends the run arguments last', () => {
+    const flags = reviewReplacedFlags.codex;
+    expect(withoutFlags(['-c', 'check_for_update_on_startup=false', '--sandbox', 'workspace-write', '-m', 'o3', '--dangerously-bypass-approvals-and-sandbox', '--model=o4', '--search'], flags)).toEqual(['-c', 'check_for_update_on_startup=false', '--search']);
+    // a variadic flag takes every following value, up to the next flag
+    expect(withoutFlags(['--mcp-config', 'a.json', 'b.json', '--verbose'], reviewReplacedFlags.claude)).toEqual(['--verbose']);
+    expect(reviewRunArgs('codex', { model: 'gpt-5', effort: 'low' })).toEqual(['--sandbox', 'read-only', '--ask-for-approval', 'never', '-m', 'gpt-5', '-c', 'model_reasoning_effort=low']);
+    expect(reviewRunArgs('claude', { readDirectory: '/tmp/runs', effort: 'high' })).toEqual(['--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--add-dir', '/tmp/runs', '--effort', 'high']);
+    expect(composeLaunch('/usr/local/bin/codex', [], ['-c', 'x=1'], {}, {}, undefined, ['--sandbox', 'read-only'])).toBe('/usr/local/bin/codex -c x=1 --sandbox read-only');
+  });
+
+  it('opens a marked, labelled window in the Workspace session, keeping the Claude hooks settings, without adopting its idle shell', async () => {
+    const filesDir = await mkdtemp(join(tmpdir(), 'rac-launch-files-'));
+    tempDirs.push(filesDir);
+    process.env.RAC_ADAPTER_FILES_DIR = filesDir;
+    run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('new-window') ? '%9\n' : '', stderr: '' }));
+    const worktree = cora();
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', placeMark: worktree.id, socket }], pastePrompt: vi.fn(), enter: vi.fn() };
+    const config = { adapters: { claude: { program: '/usr/local/bin/claude', args: ['--model', 'opus', '--verbose'], env: {}, launchable: true } }, projects: [] };
+    const store = { launchProfiles: async () => ({}), rememberLaunchProfile: vi.fn(async () => {}) };
+    const service = new LaunchService(config as never, { find: async () => [socket] }, panes as never, undefined, store as never, () => [worktree], undefined, undefined, filesDir);
+
+    await expect(service.launchReviewRun(worktree.id, 'claude', { runId, label: '🔍 Review · Correctness', extraArgs: reviewRunArgs('claude', { model: 'sonnet', readDirectory: '/tmp/runs' }), replacedFlags: reviewReplacedFlags.claude })).resolves.toBe(true);
+
+    const window = run.mock.calls.map(call => call[1] as string[]).find(args => args.includes('new-window'));
+    expect(window?.slice(0, 6)).toEqual(['-S', '/host-tmux/default', 'new-window', '-d', '-t', '$1']);
+    const descriptor = JSON.parse(await readFile(window!.at(-1)!, 'utf8')) as { args: string[] };
+    // the Adapter's hooks settings stay; the operator's --model gives way to the run's
+    expect(descriptor.args.join(' ')).toContain(`/usr/local/bin/claude --settings ${join(filesDir, 'claude', 'hooks.json')} --verbose --tools Read,Grep,Glob --strict-mcp-config --add-dir /tmp/runs --model sonnet`);
+    expect(descriptor.args.join(' ')).not.toContain('opus');
+    expect(panes.pastePrompt).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%9', '@rac_review_run', runId]);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%9', '@rac_display_label', '🔍 Review · Correctness']);
+    // a Review run never becomes the Worktree's remembered kind
+    expect(store.rememberLaunchProfile).not.toHaveBeenCalled();
+  });
+
+  it('starts a free-named Workspace session when the Worktree has none, never displacing one', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%7\n' : args.includes('list-sessions') ? 'cora\n' : '', stderr: '' }));
+    const worktree = cora();
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
+
+    await expect(service.launchReviewRun(worktree.id, 'codex', { runId, label: '🗺 Tour · main', extraArgs: reviewRunArgs('codex', {}), replacedFlags: reviewReplacedFlags.codex })).resolves.toBe(true);
+
+    const session = run.mock.calls.map(call => call[1] as string[]).find(args => args.includes('new-session'));
+    expect(session).toEqual(expect.arrayContaining(['-s', 'cora-2']));
+    expect(session?.join(' ')).toContain(`${codexProgram} --sandbox read-only --ask-for-approval never`);
+    expect(run.mock.calls.some(call => (call[1] as string[]).includes('kill-session'))).toBe(false);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-t', '%7', '@rac_place', worktree.id]);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%7', '@rac_review_run', runId]);
+  });
+
+  it('refuses an unlaunchable kind and a malformed run id', async () => {
+    const worktree = cora();
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
+    const launch = { runId, label: 'x', extraArgs: [], replacedFlags: reviewReplacedFlags.codex };
+    await expect(service.launchReviewRun(worktree.id, 'claude', launch)).resolves.toBe(false);
+    await expect(service.launchReviewRun(worktree.id, 'codex', { ...launch, runId: 'bad id' })).resolves.toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('never adopts a Review run pane whose Agent exited back to the shell', async () => {
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const worktree = cora();
+    const root = await mkdtemp(join(tmpdir(), 'rac-launch-root-'));
+    tempDirs.push(root);
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', placeMark: worktree.id, reviewRun: runId, socket }], pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true) };
+    const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree], undefined, undefined, root);
+    await service.launch(worktree.id);
+    expect(panes.pastePrompt).not.toHaveBeenCalled();
+  });
+});
+
+describe('Review run Agent matching', () => {
+  it('keeps a Review run Agent out of the Place waiters and finds it by its run id', () => {
+    const agent = { worktreeId: 'cora', placeId: 'cora', reviewRun: 'run_abcdefgh1234' } as never;
+    expect(inWorktree('cora')(agent)).toBe(false);
+    expect(atPlace('cora')(agent)).toBe(false);
+    expect(reviewRunAgent('run_abcdefgh1234')(agent)).toBe(true);
+    expect(inWorktree('cora')({ worktreeId: 'cora' } as never)).toBe(true);
   });
 });

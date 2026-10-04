@@ -45,13 +45,42 @@ export function composeCommand(program: string, args: string[]): string {
 // `eval '<setup>'` so it is a single command whose exit status gates the program
 // through `&&`: a non-zero setup stops the agent from ever starting, and a
 // compound setup (`a || b`, `a; b`, a multi-line command) cannot re-associate the
-// `&&` and silently launch or skip the program.
-export function composeLaunch(program: string, adapterArgs: string[], operatorArgs: string[], adapterEnv: Record<string, string> = {}, operatorEnv: Record<string, string> = {}, setup?: string): string {
+// `&&` and silently launch or skip the program. `extraArgs` are one launch's own
+// arguments (a Review run's read-only flags), placed last.
+export function composeLaunch(program: string, adapterArgs: string[], operatorArgs: string[], adapterEnv: Record<string, string> = {}, operatorEnv: Record<string, string> = {}, setup?: string, extraArgs: string[] = []): string {
   const env = { ...adapterEnv, ...operatorEnv };
   const prefix = Object.entries(env).map(([name, value]) => `${name}=${shellQuote(value)}`).join(' ');
-  const command = composeCommand(shellQuote(program), [...adapterArgs, ...operatorArgs]);
+  const command = composeCommand(shellQuote(program), [...adapterArgs, ...operatorArgs, ...extraArgs]);
   const launch = prefix === '' ? command : `${prefix} ${command}`;
   return setup === undefined ? launch : `eval ${shellQuote(setup)} && ${launch}`;
+}
+
+// how an operator flag a launch replaces takes its value: none, the next token, or every
+// following token up to the next flag (a variadic option)
+export type ReplacedFlagValue = 'none' | 'one' | 'many';
+// One Review run's launch (ADR 0010): its id, which marks the pane `@rac_review_run`, the
+// label the Agent's tab reads as, the run's own arguments (placed last), and the operator
+// flags those replace or that would loosen the run's read-only policy.
+export type ReviewRunLaunch = { runId: string; label: string; extraArgs: string[]; replacedFlags: ReadonlyMap<string, ReplacedFlagValue> };
+// a Review run id: the random token the pane mark carries
+const reviewRunIdPattern = /^[A-Za-z0-9_-]{8,64}$/u;
+
+// Drop the replaced flags from the operator's arguments, each with its value (a following
+// token that is not itself a flag, or an attached `--flag=value`), so a run's own flag
+// never doubles an operator one: Codex refuses a repeated `--sandbox` or `--model`.
+export function withoutFlags(args: string[], flags: ReadonlyMap<string, ReplacedFlagValue>): string[] {
+  const kept: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    const attached = argument.startsWith('--') && argument.includes('=');
+    const value = flags.get(attached ? argument.slice(0, argument.indexOf('=')) : argument);
+    if (value === undefined) { kept.push(argument); continue; }
+    // an attached value or a bare switch takes nothing more
+    if (attached || value === 'none') continue;
+    // consume the value token(s); a following flag is a separate argument
+    while (index + 1 < args.length && !args[index + 1]!.startsWith('-')) { index += 1; if (value === 'one') break; }
+  }
+  return kept;
 }
 
 // what a Console shell needs of its Place: membership, where it starts and whose HOME it exports
@@ -188,13 +217,15 @@ export class LaunchService {
   }
 
   // Compose the inner shell command for a launch of `kind`: [program, …adapter args,
-  // …operator args] from the kind's configured entry. A kind with no entry cannot launch.
-  private composeKindLaunch(kind: AgentKind, input: LaunchInput): string | undefined {
+  // …operator args] from the kind's configured entry, then a Review run's own arguments
+  // with the operator flags they replace dropped. A kind with no entry cannot launch.
+  private composeKindLaunch(kind: AgentKind, input: LaunchInput, review?: ReviewRunLaunch): string | undefined {
     const adapter = adapterFor(kind);
     const configured = this.config.adapters[kind];
     if (adapter === undefined || configured === undefined) return undefined;
     const spec = adapter.launch(input);
-    return composeLaunch(configured.program, spec.args, configured.args, spec.env, configured.env, configured.setup);
+    const operatorArgs = review === undefined ? configured.args : withoutFlags(configured.args, review.replacedFlags);
+    return composeLaunch(configured.program, spec.args, operatorArgs, spec.env, configured.env, configured.setup, review?.extraArgs);
   }
 
   // the inner command for a worktree launch
@@ -239,6 +270,8 @@ export class LaunchService {
   // Terminal, so a Launch cannot paste into what someone is typing into or reading.
   private idleLandingShell(pane: Pane): boolean {
     if (pane.sessionName?.startsWith('rac-stack-')) return false;
+    // a Review run's pane stays its run's, even once its Agent has exited to the shell
+    if (pane.reviewRun !== undefined) return false;
     if (pane.role !== undefined || this.paneHasOpenTerminal(pane)) return false;
     return pane.command === this.hostShellName;
   }
@@ -477,6 +510,51 @@ export class LaunchService {
   // launch a fresh agent in a worktree, resolving the kind (or using the requested one)
   async launch(worktreeId: string, kind?: AgentKind): Promise<boolean> {
     return await this.launchWorktree(worktreeId, { mode: 'fresh', ...(kind === undefined ? {} : { kind }) });
+  }
+
+  // Launch a Review run's Agent (ADR 0010): a fresh `kind` pane in the Worktree's Workspace,
+  // never an adopted shell, with the run's read-only arguments composed in. The pane is marked
+  // `@rac_review_run=<runId>` (so adoption, the other launch flows and completion notifications
+  // leave it alone) and labelled with the run. It joins the Place's session, else any session
+  // marked as its Workspace, else starts one under a free name, never displacing another
+  // session. The kind is not remembered as the Worktree's last-used one. Another launch in
+  // flight at the Worktree is waited out rather than refused: a tour and its Code review
+  // may launch together.
+  async launchReviewRun(worktreeId: string, kind: AgentKind, review: ReviewRunLaunch): Promise<boolean> {
+    const worktree = this.worktreeById(worktreeId);
+    if (worktree === undefined || !this.isLaunchableKind(kind) || !reviewRunIdPattern.test(review.runId)) { console.warn(`[launch] review run: cannot launch ${kind} in ${worktreeId}`); return false; }
+    if (!await this.waitForLaunchSlot(worktreeId)) { console.warn(`[launch] ${worktree.identity}: a review run waited too long for another launch`); return false; }
+    this.pending.add(worktreeId);
+    try {
+      const files = await this.adapterFiles(kind);
+      const command = this.composeKindLaunch(kind, { mode: 'fresh', cwd: worktree.identity, sandboxed: false, ...(files === undefined ? {} : { files }) }, review);
+      if (command === undefined) return false;
+      const id = randomBytes(18).toString('base64url');
+      const site = this.worktreeSite(worktree);
+      const workspace = (await this.placePanes(worktree))[0];
+      const joined = await this.placeSession(worktree) ?? (workspace === undefined ? undefined : { socket: workspace.socket, session: workspace.sessionId });
+      if (joined !== undefined) {
+        const pane = await this.launchInSessionWindow(site, command, id, false, joined, worktree.identity);
+        return pane !== undefined && await this.markReviewRun(joined.socket.path, pane, review);
+      }
+      // tmux turns `.` into `_` in a session name, so the free-name check compares what it lists
+      const pane = await this.startLaunchSession(site, command, id, await this.availableSessionName(worktreeSessionName(worktreeHostRoot(worktree)).replaceAll('.', '_')));
+      return pane !== undefined && await this.markSessionPlace(this.hostSocket, pane, worktree.id) && await this.markConsoleManaged(this.hostSocket, pane) && await this.markReviewRun(this.hostSocket, pane, review);
+    } finally {
+      this.pending.delete(worktreeId);
+    }
+  }
+
+  // wait for another launch at this scope to finish, up to the launch-ready window
+  private async waitForLaunchSlot(scope: string): Promise<boolean> {
+    for (let attempt = 0; attempt < 240 && this.pending.has(scope); attempt += 1) await new Promise(resolve => setTimeout(resolve, 250));
+    return !this.pending.has(scope);
+  }
+
+  // mark a Review run's pane with its run id and label it with the run
+  private async markReviewRun(socketPath: string | undefined, pane: string, review: ReviewRunLaunch): Promise<boolean> {
+    const socket = socketPath === undefined ? [] : ['-S', socketPath];
+    return (await run(this.tmux, [...socket, 'set-option', '-p', '-t', pane, '@rac_review_run', review.runId])).code === 0 && await this.labelPane(socketPath, pane, review.label);
   }
 
   // resume the previous conversation (Codex: `codex resume --last`), no shell alias
