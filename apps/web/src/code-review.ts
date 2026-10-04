@@ -114,8 +114,13 @@ export function initialEffort(preset: CodeReviewPreset): string {
 }
 
 // A running Code review job, from the tour start reply's `codeReview.job`, an "Add AI review"
-// start, or a restored stored tour's `codeReviewJob`.
-export type CodeReviewJob = { id: string; expiresAt: string; retryAfterMs: number };
+// start, or a restored stored tour's `codeReviewJob`. A newer server says when it started.
+export type CodeReviewJob = { id: string; expiresAt: string; retryAfterMs: number; startedAt?: string };
+// The Agent an interactive Review run is working in, and whether it is waiting on the operator; a
+// pending poll reply carries it once the run's pane is up.
+export type ReviewRunLink = { agentId: string; needsInput: boolean };
+// what a pending poll reply says about a running job, beyond that it is still running
+export type ReviewJobProgress = { run?: ReviewRunLink; startedAt?: string };
 type CodeReviewRequest = (url: string, init?: RequestInit, observeReachability?: boolean) => Promise<Response>;
 // how a polled job settled: its review, why it failed, or quietly gone (cancelled, or superseded by a
 // new tour start or a dismissal)
@@ -124,6 +129,18 @@ export type CodeReviewOutcome = { review: CodeReview } | { error: string } | { g
 // validate a bounded job descriptor
 export function isCodeReviewJob(value: unknown): value is CodeReviewJob {
   return isRecord(value) && typeof value.id === 'string' && typeof value.expiresAt === 'string' && typeof value.retryAfterMs === 'number';
+}
+
+// Read a pending reply's `run`, or undefined when absent (a headless run, an older server) or malformed.
+export function reviewRunFrom(value: unknown): ReviewRunLink | undefined {
+  return isRecord(value) && typeof value.agentId === 'string' && value.agentId !== '' ? { agentId: value.agentId, needsInput: value.needsInput === true } : undefined;
+}
+
+// Read what a pending poll reply says: its `run`, and its job's `startedAt` when that is a valid time.
+export function reviewJobProgress(body: Record<string, unknown>): ReviewJobProgress {
+  const run = reviewRunFrom(body.run);
+  const startedAt = isRecord(body.job) && typeof body.job.startedAt === 'string' && Number.isFinite(Date.parse(body.job.startedAt)) ? body.job.startedAt : undefined;
+  return { ...(run === undefined ? {} : { run }), ...(startedAt === undefined ? {} : { startedAt }) };
 }
 
 // read one JSON body, tolerating empty or invalid ones
@@ -158,8 +175,10 @@ export function codeReviewErrorMessage(code: string | undefined, status: number)
 const transientFailure = (response: Response, code: string | undefined) => code === undefined && (response.status === 502 || response.status === 503 || response.status === 504 || response.status >= 520 && response.status <= 530);
 
 // Poll one Code review job until it settles, then report its outcome once. Polling stops when the
-// job changes or the caller unmounts; it never cancels the job.
-export function useCodeReviewPoll(request: CodeReviewRequest, job: CodeReviewJob | undefined, onSettled: (outcome: CodeReviewOutcome) => void): void {
+// job changes or the caller unmounts; it never cancels the job. Returns what the job's latest pending
+// reply said (its run's pane and start time).
+export function useCodeReviewPoll(request: CodeReviewRequest, job: CodeReviewJob | undefined, onSettled: (outcome: CodeReviewOutcome) => void): ReviewJobProgress {
+  const [progress, setProgress] = useState<ReviewJobProgress & { jobId: string }>();
   const settled = useRef(onSettled);
   // retain the latest outcome callback
   useEffect(() => { settled.current = onSettled; }, [onSettled]);
@@ -175,7 +194,7 @@ export function useCodeReviewPoll(request: CodeReviewRequest, job: CodeReviewJob
       // ignore replaced jobs
       if (stopped) return;
       // keep polling pending work
-      if (response.status === 202 && body.status === 'pending') { later(); return; }
+      if (response.status === 202 && body.status === 'pending') { setProgress({ jobId: job.id, ...reviewJobProgress(body) }); later(); return; }
       const review = response.ok && body.status === 'ready' ? codeReviewFrom(body.review) : undefined;
       // publish a validated review
       if (review !== undefined) { settled.current({ review }); return; }
@@ -189,6 +208,8 @@ export function useCodeReviewPoll(request: CodeReviewRequest, job: CodeReviewJob
     void poll();
     return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer); };
   }, [job, request]);
+  // only the current job's progress
+  return progress !== undefined && progress.jobId === job?.id ? { ...(progress.run === undefined ? {} : { run: progress.run }), ...(progress.startedAt === undefined ? {} : { startedAt: progress.startedAt }) } : {};
 }
 
 // When each job was first seen running on this page, so a reopened dialog keeps counting.
@@ -200,8 +221,9 @@ export const formatElapsed = (ms: number): string => {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 };
 
-// The time a job has been running, ticking each second while it runs.
-export function useJobElapsed(job: CodeReviewJob | undefined): string {
+// The time a job has been running, ticking each second while it runs: from the server's start time
+// (`startedAt`, else the job's own) when known, else from when this page first saw it.
+export function useJobElapsed(job: CodeReviewJob | undefined, startedAt?: string): string {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     // tick only while a job runs
@@ -211,7 +233,9 @@ export function useJobElapsed(job: CodeReviewJob | undefined): string {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [job]);
-  return job === undefined ? '' : formatElapsed(now - (jobsSeenAt.get(job.id) ?? now));
+  if (job === undefined) return '';
+  const serverStart = Date.parse(startedAt ?? job.startedAt ?? '');
+  return formatElapsed(now - (Number.isFinite(serverStart) ? serverStart : jobsSeenAt.get(job.id) ?? now));
 }
 
 // "4 findings · 1 general", the chip's count of a completed review

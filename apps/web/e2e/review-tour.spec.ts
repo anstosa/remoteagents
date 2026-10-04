@@ -893,6 +893,8 @@ test('follows the AI review started with the tour, and cancels it with the tour'
   const dialog = page.getByRole('dialog', { name: 'Route tour' });
   await expect(dialog.getByText(/^AI review running · \d+s$/u)).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Add AI review' })).toHaveCount(0);
+  // a headless run (or an older server) names no pane to open
+  await expect(dialog.getByRole('button', { name: 'Open pane' })).toHaveCount(0);
   reviewReady = true;
   await expect(dialog.getByText('AI review · 2 findings · 1 general')).toBeVisible();
   expect(deleted).not.toContain('/api/code-review/jobs/review-2');
@@ -1192,4 +1194,46 @@ test('counts the Findings not reviewed on the summary and jumps back to them', a
   await dialog.getByRole('button', { name: 'Review summary' }).click();
   await expect(dialog.getByRole('heading', { name: 'Review complete' })).toBeVisible();
   await expect(untriaged).toHaveCount(0);
+});
+
+test('links a running interactive AI review to its pane and counts from its start', async ({ page }) => {
+  let needsInput = false;
+  const startedAt = new Date(Date.now() - 125_000).toISOString();
+  const { dialog } = await openTriageTour(page, { stored: { codeReviewJob: pendingJob('review-run') }, codeReviewPoll: route => route.fulfill({ status: 202, json: { status: 'pending', job: { ...pendingJob('review-run'), startedAt }, run: { agentId: 'agent-review', needsInput } } }) });
+  // the elapsed time counts from the server's start, not from when this page saw the job
+  await expect(dialog.getByText(/^AI review running · 2m \d+s/u)).toBeVisible();
+  await expect(dialog.locator('.review-tour-ai').getByRole('button', { name: 'Open pane' })).toBeVisible();
+  needsInput = true;
+  await expect(dialog.locator('.review-tour-ai')).toHaveText(/^AI review needs input·Open pane$/u);
+  // Open pane selects the run's Agent and gets the review out of the way
+  await dialog.locator('.review-tour-ai').getByRole('button', { name: 'Open pane' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL(/#agent=agent-review$/u);
+});
+
+test('links a tour run waiting on the operator to its pane', async ({ page }) => {
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, ...claudeReviewCapabilities, agents: [startSheetAgent, { ...startSheetAgent, id: 'agent-tour', sessionId: 'socket:$2', title: 'Tour · feature/review-tour' }], projects: [] } });
+    if (await fulfillAgentSupport(route, url.pathname)) return;
+    if (url.pathname === '/api/agents/agent-1/review-tour/jobs') return route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob('job-run') } });
+    if (url.pathname === '/api/review-tour/jobs/job-run' && request.method() === 'GET') return route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob('job-run'), run: { agentId: 'agent-tour', needsInput: true } } });
+    if (request.method() === 'DELETE') return route.fulfill({ status: 204 });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  const branchButton = page.getByRole('button', { name: /Git status: feature\/review-tour/ });
+  await branchButton.click();
+  await startReview(page);
+  await branchButton.click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Generating…' }).click();
+  const loading = page.getByRole('dialog', { name: 'Generating change tour' });
+  await expect(loading.getByText('The tour needs input')).toBeVisible();
+  await expect(loading.getByText('Claude asked a question in its pane. Answer it there to continue.')).toBeVisible();
+  await loading.getByRole('button', { name: 'Open pane' }).click();
+  await expect(loading).toBeHidden();
+  await expect(page).toHaveURL(/#agent=agent-tour$/u);
 });

@@ -1929,6 +1929,8 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .review-tour-ai.running { border-color: color-mix(in srgb, var(--peach) 50%, var(--surface-2)); color: var(--peach); }
 .review-tour-ai.ready { border-color: color-mix(in srgb, var(--blue) 55%, var(--surface-2)); color: var(--blue); }
 .review-tour-ai.failed { border-color: color-mix(in srgb, var(--red) 55%, var(--surface-2)); color: var(--red); }
+.review-tour-ai.needs-input { border-color: color-mix(in srgb, var(--yellow) 60%, var(--surface-2)); color: var(--yellow); }
+.review-tour-ai.running button, .review-tour-ai.needs-input button { padding: .1rem .5rem; }
 .review-tour-ai.add { padding: 0; border: 0; }
 .review-tour-ai .spinner { width: .7rem; height: .7rem; }
 .review-tour-ai-reason { max-width: 20rem; overflow: hidden; color: var(--subtext-0); font-weight: 600; text-overflow: ellipsis; }
