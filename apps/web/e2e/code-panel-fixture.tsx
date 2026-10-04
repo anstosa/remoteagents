@@ -14,6 +14,10 @@ function Workspace({ children, startExpanded = false }: { children: ReactElement
   return createElement(PanelExpandContext.Provider, { value: scope.context }, createElement('div', { ref: containerRef, style: { display: 'grid', minWidth: 0, minHeight: 0 }, onKeyDown: scope.onKeyDown }, children));
 }
 
+// A spec reads the editor jumps the file headers asked for, when mounted with an editor configured.
+const editorLog = (): { __editorJumps?: unknown[] } => window as unknown as { __editorJumps?: unknown[] };
+const editorProps = (editor: boolean) => editor ? { onOpenInEditor: (target: unknown) => { (editorLog().__editorJumps ??= []).push(target); } } : {};
+
 // A spec reads the recorded loadFile calls to confirm Plain / Full-context / live-rebuild fetched the file.
 const loadLog = (): { __codeLoads?: string[] } => window as unknown as { __codeLoads?: string[] };
 
@@ -34,7 +38,7 @@ export const updateCodePanel = (patch: ComparisonPatch, loaded?: Record<string, 
 // and a live update in isolation from the dashboard and the network. `loaded` stands in for the
 // /comparison/file endpoint that Plain, Full-context, and "Load anyway" call; every call is recorded
 // on `window.__codeLoads` and held while the gate is closed.
-function Harness({ initialPatch, initialLoaded, startExpanded }: { initialPatch: ComparisonPatch; initialLoaded: Record<string, ComparisonFileContents>; startExpanded?: boolean }) {
+function Harness({ initialPatch, initialLoaded, startExpanded, editor = false }: { initialPatch: ComparisonPatch; initialLoaded: Record<string, ComparisonFileContents>; startExpanded?: boolean; editor?: boolean }) {
   const [patch, setPatch] = useState(initialPatch);
   const [selectedPath, setSelectedPath] = useState<string>();
   const [mode, setMode] = useState<CodePanelMode>(initialPatch.kind);
@@ -60,19 +64,22 @@ function Harness({ initialPatch, initialLoaded, startExpanded }: { initialPatch:
     onClearFile: () => setSelectedPath(undefined),
     onSetMode: (next: CodePanelMode) => setMode(next),
     onCloseFile: () => { /* isolated fixture has no Comparison to return to */ },
-    onClose: () => { /* isolated fixture has nothing to close into */ }
+    onClose: () => { /* isolated fixture has nothing to close into */ },
+    ...editorProps(editor)
   }));
 }
 
-export const renderCodePanel = (root: HTMLElement, patch: ComparisonPatch, loaded: Record<string, ComparisonFileContents> = {}, startExpanded = false) => {
+export const renderCodePanel = (root: HTMLElement, patch: ComparisonPatch, loaded: Record<string, ComparisonFileContents> = {}, startExpanded = false, editor = false) => {
   loadLog().__codeLoads = [];
+  editorLog().__editorJumps = [];
   gate.held = false; gate.waiters = [];
-  createRoot(root).render(createElement(Harness, { initialPatch: patch, initialLoaded: loaded, startExpanded }));
+  createRoot(root).render(createElement(Harness, { initialPatch: patch, initialLoaded: loaded, startExpanded, editor }));
 };
 
 // Mount the panel showing a static File view, so a spec can assert each preview state (text through
 // the library, an image, a binary placeholder, an over-cap notice) without a controller or network.
-export const renderFilePreview = (root: HTMLElement, filePreview: FilePreviewView) => {
+export const renderFilePreview = (root: HTMLElement, filePreview: FilePreviewView, editor = false) => {
+  editorLog().__editorJumps = [];
   createRoot(root).render(createElement(Workspace, {}, createElement(CodePanel, {
     mode: 'working' as CodePanelMode,
     state: 'ready' as const,
@@ -85,7 +92,8 @@ export const renderFilePreview = (root: HTMLElement, filePreview: FilePreviewVie
     onClearFile: () => { /* no rail in the File view */ },
     onSetMode: () => { /* no Comparison toggle in the File view */ },
     onCloseFile: () => { /* spec asserts render, not navigation */ },
-    onClose: () => { /* spec asserts render, not navigation */ }
+    onClose: () => { /* spec asserts render, not navigation */ },
+    ...editorProps(editor)
   })));
 };
 

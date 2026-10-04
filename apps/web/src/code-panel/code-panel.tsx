@@ -7,6 +7,7 @@
 // itself is purely visual: the diff mode (Hunks / Full context / Plain file), unified vs split, and
 // the changed-file rail/drawer.
 import { type MouseEvent as ReactMouseEvent, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CodeViewLineSelection } from '@pierre/diffs';
 import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions, type FileDiffMetadata } from '@pierre/diffs/react';
 import { openSelectionContextMenu, preserveContextMenuPress, useSelectionActions, type SelectionActions, type SelectionContextMode } from '../selection-context-menu.js';
 import { useColorTheme } from '../color-theme.js';
@@ -14,6 +15,7 @@ import { PanelHeader, PanelIcon, panelIcons, usePanelExpand } from '../panel-hea
 import { useTerminalFontSize } from '../terminal-font-size.js';
 import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch, type FilePreviewView } from './comparison.js';
 import { DiffLayoutSegment, SPLIT_MIN_WIDTH, useObservedWidth } from './diff-layout.js';
+import { diffJumpLine, EditorJumpButton, isPlaceRelativePath, type EditorTarget } from './editor-jump.js';
 import { codeViewBaseOptions, codeViewStyle, diffItemForContents, diffItemForFile, fileItemForContents, fileVersion, loadedFilesFromContents } from './items.js';
 
 type PanelItem = CodeViewItem<undefined>;
@@ -57,6 +59,9 @@ export type CodePanelProps = {
   onCloseFile: () => void;
   onClose: () => void;
   onRetry?: () => void;
+  // open a file at a line in the configured editor; the file headers' editor buttons are hidden
+  // without it
+  onOpenInEditor?: (target: EditorTarget) => void;
 };
 
 // Start (or reopen) the guided review of a Comparison; `unavailable` says why it cannot start.
@@ -155,7 +160,7 @@ function codeContextMenu(event: ReactMouseEvent<HTMLElement>, actions: Selection
   });
 }
 
-export default function CodePanel({ mode, state, patch, selectedPath, filePreview, prAvailable, branch, review, loadFile, onSelectFile, onClearFile, onSetMode, onCloseFile, onClose, onRetry }: CodePanelProps) {
+export default function CodePanel({ mode, state, patch, selectedPath, filePreview, prAvailable, branch, review, loadFile, onSelectFile, onClearFile, onSetMode, onCloseFile, onClose, onRetry, onOpenInEditor }: CodePanelProps) {
   const selectionActions = useSelectionActions();
   const theme = useColorTheme();
   const fontSize = useTerminalFontSize();
@@ -439,6 +444,20 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
     setLoadStatus(current => { const next = { ...current }; delete next[path]; return next; });
   };
 
+  // The selected line range, which the file headers' editor buttons open at. The library owns the
+  // selection (clicking a line number selects it); the panel only listens.
+  const [selection, setSelection] = useState<CodeViewLineSelection | null>(null);
+  // Each file header's editor button opens the working tree's copy at the selected line when one is
+  // selected in that file, else at its first change (a plain file at its top). A deleted file has
+  // no copy to open.
+  const renderHeaderMetadata = (item: PanelItem) => {
+    if (onOpenInEditor === undefined) return null;
+    const range = selection?.id === item.id ? selection.range : undefined;
+    if (item.type === 'file') return <EditorJumpButton file={item.id.slice(5)} line={range === undefined ? 1 : Math.min(range.start, range.end)} onOpen={onOpenInEditor} />;
+    if (item.fileDiff.type === 'deleted') return null;
+    return <EditorJumpButton file={item.id.slice(5)} line={diffJumpLine(item.fileDiff, range)} onOpen={onOpenInEditor} />;
+  };
+
   const fileCount = groups.implementation.length + groups.supporting.length;
   const style = codeViewStyle(fontSize) as CSSProperties;
   // The rail is a persistent column on a wide panel unless the reviewer collapsed it; a narrow panel
@@ -457,7 +476,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   // A File view (a response-file row or a terminal link) takes over the whole panel as a peer of the
   // Comparison — text through the same diff library for real highlighting, an image / binary
   // placeholder / over-cap notice as plain views. It replaces the Changes layout while it is open.
-  if (filePreview !== undefined) return <FileView filePreview={filePreview} options={options} style={style} expanded={expanded} onBack={onCloseFile} onClose={onClose} />;
+  if (filePreview !== undefined) return <FileView filePreview={filePreview} options={options} style={style} expanded={expanded} onBack={onCloseFile} onClose={onClose} {...(onOpenInEditor === undefined ? {} : { onOpenInEditor })} />;
 
   const hasDiffs = state === 'ready' && fileCount > 0;
   // render display choices directly in the header flyout at every panel width
@@ -555,7 +574,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
               </ul>
             )}
             {/* add one disclosure control to each diff header */}
-            <CodeView ref={viewRef} className="code-pane-view" options={options} items={visibleItems} renderHeaderPrefix={item => item.type === 'diff' ? <button type="button" className="code-pane-file-collapse" aria-label={`${item.collapsed ? 'Expand' : 'Collapse'} ${item.fileDiff.name}`} aria-expanded={!item.collapsed} title={item.collapsed ? 'Expand file' : 'Collapse file'} onClick={() => toggleFileCollapse(item.id.slice(5))}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg></button> : null} disableWorkerPool />
+            <CodeView ref={viewRef} className="code-pane-view" options={options} items={visibleItems} renderHeaderPrefix={item => item.type === 'diff' ? <button type="button" className="code-pane-file-collapse" aria-label={`${item.collapsed ? 'Expand' : 'Collapse'} ${item.fileDiff.name}`} aria-expanded={!item.collapsed} title={item.collapsed ? 'Expand file' : 'Collapse file'} onClick={() => toggleFileCollapse(item.id.slice(5))}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg></button> : null} {...(onOpenInEditor === undefined ? {} : { renderHeaderMetadata })} onSelectedLinesChange={setSelection} disableWorkerPool />
           </>}
         </div>
         {narrow && drawerOpen && state === 'ready' && fileCount > 0 && (
@@ -582,7 +601,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
 // `{type:'file'}` item) so it gets real syntax highlighting; an image (including the agent `/tmp`
 // screenshot bridge), a binary file, and the over-cap truncation notice are plain non-library views.
 // "‹ Changes" returns to the Comparison the panel would otherwise show; the close button dismisses it.
-function FileView({ filePreview, options, style, expanded, onBack, onClose }: { filePreview: FilePreviewView; options: PanelOptions; style: CSSProperties; expanded: boolean; onBack: () => void; onClose: () => void }) {
+function FileView({ filePreview, options, style, expanded, onBack, onClose, onOpenInEditor }: { filePreview: FilePreviewView; options: PanelOptions; style: CSSProperties; expanded: boolean; onBack: () => void; onClose: () => void; onOpenInEditor?: (target: EditorTarget) => void }) {
   const selectionActions = useSelectionActions();
   const { path, state, preview } = filePreview;
   const [copied, setCopied] = useState(false);
@@ -592,6 +611,13 @@ function FileView({ filePreview, options, style, expanded, onBack, onClose }: { 
   };
   // a text file becomes a single plain-file item; an image or binary file renders without the library
   const items = useMemo<PanelItem[]>(() => state === 'ready' && preview !== undefined && !preview.binary ? [fileItemForContents(path, preview.content)] : [], [state, preview, path]);
+  // the header's editor button opens the selected line, else the top; only a path inside the Place
+  // can be opened (a response file may name one elsewhere, such as a `/tmp` screenshot)
+  const [selection, setSelection] = useState<CodeViewLineSelection | null>(null);
+  const renderHeaderMetadata = () => {
+    if (onOpenInEditor === undefined || !isPlaceRelativePath(path)) return null;
+    return <EditorJumpButton file={path} line={selection === null ? 1 : Math.min(selection.range.start, selection.range.end)} onOpen={onOpenInEditor} />;
+  };
   return (
     <section className={`code-pane code-pane-file${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => codeContextMenu(event, selectionActions)}>
       <PanelHeader panelKey="code" label="code panel" title={<nav className="code-pane-crumbs" aria-label="Location">
@@ -608,7 +634,7 @@ function FileView({ filePreview, options, style, expanded, onBack, onClose }: { 
           {state === 'ready' && preview !== undefined && <>
             {preview.binary && preview.image !== undefined && <div className="code-pane-file-image"><img src={`data:${preview.image.mediaType};base64,${preview.image.base64}`} alt={`Preview of ${path}`} /></div>}
             {preview.binary && preview.image === undefined && <p className="code-pane-status">Binary file — no preview available.</p>}
-            {!preview.binary && <CodeView className="code-pane-view" options={options} items={items} disableWorkerPool />}
+            {!preview.binary && <CodeView className="code-pane-view" options={options} items={items} {...(onOpenInEditor === undefined ? {} : { renderHeaderMetadata })} onSelectedLinesChange={setSelection} disableWorkerPool />}
             {preview.truncated && <footer className="code-pane-file-truncated">Preview limited to the first 256 KB.</footer>}
           </>}
         </div>

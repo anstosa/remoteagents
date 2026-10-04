@@ -27,9 +27,9 @@ const revision = (path: string, content: string): RevisionFile => ({ path, size:
 const contentsOf = (path: string, base: string, working: string): ComparisonFileContents => ({ path, base: revision(path, base), working: revision(path, working) });
 
 // mount the isolated Code panel with a scripted Comparison (and optional per-file revision contents)
-const mountPanel = async (page: Page, patch: ComparisonPatch, loaded: Record<string, ComparisonFileContents> = {}, startExpanded = false, rootWidth?: number) => {
+const mountPanel = async (page: Page, patch: ComparisonPatch, loaded: Record<string, ComparisonFileContents> = {}, startExpanded = false, rootWidth?: number, editor = false) => {
   await page.goto('/');
-  await page.evaluate(async ({ scripted, files, expanded, width }) => {
+  await page.evaluate(async ({ scripted, files, expanded, width, withEditor }) => {
     const { renderCodePanel } = await import('/e2e/code-panel-fixture.tsx');
     const root = document.createElement('div');
     root.style.height = '640px';
@@ -40,8 +40,8 @@ const mountPanel = async (page: Page, patch: ComparisonPatch, loaded: Record<str
     // regardless of the viewport
     if (width !== undefined) root.style.width = `${width}px`;
     document.body.replaceChildren(root);
-    renderCodePanel(root, scripted, files, expanded);
-  }, { scripted: patch, files: loaded, expanded: startExpanded, width: rootWidth });
+    renderCodePanel(root, scripted, files, expanded, withEditor);
+  }, { scripted: patch, files: loaded, expanded: startExpanded, width: rootWidth, withEditor: editor });
 };
 
 // push a fresh Comparison (and optional per-file contents) into the mounted panel, standing in for a
@@ -74,16 +74,16 @@ const panel = (page: Page) => page.getByRole('region', { name: 'Code changes' })
 const diffHeaders = (page: Page) => page.locator('.code-pane diffs-container [data-title]');
 
 // mount the panel showing a static File view (a response file or terminal link), for the render states
-const mountFilePreview = async (page: Page, filePreview: FilePreviewView) => {
+const mountFilePreview = async (page: Page, filePreview: FilePreviewView, editor = false) => {
   await page.goto('/');
-  await page.evaluate(async view => {
+  await page.evaluate(async ({ view, withEditor }) => {
     const { renderFilePreview } = await import('/e2e/code-panel-fixture.tsx');
     const root = document.createElement('div');
     root.style.height = '640px';
     root.style.display = 'grid';
     document.body.replaceChildren(root);
-    renderFilePreview(root, view);
-  }, filePreview);
+    renderFilePreview(root, view, withEditor);
+  }, { view: filePreview, withEditor: editor });
 };
 
 test('renders each File view state: text through the library, image inline, binary/error placeholders', async ({ page }) => {
@@ -108,6 +108,66 @@ test('renders each File view state: text through the library, image inline, bina
   // a failed preview reports it
   await mountFilePreview(page, { path: 'gone.ts', state: 'error' });
   await expect(panel(page).getByText(/Preview unavailable/u)).toBeVisible();
+});
+
+// the editor jumps the file headers asked for (mounted with an editor configured)
+const editorJumps = (page: Page) => page.evaluate(() => (window as unknown as { __editorJumps?: unknown[] }).__editorJumps ?? []);
+
+test('opens a changed file in the configured editor at its first change or the selected line', async ({ page }) => {
+  const deleted: ComparisonFile = { change: { code: ' D', path: 'src/gone.ts', additions: 0, deletions: 2 }, kind: 'tracked', patch: 'diff --git a/src/gone.ts b/src/gone.ts\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/src/gone.ts\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-const x = 1;\n-const y = 2;\n', capped: false };
+  await mountPanel(page, patchOf([trackedFile('src/a.ts'), deleted]), {}, false, undefined, true);
+  await expect(panel(page).getByText('const b = 3;')).toBeVisible();
+  // with nothing selected the header opens the diff's first change
+  const open = panel(page).getByRole('button', { name: /^Open src\/a\.ts at line \d+ in the editor$/u });
+  await expect(open).toHaveAccessibleName('Open src/a.ts at line 2 in the editor');
+  // a deleted file has no working-tree copy to open
+  await expect(panel(page).getByRole('button', { name: /^Open src\/gone\.ts/u })).toHaveCount(0);
+  // a selected line number moves the jump to that line
+  await panel(page).locator('[data-column-number="3"]').first().click();
+  await expect(open).toHaveAccessibleName('Open src/a.ts at line 3 in the editor');
+  await open.click();
+  expect(await editorJumps(page)).toEqual([{ file: 'src/a.ts', line: 3 }]);
+});
+
+test('offers no editor jump without a configured editor', async ({ page }) => {
+  await mountPanel(page, patchOf([trackedFile('src/a.ts')]));
+  await expect(panel(page).getByText('const b = 3;')).toBeVisible();
+  await expect(panel(page).getByRole('button', { name: /in the editor$/u })).toHaveCount(0);
+});
+
+test('opens a File view in the editor only for a path inside the Place', async ({ page }) => {
+  await mountFilePreview(page, { path: 'src/app.ts', state: 'ready', preview: { path: 'src/app.ts', size: 40, truncated: false, binary: false, content: 'export const answer = 42;\n' } }, true);
+  await expect(panel(page).getByText('export const answer = 42;')).toBeVisible();
+  await panel(page).getByRole('button', { name: 'Open src/app.ts at line 1 in the editor' }).click();
+  expect(await editorJumps(page)).toEqual([{ file: 'src/app.ts', line: 1 }]);
+  // a file elsewhere (an absolute path) cannot be opened in the Place
+  await mountFilePreview(page, { path: '/tmp/notes.txt', state: 'ready', preview: { path: '/tmp/notes.txt', size: 6, truncated: false, binary: false, content: 'notes\n' } }, true);
+  await expect(panel(page).getByText('notes', { exact: true })).toBeVisible();
+  await expect(panel(page).getByRole('button', { name: /in the editor$/u })).toHaveCount(0);
+});
+
+test('maps a diff line to the working-tree line the editor opens', async ({ page }) => {
+  await page.goto('/');
+  const lines = await page.evaluate(async () => {
+    const { diffItemForPatch } = await import('/src/code-panel/items.ts');
+    const { diffJumpLine, newSideLine } = await import('/src/code-panel/editor-jump.tsx');
+    // two hunks: line 3 removed (old 1-5 → new 1-4), then lines 21-22 added after old 18 (new 17)
+    const patch = 'diff --git a/f.ts b/f.ts\nindex 1111111..2222222 100644\n--- a/f.ts\n+++ b/f.ts\n@@ -1,5 +1,4 @@\n l1\n l2\n-l3\n l4\n l5\n@@ -17,3 +16,5 @@\n l17\n l18\n+n1\n+n2\n l19\n';
+    const item = diffItemForPatch('f.ts', patch);
+    if (item === undefined || item.type !== 'diff') throw new Error('unparsed');
+    const diff = item.fileDiff;
+    return {
+      first: diffJumpLine(diff, undefined),
+      removed: newSideLine(diff, 'deletions', 3),
+      context: newSideLine(diff, 'deletions', 4),
+      between: newSideLine(diff, 'deletions', 10),
+      after: newSideLine(diff, 'deletions', 30),
+      added: newSideLine(diff, 'additions', 18),
+      crossSide: diffJumpLine(diff, { start: 3, side: 'deletions', end: 4, endSide: 'additions' })
+    };
+  });
+  // the first change is the removal of old line 3, now where new line 3 (old l4) stands
+  expect(lines).toEqual({ first: 3, removed: 3, context: 3, between: 9, after: 31, added: 18, crossSide: 3 });
 });
 
 test('renders implementation changes and exposes View docs as an unchecked checkbox', async ({ page }) => {

@@ -18,6 +18,7 @@ import { type CarouselPanel, type PanelCarousel, PanelDots, usePanelCarousel, us
 import { NoteMarkdown } from './note-markdown.js';
 import { ProjectOpen } from './project-open.js';
 import type { CodePanelReview } from './code-panel/code-panel.js';
+import type { EditorTarget } from './code-panel/editor-jump.js';
 import { savedCodeOpen, saveCodeOpen, supportingChange, useCodePanel, type CodePanelController, type CodePanelMode } from './code-panel/comparison.js';
 import { PullRequestCard, PullRequestFixup, PullRequestIndicators, type PullRequestSummary } from './pull-request-card.js';
 import { isStackOperationLog, isStackProcessOutput, type StackAction, type StackOperationLog, type StackProcessOutput, type StackProcessState, type StackSelection, type StartableNoticeTarget } from './stack-operations.js';
@@ -32,7 +33,7 @@ import { applyReducedMotion, setReducedMotion, useReducedMotion } from './reduce
 import { applyFlyoutMarkers, setFlyoutMarkers, useFlyoutMarkers } from './flyout-markers.js';
 import { UpstreamRebaseNotification, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
-import { isReviewTour, ReviewTourDialog, type EditorTarget, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
+import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
 import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
 import { AdaptersContext, AgentLaunchSettingsContext, CodexAccountsMenuContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, defaultSandboxed, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, originCopy, sandboxCopy, type AdapterCapabilities, type AgentKind, type AgentUpdateStatus, type LaunchMenuEntry, type LaunchResolution, type LaunchChoice } from './launch-profile.js';
 import { ScheduleEditor, defaultScheduleCron, lastRunNeedsAttention, scheduleInvalid, type Schedule, type ScheduleAdapterOption, type ScheduleSetBody, type ScheduleTarget, type ScheduleTargetOption } from './schedule-editor.js';
@@ -4830,9 +4831,9 @@ const CodePanel = lazy(() => import('./code-panel/code-panel.js'));
 // Render one Worktree's open Code panel from its controller (callers gate on `controller.open`, so
 // this is only mounted while open). The lazy chunk resolves behind a lightweight fallback so the
 // split does not jump.
-function CodePane({ controller, prAvailable, branch, review }: { controller: CodePanelController; prAvailable: boolean; branch?: string; review?: CodePanelReview }) {
+function CodePane({ controller, prAvailable, branch, review, onOpenInEditor }: { controller: CodePanelController; prAvailable: boolean; branch?: string; review?: CodePanelReview; onOpenInEditor?: (target: EditorTarget) => void }) {
   return <Suspense fallback={<section className="code-pane" role="region" aria-label="Code changes"><p className="code-pane-status">Loading changes…</p></section>}>
-    <CodePanel mode={controller.mode} state={controller.state} patch={controller.patch} selectedPath={controller.selectedPath} filePreview={controller.filePreview} prAvailable={prAvailable} branch={branch} review={review} loadFile={controller.loadFile} onSelectFile={controller.selectFile} onClearFile={controller.clearFile} onSetMode={controller.setMode} onCloseFile={controller.closeFilePreview} onClose={controller.close} onRetry={controller.refresh} />
+    <CodePanel mode={controller.mode} state={controller.state} patch={controller.patch} selectedPath={controller.selectedPath} filePreview={controller.filePreview} prAvailable={prAvailable} branch={branch} review={review} loadFile={controller.loadFile} onSelectFile={controller.selectFile} onClearFile={controller.clearFile} onSetMode={controller.setMode} onCloseFile={controller.closeFilePreview} onClose={controller.close} onRetry={controller.refresh} {...(onOpenInEditor === undefined ? {} : { onOpenInEditor })} />
   </Suspense>;
 }
 // render ordered resizable output panels: the agent (when one runs or is starting), any Terminals,
@@ -5092,6 +5093,16 @@ const requestTerminalFocus = (placeId: string, terminal: OpenTerminal) => {
   const focus = terminalFocusers.get(terminal.paneId);
   if (focus === undefined) pendingTerminalFocus.set(terminal.paneId, now + terminalRequestWindowMs);
   else focus();
+};
+// Open the configured editor at a file and line (relative to the Place folder) in a new Console
+// shell, shown as a focused Terminal panel of the Place — the jump from a diff line, in the Code
+// panel or the guided review; returns the error when the shell could not be made.
+const openEditorShell = async (placeId: string, target: EditorTarget): Promise<string | undefined> => {
+  const created = await createPlaceShell(placeId, target);
+  if (!('paneId' in created)) return created.error;
+  const shell = (await listPlacePanes(placeId))?.find(pane => pane.paneId === created.paneId);
+  requestTerminalFocus(placeId, { paneId: created.paneId, name: shell === undefined ? 'editor' : terminalPaneLabel(shell) });
+  return undefined;
 };
 // The open Terminal panels of one Worktree and the picker's live pane list. Panels persist
 // per Worktree by pane id and are reconciled against the live panes on mount, so a reload
@@ -5830,7 +5841,15 @@ function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNa
   const showAgent = () => { pendingWorkspaceJumps.set(key, 'agent'); setAgentSplitHidden(key, false); };
   // open the Stack panel (on `selection`, when given) and bring it into view
   const openStackPanel = (selection?: StackSelection) => { stackPanel.openOn(selection); pendingWorkspaceJumps.set(key, 'stack'); };
-  return { place, browser, code, stackPanel, openStackPanel, terminals, carousel, setCarousel, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded, agentHidden, showAgent, viewKey: key };
+  // the Code panel's jump to a line in the configured editor, opened beside it as a Terminal panel
+  const editorConfigured = useContext(EditorConfiguredContext);
+  const placeId = place.id;
+  const openInEditor = !editorConfigured || placeId === undefined ? undefined : async (target: EditorTarget) => {
+    expansion.restore();
+    const failure = await openEditorShell(placeId, target);
+    if (failure !== undefined) onOperationFeedback?.({ tone: 'error', message: 'The editor did not open', detail: failure });
+  };
+  return { place, browser, code, stackPanel, openStackPanel, terminals, carousel, setCarousel, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded, agentHidden, showAgent, openInEditor, viewKey: key };
 }
 type WorkspaceState = ReturnType<typeof useWorkspace>;
 // The git actions only an Agent offers (push, fixup, guided review); an agentless Workspace passes
@@ -5878,7 +5897,8 @@ function Workspace({ workspace, output, empty, git, onAddToPrompt, onOpenWorktre
   };
   const browserPane = browser.url === undefined || browser.homeUrl === undefined ? null : <ProjectBrowserPane url={browser.url} homeUrl={browser.homeUrl} proxied={browser.proxied} worktreeId={place.id} navigationRequest={browser.navigationRequest} onNavigate={browser.navigate} onClose={browser.close} />;
   const review = git === undefined || (git.onReview === undefined && git.reviewUnavailable === undefined) ? undefined : { onReview: git.onReview, open: git.review !== undefined, generating: git.review?.generating === true, unavailable: git.reviewUnavailable };
-  const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} branch={place.branch} review={review} /> : null;
+  const openInEditor = workspace.openInEditor;
+  const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} branch={place.branch} review={review} {...(openInEditor === undefined ? {} : { onOpenInEditor: (target: EditorTarget) => void openInEditor(target) })} /> : null;
   const stackName = stackPlaceName(place.worktreeId, projects);
   const placeId = place.id;
   // the Stack panel shows only for a Worktree whose stack has processes to show
@@ -8509,15 +8529,12 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       void refresh();
     } finally { terminalOpening.current.delete(placeId); }
   };
-  // the guided review's jump to a line: minimize the review, then open the configured editor at
-  // that file and line in a new Console shell, shown as a focused Terminal panel of the Place
+  // the guided review's jump to a line: minimize the review, then open the editor in the Place
   const openEditorAt = async (placeId: string, target: EditorTarget) => {
     minimizeReview();
     openPlace(placeId);
-    const created = await createPlaceShell(placeId, target);
-    if (!('paneId' in created)) return showOperationFeedback({ tone: 'error', message: 'The editor did not open', detail: created.error, worktreeId: placeId });
-    const shell = (await listPlacePanes(placeId))?.find(pane => pane.paneId === created.paneId);
-    requestTerminalFocus(placeId, { paneId: created.paneId, name: shell === undefined ? 'editor' : terminalPaneLabel(shell) });
+    const failure = await openEditorShell(placeId, target);
+    if (failure !== undefined) showOperationFeedback({ tone: 'error', message: 'The editor did not open', detail: failure, worktreeId: placeId });
     void refresh();
   };
   // a worktree just created from the launcher: close everything, refresh, and select its

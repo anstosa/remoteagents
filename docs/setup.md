@@ -44,9 +44,10 @@ quitting the editor ends the shell and closes its Terminal, even if your tmux
 configuration sets `remain-on-exit`. The command runs in the operator's
 interactive shell, never sandboxed, and is never sent to the browser.
 
-The same `editor` adds an editor button to each file header in a guided
-review. It opens the working tree's copy of that file at the selected line,
-or at the diff's first change when no line is selected, by appending
+The same `editor` adds an editor button to each file header in the Code panel
+and in a guided review. It opens the working tree's copy of that file at the
+selected line, or at the diff's first change when no line is selected (the
+top of a file in the File view), by appending
 `+LINE 'path'` to the command. vim, nvim, emacs, nano, micro and kakoune all
 understand that form; an editor that wants another one (VS Code's `-g
 path:LINE`, say) is not supported by the jump.

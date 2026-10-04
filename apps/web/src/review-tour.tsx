@@ -2,8 +2,8 @@ import { createPortal } from 'react-dom';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { prefersReducedMotion } from './reduced-motion.js';
 import { usePhoneLayout } from './panel-header.js';
-import type { EditorTarget, ReviewDiffComment, ReviewDiffSide } from './code-panel/review-diffs.js';
-export type { EditorTarget } from './code-panel/review-diffs.js';
+import type { ReviewDiffComment, ReviewDiffSide } from './code-panel/review-diffs.js';
+import type { EditorTarget } from './code-panel/editor-jump.js';
 
 // The diff renderer pulls in `@pierre/diffs` (~177 kB), so it is loaded on demand — this dialog is in
 // the eager dashboard bundle and a static import would drag the library in. Same lazy boundary the
