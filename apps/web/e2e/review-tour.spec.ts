@@ -226,29 +226,45 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect(dialog.getByLabel('Feedback for this change')).toHaveValue('Keep the route error copy aligned with the existing API.');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 390, height: 844 });
-  // stack a full-width diff above the explanation on mobile
+  // on a phone the diff fills the step under a bar naming it; the narration column is gone
+  const notesBar = dialog.getByRole('button', { name: 'Show step notes' });
+  await expect(notesBar).toContainText('Accept the request');
+  await expect(notesBar).toContainText('Feedback');
+  await expect(dialog.getByLabel('Feedback for this change')).toHaveCount(0);
   const mobilePanes = await reviewStep.evaluate(element => {
     const step = element.getBoundingClientRect();
-    const narration = element.querySelector('.review-tour-narration')!.getBoundingClientRect();
+    const bar = element.querySelector('.review-tour-notes-bar')!.getBoundingClientRect();
     const files = element.querySelector('.review-tour-diffs')!.getBoundingClientRect();
-    return { viewport: window.innerWidth, step: { top: step.top, bottom: step.bottom }, narration: { left: narration.left, right: narration.right, top: narration.top, bottom: narration.bottom, height: narration.height }, files: { left: files.left, right: files.right, top: files.top, bottom: files.bottom, height: files.height } };
+    return { viewport: window.innerWidth, step: { top: step.top, bottom: step.bottom }, bar: { top: bar.top, bottom: bar.bottom }, files: { left: files.left, right: files.right, top: files.top, bottom: files.bottom } };
   });
+  expect(Math.abs(mobilePanes.bar.top - mobilePanes.step.top)).toBeLessThanOrEqual(1);
+  expect(Math.abs(mobilePanes.files.top - mobilePanes.bar.bottom)).toBeLessThanOrEqual(1);
+  expect(Math.abs(mobilePanes.files.bottom - mobilePanes.step.bottom)).toBeLessThanOrEqual(1);
   expect(Math.abs(mobilePanes.files.left)).toBeLessThanOrEqual(1);
-  expect(Math.abs(mobilePanes.narration.left)).toBeLessThanOrEqual(1);
   expect(Math.abs(mobilePanes.files.right - mobilePanes.viewport)).toBeLessThanOrEqual(1);
-  expect(Math.abs(mobilePanes.narration.right - mobilePanes.viewport)).toBeLessThanOrEqual(1);
-  expect(Math.abs(mobilePanes.files.top - mobilePanes.step.top)).toBeLessThanOrEqual(1);
-  expect(Math.abs(mobilePanes.narration.top - mobilePanes.files.bottom)).toBeLessThanOrEqual(1);
-  expect(Math.abs(mobilePanes.narration.bottom - mobilePanes.step.bottom)).toBeLessThanOrEqual(1);
-  expect(mobilePanes.files.height).toBeGreaterThan(0);
-  expect(mobilePanes.narration.height).toBeGreaterThan(0);
   // a phone-width diff pane has no room for split, so the layout choice is gone
   await expect(dialog.getByRole('group', { name: 'Diff layout' })).toHaveCount(0);
-  await expect(dialog.getByLabel('Feedback for this change')).toBeVisible();
+  // the bar opens the narration and feedback as a left drawer; Escape closes it before the review
+  await notesBar.click();
+  const notesDrawer = dialog.getByRole('dialog', { name: 'Step notes' });
+  await expect(notesDrawer).toBeFocused();
+  await expect(notesDrawer.getByText('The route validates input before delegating.')).toBeVisible();
+  await expect(notesDrawer.getByLabel('Feedback for this change')).toHaveValue('Keep the route error copy aligned with the existing API.');
+  const drawerBounds = await notesDrawer.boundingBox();
+  expect(Math.abs(drawerBounds!.x)).toBeLessThanOrEqual(1);
+  expect(drawerBounds!.width).toBeLessThan(390);
+  await page.keyboard.press('Escape');
+  await expect(notesDrawer).toHaveCount(0);
+  await expect(notesBar).toBeFocused();
+  await expect(dialog).toBeVisible();
+  // the backdrop closes it too
+  await notesBar.click();
+  await dialog.locator('.review-tour-notes-backdrop').click({ position: { x: 380, y: 400 } });
+  await expect(notesDrawer).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Next' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await dialog.getByRole('button', { name: 'Next' }).click();
-  await expect(dialog.getByRole('heading', { name: 'Apply the operation' })).toBeVisible();
+  await expect(notesBar).toContainText('Apply the operation');
   await dialog.getByRole('button', { name: 'Review summary' }).click();
   await expect(dialog.getByRole('heading', { name: 'Review complete' })).toBeVisible();
   const draft = dialog.getByLabel('Consolidated change request');
@@ -396,6 +412,25 @@ test('records inline comments on diff lines and sends them located and quoted', 
   await saved.filter({ hasText: 'Line 11' }).getByRole('button', { name: 'Delete' }).click();
   await expect(diffPane.locator('.review-tour-inline-comment')).toHaveCount(2);
 
+  // Escape closes open comment editors before it would close the review: a written one is kept…
+  await diffPane.getByText('const b = 3;').hover();
+  await diffPane.locator('[data-utility-button]').click();
+  await dialog.getByLabel('Comment on line 11').fill('Escape keeps me.');
+  await page.keyboard.press('Escape');
+  await expect(dialog.getByLabel('Comment on line 11')).toHaveCount(0);
+  await expect(saved.filter({ hasText: 'Escape keeps me.' })).toHaveCount(1);
+  await expect(dialog).toBeVisible();
+  await saved.filter({ hasText: 'Line 11' }).getByRole('button', { name: 'Delete' }).click();
+  // …and an empty one is discarded, even with focus outside the editor
+  await diffPane.getByText('const b = 3;').hover();
+  await diffPane.locator('[data-utility-button]').click();
+  await expect(dialog.getByLabel('Comment on line 11')).toBeFocused();
+  await dialog.getByLabel('Feedback for this change').focus();
+  await page.keyboard.press('Escape');
+  await expect(dialog.getByLabel('Comment on line 11')).toHaveCount(0);
+  await expect(diffPane.locator('.review-tour-inline-comment')).toHaveCount(2);
+  await expect(dialog).toBeVisible();
+
   // comments belong to their change, so they survive moving between steps
   await dialog.getByRole('button', { name: 'Next' }).click();
   await expect(dialog.getByRole('heading', { name: 'Apply the operation' })).toBeVisible();
@@ -414,6 +449,10 @@ test('records inline comments on diff lines and sends them located and quoted', 
   await dialog.getByRole('button', { name: 'Send change request' }).click();
   await expect(dialog.getByText('Change request sent to the implementation agent.')).toBeVisible();
   expect(prompts).toEqual([value]);
+  // with nothing open, Escape minimizes the review as before
+  await dialog.getByRole('button', { name: 'Finish' }).focus();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
 });
 
 // verify the touch path: tapping a line number reveals the gutter "+" without any hover

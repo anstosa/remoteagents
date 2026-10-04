@@ -5,8 +5,9 @@
 // through a dynamic `import()` (review-tour.tsx lazy-loads it); review-tour.tsx itself is in the
 // eager dashboard bundle, so importing the library here directly would drag its ~177 kB in. Controlled:
 // the caller hands in the step's Changes and its inline comments, and this renders them, reporting
-// comment edits back. The only state it owns is visual: the Unified / Split choice, which (rendered
-// at the same spot for every step) carries across steps, and which saved comments are open for editing.
+// comment edits back — including which comments are open, which the caller holds so Escape can close
+// them from anywhere in the dialog. The only state it owns is visual: the Unified / Split choice,
+// which (rendered at the same spot for every step) carries across steps.
 import { type CSSProperties, useMemo, useState } from 'react';
 import type { CodeViewLineSelection, DiffLineAnnotation, SelectedLineRange } from '@pierre/diffs';
 import { CodeView, type CodeViewItem, type CodeViewReactOptions } from '@pierre/diffs/react';
@@ -38,8 +39,14 @@ export const MAX_INLINE_COMMENT = 4_000;
 type ReviewDiffsProps = {
   changes: ReviewDiffChange[];
   comments: ReviewDiffComment[];
+  // the comments showing their editor: each new one, and saved ones reopened with Edit
+  openCommentIds: ReadonlySet<string>;
+  // add a comment, already open
   onCommentAdd: (comment: ReviewDiffComment) => void;
   onCommentChange: (id: string, body: string) => void;
+  onCommentOpen: (id: string) => void;
+  // close an editor (Done), which discards a comment left empty
+  onCommentClose: (id: string) => void;
   onCommentDelete: (id: string) => void;
 };
 
@@ -79,7 +86,7 @@ function InlineComment({ comment, editing, onEdit, onChange, onDone, onDelete }:
 }
 
 // render one tour step with current display settings
-export default function ReviewDiffs({ changes, comments, onCommentAdd, onCommentChange, onCommentDelete }: ReviewDiffsProps) {
+export default function ReviewDiffs({ changes, comments, openCommentIds, onCommentAdd, onCommentChange, onCommentOpen, onCommentClose, onCommentDelete }: ReviewDiffsProps) {
   const theme = useColorTheme();
   const terminalFontSize = useTerminalFontSize();
   // Each renderable Change becomes one diff item, keyed by its Change id so a file split across
@@ -106,14 +113,6 @@ export default function ReviewDiffs({ changes, comments, onCommentAdd, onComment
   }), [baseItems, anchorKey]); // anchorKey stands in for `comments`: it covers every field read here
   const changeIdByItemId = useMemo(() => new Map([...baseItems].map(([changeId, item]) => [item.id, changeId])), [baseItems]);
 
-  // Comments open in their editor: each new one, and saved ones the reviewer reopened.
-  const [editing, setEditing] = useState<ReadonlySet<string>>(new Set());
-  const setCommentEditing = (id: string, open: boolean) => setEditing(current => {
-    const next = new Set(current);
-    if (open) next.add(id); else next.delete(id);
-    return next;
-  });
-
   // The selected line range, held here so starting a comment can clear it: while a range is selected
   // the library pins the "+" to it, so a stale selection would steal the next comment's placement.
   const [selection, setSelection] = useState<CodeViewLineSelection | null>(null);
@@ -135,9 +134,7 @@ export default function ReviewDiffs({ changes, comments, onCommentAdd, onComment
     onGutterUtilityClick: (range: SelectedLineRange, context: { item: { id: string } }) => {
       const changeId = changeIdByItemId.get(context.item.id);
       if (changeId === undefined) return;
-      const id = crypto.randomUUID();
-      setEditing(current => new Set(current).add(id));
-      onCommentAdd({ id, changeId, ...orderedRange(range), body: '' });
+      onCommentAdd({ id: crypto.randomUUID(), changeId, ...orderedRange(range), body: '' });
       // the library commits the picked range as the selection after this callback returns
       window.setTimeout(() => setSelection(null), 0);
     }
@@ -147,8 +144,7 @@ export default function ReviewDiffs({ changes, comments, onCommentAdd, onComment
   const renderAnnotation = (annotation: { metadata?: CommentAnchor }) => {
     const comment = annotation.metadata === undefined ? undefined : commentsById.get(annotation.metadata.commentId);
     if (comment === undefined) return null;
-    const close = () => { setCommentEditing(comment.id, false); if (comment.body.trim() === '') onCommentDelete(comment.id); };
-    return <InlineComment comment={comment} editing={editing.has(comment.id)} onEdit={() => setCommentEditing(comment.id, true)} onChange={body => onCommentChange(comment.id, body)} onDone={close} onDelete={() => { setCommentEditing(comment.id, false); onCommentDelete(comment.id); }} />;
+    return <InlineComment comment={comment} editing={openCommentIds.has(comment.id)} onEdit={() => onCommentOpen(comment.id)} onChange={body => onCommentChange(comment.id, body)} onDone={() => onCommentClose(comment.id)} onDelete={() => onCommentDelete(comment.id)} />;
   };
 
   const style = codeViewStyle(terminalFontSize) as CSSProperties;

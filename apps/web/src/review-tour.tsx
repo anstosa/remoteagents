@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { prefersReducedMotion } from './reduced-motion.js';
+import { usePhoneLayout } from './panel-header.js';
 import type { ReviewDiffComment, ReviewDiffSide } from './code-panel/review-diffs.js';
 
 // The diff renderer pulls in `@pierre/diffs` (~177 kB), so it is loaded on demand — this dialog is in
@@ -202,6 +203,12 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
   const [statuses, setStatuses] = useState<Record<string, StepState>>(initialTour === undefined ? {} : { [initialTour.steps[0]!.id]: 'visited' });
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const [comments, setComments] = useState<ReviewDiffComment[]>([]);
+  const [openCommentIds, setOpenCommentIds] = useState<ReadonlySet<string>>(new Set());
+  // on a phone the step's narration and feedback sit in a drawer, opened from a bar above the diff
+  const phone = usePhoneLayout();
+  const [notesOpen, setNotesOpen] = useState(false);
+  const notesBar = useRef<HTMLButtonElement | null>(null);
+  const notesDrawer = useRef<HTMLElement | null>(null);
   const [orphanFeedback, setOrphanFeedback] = useState('');
   const [dispatch, setDispatch] = useState('');
   const [dispatching, setDispatching] = useState(false);
@@ -219,6 +226,9 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
 
   // retain the latest notification callback
   useEffect(() => { onReadyRef.current = onReady; }, [onReady]);
+
+  // move focus into the step notes drawer as it opens
+  useEffect(() => { if (phone && notesOpen) notesDrawer.current?.focus(); }, [phone, notesOpen]);
 
   // focus the review surface when restored
   useEffect(() => { if (!minimized) dialog.current?.focus(); }, [minimized]);
@@ -399,12 +409,26 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
   };
 
   // add, edit, and remove inline comments, holding edits to the aggregate cap
-  const addComment = useCallback((comment: ReviewDiffComment) => setComments(current => [...current, comment]), []);
+  const addComment = useCallback((comment: ReviewDiffComment) => {
+    setComments(current => [...current, comment]);
+    setOpenCommentIds(current => new Set(current).add(comment.id));
+  }, []);
+  const openComment = (id: string) => setOpenCommentIds(current => new Set(current).add(id));
+  // close a comment's editor, discarding the comment if it was left empty
+  const closeComment = (id: string) => {
+    setOpenCommentIds(current => { const next = new Set(current); next.delete(id); return next; });
+    setComments(current => current.filter(comment => comment.id !== id || comment.body.trim() !== ''));
+  };
   const updateComment = (id: string, body: string) => {
     const nextComments = comments.map(comment => comment.id === id ? { ...comment, body } : comment);
     if (feedbackLength(feedback, nextComments, orphanFeedback) <= maxFeedbackTotal) setComments(nextComments);
   };
-  const deleteComment = (id: string) => setComments(current => current.filter(comment => comment.id !== id));
+  const deleteComment = (id: string) => {
+    setOpenCommentIds(current => { const next = new Set(current); next.delete(id); return next; });
+    setComments(current => current.filter(comment => comment.id !== id));
+  };
+  // close the step notes drawer, handing focus back to the bar that opened it
+  const closeNotes = () => { setNotesOpen(false); notesBar.current?.focus(); };
 
   // confirm the bound comparison before completion or dispatch
   const comparisonCurrent = async (): Promise<boolean> => {
@@ -485,8 +509,21 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
   };
   // contain keyboard focus inside the modal
   const dialogKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    // minimize without dispatch
-    if (event.key === 'Escape' && !dispatching) { minimize(); return; }
+    // Escape dismisses the topmost thing: the phone notes drawer, then the step's open comment
+    // editors (an empty one is discarded), and only then the review itself
+    if (event.key === 'Escape' && !dispatching) {
+      if (state === 'tour' && phone && notesOpen) { closeNotes(); return; }
+      const stepChangeIds = new Set(step?.changeIds);
+      const openInStep = state === 'tour' ? comments.filter(comment => openCommentIds.has(comment.id) && stepChangeIds.has(comment.changeId)) : [];
+      if (openInStep.length > 0) {
+        for (const comment of openInStep) closeComment(comment.id);
+        // the focused editor unmounts; keep keyboard focus in the dialog
+        dialog.current?.focus();
+        return;
+      }
+      minimize();
+      return;
+    }
     // retain ordinary keys
     if (event.key !== 'Tab' || dialog.current === null) return;
     const controls = Array.from(dialog.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')).filter(control => control.offsetParent !== null);
@@ -500,6 +537,8 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
   };
 
   const scopeLabel = launch.scope === 'working' ? 'Working' : 'All PR';
+  // the step's narration and feedback: a left column on desktop, the notes drawer on a phone
+  const narration = step && <><small>Logical change</small><h3>{step.title}</h3><p>{step.explanation}</p><label>Feedback for this change<textarea value={stepFeedback} maxLength={maxFeedback} onChange={event => updateFeedback(step.id, event.target.value)} />{stepFeedback.length >= maxFeedback && <span role="status">{maxFeedback.toLocaleString()} character limit reached</span>}</label>{orphanFeedback !== '' && <label>Feedback from regenerated steps<textarea value={orphanFeedback} maxLength={maxFeedbackTotal} onChange={event => updateOrphanFeedback(event.target.value)} />{orphanFeedback.length >= maxFeedbackTotal && <span role="status">{maxFeedbackTotal.toLocaleString()} retained feedback character limit reached</span>}</label>}</>;
   // keep generation and freshness polling mounted while minimized
   if (minimized) return null;
   const content = <div className={`review-tour-backdrop${closing ? ' closing' : ''}`}><div ref={dialog} className="review-tour" role="dialog" aria-modal="true" aria-labelledby="review-tour-title" tabIndex={-1} onKeyDown={dialogKey}>
@@ -509,7 +548,10 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     {state === 'loading' && <div className="review-tour-message" role="status"><span className="spinner" /><strong>Building the narrated tour…</strong><p>The AI is organizing the selected implementation changes into logical steps.</p><button type="button" onClick={() => { generation.current += 1; if (job !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' }, false); setState('cancelled'); }}>Cancel</button></div>}
     {state === 'empty' && <div className="review-tour-message" role="status"><strong>No included changes</strong><p>Implementation changes are empty for this scope. Enable Tests or Docs if those are the only changed files.</p></div>}
     {(state === 'error' || state === 'cancelled') && <div className="review-tour-message error" role="alert"><strong>{state === 'cancelled' ? 'Tour cancelled' : 'Unable to build tour'}</strong><p>{error || 'Generate again when you are ready.'}</p><button type="button" onClick={() => { setRetry(value => value + 1); setState('loading'); }}>Try again</button></div>}
-    {tour && state === 'tour' && step && <><div className="review-tour-progress"><span>Step {current + 1} of {tour.steps.length}</span><span>{Object.values(statuses).filter(value => value === 'visited').length} visited · {Object.values(statuses).filter(value => value === 'skipped').length} skipped</span></div><main className="review-tour-step"><section className="review-tour-narration"><small>Logical change</small><h3>{step.title}</h3><p>{step.explanation}</p><label>Feedback for this change<textarea value={stepFeedback} maxLength={maxFeedback} onChange={event => updateFeedback(step.id, event.target.value)} />{stepFeedback.length >= maxFeedback && <span role="status">{maxFeedback.toLocaleString()} character limit reached</span>}</label>{orphanFeedback !== '' && <label>Feedback from regenerated steps<textarea value={orphanFeedback} maxLength={maxFeedbackTotal} onChange={event => updateOrphanFeedback(event.target.value)} />{orphanFeedback.length >= maxFeedbackTotal && <span role="status">{maxFeedbackTotal.toLocaleString()} retained feedback character limit reached</span>}</label>}</section><section className="review-tour-diffs" aria-label="Relevant changes"><Suspense fallback={<p className="review-tour-diff-loading" role="status">Loading diff…</p>}><ReviewDiffs changes={changes} comments={comments} onCommentAdd={addComment} onCommentChange={updateComment} onCommentDelete={deleteComment} /></Suspense></section></main><footer className="review-tour-actions"><button type="button" disabled={current === 0} onClick={back}>Back</button><button type="button" onClick={skip}>Skip</button><span>{feedbackTotal >= maxFeedbackTotal ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{complete ? <button type="button" disabled={stale || feedbackTotal > maxFeedbackTotal} onClick={() => void summarize()}>Review summary</button> : <button type="button" onClick={next}>Next</button>}</footer></>}
+    {tour && state === 'tour' && step && <><div className="review-tour-progress"><span>Step {current + 1} of {tour.steps.length}</span><span>{Object.values(statuses).filter(value => value === 'visited').length} visited · {Object.values(statuses).filter(value => value === 'skipped').length} skipped</span></div><main className="review-tour-step">{phone
+      ? <><button ref={notesBar} type="button" className="review-tour-notes-bar" aria-label="Show step notes" aria-expanded={notesOpen} onClick={() => setNotesOpen(true)}><span><strong>{step.title}</strong><span>{step.explanation}</span></span><small className={stepFeedback.trim() === '' ? undefined : 'has-feedback'}>{stepFeedback.trim() === '' ? 'Notes' : 'Feedback'}</small></button>
+        {notesOpen && <><button type="button" className="review-tour-notes-backdrop" aria-label="Close step notes" onClick={closeNotes} /><section ref={notesDrawer} className="review-tour-narration review-tour-notes-drawer" role="dialog" aria-label="Step notes" tabIndex={-1}><div className="review-tour-notes-head"><span>Step notes</span><button type="button" aria-label="Close step notes" title="Close" onClick={closeNotes}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>{narration}</section></>}</>
+      : <section className="review-tour-narration">{narration}</section>}<section className="review-tour-diffs" aria-label="Relevant changes"><Suspense fallback={<p className="review-tour-diff-loading" role="status">Loading diff…</p>}><ReviewDiffs changes={changes} comments={comments} openCommentIds={openCommentIds} onCommentAdd={addComment} onCommentChange={updateComment} onCommentOpen={openComment} onCommentClose={closeComment} onCommentDelete={deleteComment} /></Suspense></section></main><footer className="review-tour-actions"><button type="button" disabled={current === 0} onClick={back}>Back</button><button type="button" onClick={skip}>Skip</button><span>{feedbackTotal >= maxFeedbackTotal ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{complete ? <button type="button" disabled={stale || feedbackTotal > maxFeedbackTotal} onClick={() => void summarize()}>Review summary</button> : <button type="button" onClick={next}>Next</button>}</footer></>}
     {tour && state === 'summary' && <main className="review-tour-summary"><h3>Review complete</h3><ul>{tour.steps.map(candidate => <li key={candidate.id}><span className={statuses[candidate.id]}>{statuses[candidate.id]}</span><strong>{candidate.title}</strong></li>)}</ul>{orphanFeedback !== '' && <p>Feedback from regenerated steps is retained in the consolidated change request.</p>}{feedbackTotal === 0 ? <p>No feedback was recorded. You can finish without sending anything.</p> : <label>Consolidated change request<textarea value={dispatch} maxLength={maxDispatch} onChange={event => setDispatch(event.target.value)} />{dispatch.length >= maxDispatch && <span role="status">{maxDispatch.toLocaleString()} character limit reached</span>}</label>}{error && <p ref={dispatchError} className="review-tour-error" role="alert" tabIndex={-1}>{error}</p>}{sent && <p className="review-tour-sent" role="status">Change request sent to the implementation agent.</p>}<footer className="review-tour-actions"><button type="button" onClick={() => setState('tour')}>Back to tour</button><span />{feedbackTotal > 0 && !sent && <button type="button" disabled={dispatching || dispatch.trim() === '' || dispatch.length > maxDispatch} onClick={() => void send()}>{dispatching ? 'Sending…' : 'Send change request'}</button>}<button type="button" onClick={minimize}>Finish</button></footer></main>}
     </div>
     <div className="review-tour-filters" role="group" aria-label="Tour content"><span>{tour?.base ? `Compared with ${tour.base}` : scopeLabel}</span><label><input type="checkbox" checked={includeTests} onChange={event => setIncludeTests(event.target.checked)} />Tests</label><label><input type="checkbox" checked={includeDocs} onChange={event => setIncludeDocs(event.target.checked)} />Docs</label></div>

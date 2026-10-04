@@ -1941,14 +1941,26 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .review-tour-summary > p { color: var(--subtext-0); }
 .review-tour-sent { color: var(--green) !important; }
 
+/* the phone step bar: the step's title and the start of its explanation, opening the notes drawer */
+.review-tour-notes-bar { display: flex; min-width: 0; align-items: center; gap: .6rem; padding: .55rem .75rem; border: 0; border-bottom: 1px solid var(--surface-1); border-radius: 0; background: var(--mantle); box-shadow: none; color: var(--text); text-align: left; }
+.review-tour-notes-bar > span { display: grid; min-width: 0; flex: 1 1 auto; gap: .15rem; }
+.review-tour-notes-bar strong { overflow: hidden; font: 800 .8rem/1.3 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.review-tour-notes-bar > span > span { display: -webkit-box; overflow: hidden; color: var(--subtext-0); font-size: .72rem; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.review-tour-notes-bar > small { flex: 0 0 auto; padding: .2rem .45rem; border: 1px solid var(--surface-2); border-radius: var(--control-radius); color: var(--subtext-0); font: 800 .6rem var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
+.review-tour-notes-bar > small.has-feedback { border-color: color-mix(in srgb, var(--blue) 55%, var(--surface-2)); color: var(--blue); }
+.review-tour-notes-backdrop { position: absolute; inset: 0; z-index: 19; width: 100%; height: 100%; padding: 0; border: 0; border-radius: 0; background: #0007; box-shadow: none; cursor: default; }
+.review-tour-narration.review-tour-notes-drawer { position: absolute; inset: 0 auto 0 0; z-index: 20; width: min(85%, 22rem); padding: 0 .85rem .85rem; border-right: 1px solid var(--surface-1); outline: none; background: var(--mantle); box-shadow: .4rem 0 1.4rem #0007; animation: note-pane-appear .12s ease-out; }
+.review-tour-notes-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; margin: 0 -.85rem; padding: .4rem .4rem .4rem .85rem; border-bottom: 1px solid var(--surface-1); background: var(--mantle); color: var(--subtext-0); font: 700 .68rem var(--font-mono); letter-spacing: .04em; text-transform: uppercase; }
+.review-tour-notes-head button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border: 0; background: transparent; box-shadow: none; color: var(--subtext-0); }
+.review-tour-notes-head button svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
+
 @media (max-width: 768px) {
   .review-tour-header { padding: .75rem; }
   .review-tour-header p { display: none; }
   .review-tour-filters, .review-tour-progress, .review-tour-stale { padding-right: .75rem; padding-left: .75rem; }
-  /* keep the diff above the independently scrollable explanation on phones */
-  .review-tour-step { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
-  .review-tour-narration { grid-row: 2; padding: .85rem .75rem; border-top: 1px solid var(--surface-1); border-right: 0; }
-  .review-tour-diffs { grid-row: 1; padding: .6rem; }
+  /* on phones the diff fills the step; its narration and feedback open from a bar into a left drawer */
+  .review-tour-step { position: relative; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .review-tour-diffs { padding: .6rem; }
   .review-tour-actions { flex-wrap: wrap; padding: .55rem .75rem; }
   .review-tour-actions > span { order: -1; flex: 1 0 100%; margin-left: 0; text-align: right; }
 }
