@@ -19,6 +19,7 @@ import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type Pro
 import { promptAttachmentBytes, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments } from './prompts/validation.js';
 import { QueuedPromptService, type QueuedPrompt } from './prompts/queue.js';
 import { LaunchService, type TmuxSession } from './launch/service.js';
+import { launchFresh, managedRunProgress, type FreshLaunchFailure, type ReadinessOutcome } from './launch/managed-run.js';
 import { atPlace, createAgentWaiter, inWorktree, launchPollAttempts, launchPollDelay as defaultLaunchPollDelay, launchReadyTimeoutSeconds } from './launch/wait.js';
 import { scratchLaunchKey, WorktreeLaunchStore } from './worktrees/store.js';
 import { folderNoteKey, placeLaunchScope, placeNoteKey, worktreePlace, type Place } from './places/places.js';
@@ -1715,7 +1716,6 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // wait for a freshly launched pane to become ready for its first prompt, reading the
   // launching Adapter's `ready` rule over the pane's snapshot and capture (Scheduled
   // prompts). A kind without a new-conversation capability takes its first prompt at once.
-  type ReadinessOutcome = { state: 'ready' } | { state: 'blocked'; reason: string } | { state: 'timed-out' };
   const waitForReadiness = async (agent: Agent): Promise<ReadinessOutcome> => {
     const ready = adapterFor(agent.kind)?.newConversation?.ready;
     // no readiness rule: the fresh launch may take its first prompt immediately
@@ -1807,30 +1807,26 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!await prompts.submit(agentId, text, attachments, resetAt)) return { status: 'failed', detail: 'the note could not be delivered', reason: 'delivery-failed', agentId };
     return { status: 'launched', agentId };
   };
-  // launch a fresh agent for the target, wait for it and its readiness, then submit the note; a
-  // blocked or slow readiness closes the pane this Run created rather than leaving it behind
+  // launch a fresh agent for the target through the managed-run primitive, then submit the note; a
+  // blocked or slow readiness closes the pane this Run created rather than leaving it behind (the Run
+  // then has no pane to remember or deep-link to, so lastRun records no agentId and the notification
+  // falls back to the Worktree or root url)
   const notReadyDetail = `agent did not become ready in ${launchReadyTimeoutSeconds} s`;
+  const freshFailureDetail: Record<FreshLaunchFailure, string> = { 'launch-refused': 'launch refused', 'no-agent': notReadyDetail, 'not-ready-blocked': notReadyDetail, 'not-ready-timeout': notReadyDetail, 'delivery-failed': 'the note could not be delivered' };
   const runFresh = async (plan: RunPlan, text: string, attachments: PromptAttachment[], name?: string): Promise<RunOutcome> => {
-    const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
-    // a refused launch (an unconfigured or unlaunchable kind, or a busy worktree) pastes nothing
-    if (!await plan.launch()) return { status: 'failed', detail: 'launch refused', reason: 'launch-refused' };
-    const agent = await plan.waitForNewAgent(before);
-    if (agent === undefined) return { status: 'failed', detail: notReadyDetail, reason: 'no-agent' };
-    const readiness = await waitForReadiness(agent);
-    if (readiness.state !== 'ready') {
-      // the pane is closed here, so the Run has no pane to remember or deep-link to: drop its id, so
-      // lastRun records no agentId and the notification falls back to the Worktree (or root) url
-      await prompts.close(agent.id).catch(() => undefined);
-      return readiness.state === 'blocked'
-        ? { status: 'failed', detail: readiness.reason, reason: 'not-ready-blocked' }
-        : { status: 'failed', detail: notReadyDetail, reason: 'not-ready-timeout' };
-    }
-    // an unattended (managed) Run names its fresh conversation before delivering, so the pane the
-    // reconciler later closes is still findable by name in the Named list. Best-effort: a failed
-    // rename never blocks the note's delivery.
-    if (name !== undefined) await nameAgentConversation(agent.id, name).catch(() => undefined);
-    if (!await prompts.submit(agent.id, text, attachments)) return { status: 'failed', detail: 'the note could not be delivered', reason: 'delivery-failed', agentId: agent.id };
-    return { status: 'launched', agentId: agent.id };
+    const outcome = await launchFresh({
+      agentIds: async () => new Set((await discovery.dashboard()).agents.map(agent => agent.id)),
+      launch: plan.launch,
+      waitForNewAgent: plan.waitForNewAgent,
+      waitForReadiness,
+      close: agentId => prompts.close(agentId),
+      // an unattended (managed) Run names its fresh conversation before delivering, so the pane the
+      // reconciler later closes is still findable by name in the Named list
+      ...(name === undefined ? {} : { prepare: (agent: Agent) => nameAgentConversation(agent.id, name) }),
+      deliver: agent => prompts.submit(agent.id, text, attachments)
+    });
+    if (outcome.status === 'launched') return outcome;
+    return { status: 'failed', reason: outcome.reason, detail: outcome.detail ?? freshFailureDetail[outcome.reason], ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }) };
   };
   const runOnce = async (input: { text: string; attachments: PromptAttachment[]; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string; unattended?: boolean; conversationName?: string }): Promise<RunOutcome> => {
     // preconditions — a failure records `skipped` with the reason and pastes nothing
@@ -1949,9 +1945,6 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       scheduleRunsInFlight.delete(flightKey);
     }
   };
-  // a managed Run must report `working` within this window or it is taken to have finished without
-  // observable work (a no-op prompt, or a task that started and finished between reconcile ticks)
-  const scheduleRunStartWindowMs = 60 * 1_000;
   // a managed Run still working after this is closed and recorded `timed-out`, so a runaway task never
   // holds its Note's one-Run slot forever
   const scheduleRunMaxMs = 30 * 60 * 1_000;
@@ -1981,17 +1974,16 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         // the managed pane is gone — a manual stop, a crash, or a restart that outlived it
         terminal = { at: lastRun.at, status: 'failed', detail: 'the agent was closed before the run finished' };
       } else {
-        const attention = agentAttentionState(target.agent);
-        if (attention === 'working') {
+        const progress = managedRunProgress(agentAttentionState(target.agent), lastRun.sawWorking === true, elapsed);
+        if (progress === 'working') {
           if (elapsed >= scheduleRunMaxMs) { terminal = { at: lastRun.at, status: 'timed-out', detail: `still working after ${Math.round(scheduleRunMaxMs / 60_000)} min` }; closeId = agentId; }
           else if (lastRun.sawWorking !== true) progressed = { ...lastRun, sawWorking: true };
-        } else if (attention === 'question') {
+        } else if (progress === 'question') {
           terminal = { at: lastRun.at, status: 'needs-input', detail: 'the run ended asking a question' }; closeId = agentId;
-        } else if (lastRun.sawWorking === true || elapsed >= scheduleRunStartWindowMs) {
-          // finished after we saw it work, or past the start window (a fast task can finish between ticks)
+        } else if (progress === 'finished') {
           terminal = { at: lastRun.at, status: 'completed' }; closeId = agentId;
         }
-        // else: finished, never observed working, still within the start window → it may not have begun
+        // else: starting — finished, never observed working, still within the start window → it may not have begun
       }
       if (closeId !== undefined) await prompts.close(closeId).catch(() => undefined);
       const record = terminal ?? progressed;
