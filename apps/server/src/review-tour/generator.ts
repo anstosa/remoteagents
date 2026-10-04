@@ -1,48 +1,9 @@
-import { randomBytes } from 'node:crypto';
-import { spawn, type ChildProcess } from 'node:child_process';
-import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { constants } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import type { Readable } from 'node:stream';
-import { run, safeEnv } from '../tmux/command.js';
-import { generatedReviewTourJsonSchema, MAX_REVIEW_GENERATED_BYTES, parseGeneratedReviewTourResult, REVIEW_GENERATION_TIMEOUT_MS, ReviewTourError, type GeneratedReviewTour, type ReviewComparison, type ReviewTourCapability } from './contracts.js';
-
-const MAX_REVIEW_DIAGNOSTIC_CHARACTERS = 16_384;
-const authenticationDiagnostic = /(?:^|\n)(?:\d{4}-\d{2}-\d{2}T\S+\s+)?ERROR(?:\s+codex_login::auth::manager)?:\s*(?:Failed to refresh token|Your access token could not be refreshed|Provided authentication token is expired)\b/imu;
+import { CodexHeadlessReviewRunner } from '../review-runs/codex-headless.js';
+import { generatedReviewTourJsonSchema, parseGeneratedReviewTourResult, REVIEW_GENERATION_TIMEOUT_MS, ReviewTourError, type GeneratedReviewTour, type ReviewComparison, type ReviewTourCapability } from './contracts.js';
 
 export interface ReviewTourGenerator {
   capability(): Promise<ReviewTourCapability>;
   generate(comparison: ReviewComparison, signal: AbortSignal): Promise<GeneratedReviewTour>;
-}
-
-// terminate the full generation tree
-async function terminate(child: ChildProcess): Promise<void> {
-  // stop an active process group
-  if (child.pid !== undefined && child.exitCode === null) {
-    try { process.kill(-child.pid, 'SIGTERM'); } catch { child.kill('SIGTERM'); }
-    await new Promise(resolve => setTimeout(resolve, 1_000));
-    // force remaining descendants down
-    if (child.exitCode === null) {
-      try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
-    }
-  }
-}
-
-// retain a bounded diagnostic tail while draining stderr
-function collectDiagnostics(stream: Readable): () => string {
-  let diagnostics = '';
-  stream.setEncoding('utf8');
-  // keep only the most recent diagnostic output
-  stream.on('data', (chunk: string) => { diagnostics = `${diagnostics}${chunk}`.slice(-MAX_REVIEW_DIAGNOSTIC_CHARACTERS); });
-  return () => diagnostics;
-}
-
-// classify actionable Codex process failures
-function processFailure(diagnostics: string): ReviewTourError {
-  // distinguish an expired server login from model generation failures
-  if (authenticationDiagnostic.test(diagnostics)) return new ReviewTourError('authentication_required', false);
-  return new ReviewTourError('generation_failed', true);
 }
 
 // build explanation-only instructions
@@ -61,89 +22,20 @@ function generationPrompt(comparison: ReviewComparison): string {
 }
 
 export class CodexExecReviewTourGenerator implements ReviewTourGenerator {
-  private capabilityResult?: Promise<ReviewTourCapability>;
+  private readonly runner: CodexHeadlessReviewRunner;
 
-  // the Codex binary: an explicit override, else the configured adapters.codex program;
-  // an empty string (nothing configured) reports unavailable rather than spawning a bare name
-  constructor(private readonly binary = process.env.RAC_CODEX_BIN ?? '') {}
+  // the Codex binary: an explicit override, else the configured adapters.codex program
+  constructor(binary?: string) { this.runner = new CodexHeadlessReviewRunner(binary); }
 
   // verify the configured CLI surface once
-  capability(): Promise<ReviewTourCapability> {
-    this.capabilityResult ??= this.detectCapability();
-    return this.capabilityResult;
-  }
-
-  // inspect required CLI flags
-  private async detectCapability(): Promise<ReviewTourCapability> {
-    // require a configured, absolute executable
-    if (!this.binary.startsWith('/')) return { available: false, reason: 'configuration_invalid' };
-    const executable = await access(this.binary, constants.X_OK).then(() => true).catch(() => false);
-    // report missing generators cleanly
-    if (!executable) return { available: false, reason: 'generator_unavailable' };
-    const help = await run(this.binary, ['exec', '--help'], undefined, 5_000).catch(() => undefined);
-    // require every isolation/output flag
-    if (help === undefined || help.code !== 0 || !['--ephemeral', '--ignore-user-config', '--ignore-rules', '--sandbox', '--output-schema', '--output-last-message'].every(flag => help.stdout.includes(flag))) return { available: false, reason: 'unsupported_cli' };
-    const login = await run(this.binary, ['login', 'status'], undefined, 5_000).catch(() => undefined);
-    // require persisted provider authentication
-    if (login === undefined || login.code !== 0) return { available: false, reason: 'authentication_required' };
-    return { available: true };
-  }
+  capability(): Promise<ReviewTourCapability> { return this.runner.capability() as Promise<ReviewTourCapability>; }
 
   // run one ephemeral structured generation
   async generate(comparison: ReviewComparison, signal: AbortSignal): Promise<GeneratedReviewTour> {
-    const capability = await this.capability();
-    // fail closed when startup checks fail
-    if (!capability.available) throw new ReviewTourError('capability_unavailable', capability.reason === 'generator_unavailable');
-    const root = await mkdtemp(join(tmpdir(), `rac-review-${randomBytes(4).toString('hex')}-`));
-    await chmod(root, 0o700);
-    const schemaPath = join(root, 'schema.json');
-    const outputPath = join(root, 'result.json');
-    await writeFile(schemaPath, JSON.stringify(generatedReviewTourJsonSchema), { mode: 0o600 });
-    const args = ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--sandbox', 'read-only', '--output-schema', schemaPath, '--output-last-message', outputPath, '--color', 'never', '-C', comparison.workspace, '-'];
-    const child = spawn(this.binary, args, { shell: false, detached: true, env: safeEnv(), stdio: ['pipe', 'ignore', 'pipe'] });
-    const diagnostics = collectDiagnostics(child.stderr);
-    const timedOut = new AbortController();
-    const timer = setTimeout(() => timedOut.abort(), REVIEW_GENERATION_TIMEOUT_MS);
-    let abortedByTimeout = false;
-    // stop on server timeout
-    const timeoutAbort = () => { abortedByTimeout = true; void terminate(child); };
-    // stop on caller cancellation
-    const requestAbort = () => { void terminate(child); };
-    timedOut.signal.addEventListener('abort', timeoutAbort, { once: true });
-    signal.addEventListener('abort', requestAbort, { once: true });
-    try {
-      // reject already-cancelled requests
-      if (signal.aborted) throw new ReviewTourError('cancelled', true);
-      child.stdin.end(generationPrompt(comparison));
-      const code = await new Promise<number>((resolve, reject) => {
-        // surface spawn failures
-        child.once('error', reject);
-        child.once('close', value => resolve(value ?? -1));
-      }).catch(() => -1);
-      // preserve cancellation distinctions
-      if (signal.aborted) throw new ReviewTourError('cancelled', true);
-      // report timeout distinctly
-      if (abortedByTimeout) throw new ReviewTourError('timed_out', true);
-      // classify a failed process from its bounded diagnostic tail
-      if (code !== 0) throw processFailure(diagnostics());
-      const raw = await readFile(outputPath);
-      // reject oversized output
-      if (raw.length > MAX_REVIEW_GENERATED_BYTES) throw new ReviewTourError('malformed_result', true);
-      const parsed = JSON.parse(raw.toString('utf8')) as unknown;
-      const result = parseGeneratedReviewTourResult(parsed, comparison.changes);
-      // reject invalid assignments or narration
-      if (!result.ok) throw new ReviewTourError(result.code, true);
-      return result.tour;
-    } catch (error) {
-      // preserve typed failures
-      if (error instanceof ReviewTourError) throw error;
-      throw new ReviewTourError('malformed_result', true);
-    } finally {
-      clearTimeout(timer);
-      timedOut.signal.removeEventListener('abort', timeoutAbort);
-      signal.removeEventListener('abort', requestAbort);
-      await terminate(child);
-      await rm(root, { recursive: true, force: true });
-    }
+    const parsed = await this.runner.run({ kind: 'codex', workspace: comparison.workspace, prompt: generationPrompt(comparison), schema: generatedReviewTourJsonSchema, timeoutMs: REVIEW_GENERATION_TIMEOUT_MS, label: `Tour · ${comparison.branch ?? comparison.worktreeId}` }, signal);
+    const result = parseGeneratedReviewTourResult(parsed, comparison.changes);
+    // reject invalid assignments or narration
+    if (!result.ok) throw new ReviewTourError(result.code, true);
+    return result.tour;
   }
 }
