@@ -47,7 +47,8 @@ export type ReviewTourInput = { scope: ReviewScope; includeTests: boolean; inclu
 // whether the tour's configured agent can run, with its configured effort and every level it accepts
 export type ReviewTourCapability = ReviewRunCapability & { agent: ReviewAgentKind; effort?: string; efforts: string[] };
 export type StoredReviewTour = { worktreeId: string; branch: string; savedAt: string; tour: ReviewTour };
-export type StoredReviewTourSummary = Pick<StoredReviewTour, 'worktreeId' | 'branch' | 'savedAt'> & Pick<ReviewTour, 'title' | 'scope' | 'includeTests' | 'includeDocs' | 'fingerprint'>;
+// `codeReview` reports the tour's Code review (running, ready with `findings` counted, or failed)
+export type StoredReviewTourSummary = Pick<StoredReviewTour, 'worktreeId' | 'branch' | 'savedAt'> & Pick<ReviewTour, 'title' | 'scope' | 'includeTests' | 'includeDocs' | 'fingerprint'> & { codeReview?: 'running' | 'ready' | 'failed'; findings?: number };
 export type ReviewErrorCode = 'invalid_request' | 'capability_unavailable' | 'authentication_required' | 'target_unavailable' | 'configured_worktree_required' | 'scope_unavailable' | 'conflicted_unavailable' | 'too_large' | 'generation_failed' | 'malformed_result' | 'generation_rejected' | 'timed_out' | 'cancelled' | 'stale_during_generation';
 export type PublicReviewComparison = Pick<ReviewComparison, 'scope' | 'base' | 'fingerprint' | 'includeTests' | 'includeDocs'>;
 

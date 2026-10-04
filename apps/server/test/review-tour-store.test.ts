@@ -52,6 +52,24 @@ describe('review tour store', () => {
     expect(await store.current(id, 'feature/one')).toMatchObject({ branch: 'feature/one', tour: { title: tour.title } });
   });
 
+  it('keeps a Code review beside the tour file, refusing superseded saves and other branches', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-review-tour-code-review-'));
+    directories.push(directory);
+    const file = join(directory, 'reviews.json');
+    const store = new ReviewTourStore(file);
+    const review = { fingerprint: tour.fingerprint, preset: { id: 'correctness', label: 'Correctness', agent: 'codex' as const }, findings: [], general: [{ id: 'fnd_0123456789abcdef', severity: 'low' as const, title: 'No test', body: 'Nothing covers it.' }], completedAt: new Date().toISOString() };
+    const stale = store.beginCodeReview('cora');
+    const current = store.beginCodeReview('cora');
+    expect(await store.saveCodeReviewIfCurrent('cora', 'feature/one', review, stale)).toBe(false);
+    expect(await store.saveCodeReviewIfCurrent('cora', 'feature/one', review, current)).toMatchObject({ branch: 'feature/one' });
+    expect(JSON.parse(await readFile(join(directory, 'reviews.code-reviews.json'), 'utf8'))).toMatchObject({ cora: { branch: 'feature/one', review: { fingerprint: tour.fingerprint } } });
+    await store.save('cora', 'feature/one', tour);
+    expect(await store.summaries([{ worktreeId: 'cora', branch: 'feature/one' }])).toEqual([expect.objectContaining({ codeReview: 'ready', findings: 1 })]);
+    expect(await store.current('cora', 'feature/two')).toBeUndefined();
+    expect(await store.codeReview('cora', 'feature/one', tour.fingerprint)).toBeUndefined();
+    expect(JSON.parse(await readFile(join(directory, 'reviews.code-reviews.json'), 'utf8'))).toEqual({});
+  });
+
   it('dismisses a current cached review idempotently', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-review-tour-dismiss-'));
     directories.push(directory);

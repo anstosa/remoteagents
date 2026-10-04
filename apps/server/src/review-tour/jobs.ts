@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { sameCodeReviewOptions, type CodeReviewOptions } from '../code-review/contracts.js';
+import type { CodeReviewJobs } from '../code-review/jobs.js';
 import { publicReviewComparison, REVIEW_JOB_POLL_MS, REVIEW_JOB_TTL_MS, ReviewTourError, type PublicReviewComparison, type ReviewErrorCode, type ReviewTour, type ReviewTourInput } from './contracts.js';
 import type { PreparedReviewTour, ReviewTourService } from './service.js';
 import type { ReviewTourStore } from './store.js';
@@ -11,8 +13,9 @@ type GoneJob = { kind: 'gone'; code: 'job_cancelled' | 'job_superseded' | 'job_e
 export type ReviewJobState = PendingJob | ReadyJob | EmptyJob | FailedJob | GoneJob;
 export type StoredReviewJob = { id: string; owner: string; agentId: string; worktreeId: string; persistenceVersion: number; expiresAt: number; state: ReviewJobState; expiry: NodeJS.Timeout; removal?: NodeJS.Timeout };
 export type StartedReviewJob = { id: string; expiresAt: string; retryAfterMs: number };
-type ReviewJobStart = { kind: 'empty'; comparison: PublicReviewComparison } | { kind: 'pending'; job: StartedReviewJob };
-type IdempotentStart = { agentId: string; input: ReviewTourInput; promise: Promise<ReviewJobStart>; expiry?: NodeJS.Timeout };
+// a pending start carries the Code review job started beside the tour, when one was requested
+type ReviewJobStart = { kind: 'empty'; comparison: PublicReviewComparison } | { kind: 'pending'; job: StartedReviewJob; codeReview?: { job: StartedReviewJob } };
+type IdempotentStart = { agentId: string; input: ReviewTourInput; codeReview?: CodeReviewOptions; promise: Promise<ReviewJobStart>; expiry?: NodeJS.Timeout };
 export type CompletedReviewJob = { agentId: string; worktreeId: string; prepared: PreparedReviewTour; tour: ReviewTour };
 
 export class ReviewTourJobs {
@@ -21,22 +24,23 @@ export class ReviewTourJobs {
   private readonly persistenceVersions = new Map<string, number>();
   private readonly idempotentStarts = new Map<string, IdempotentStart>();
 
-  constructor(private readonly service: ReviewTourService, private readonly store?: ReviewTourStore, private readonly onStored?: (review: CompletedReviewJob) => void | Promise<void>) {}
+  // `codeReviews` runs a Code review beside a tour that asks for one; every new tour supersedes it
+  constructor(private readonly service: ReviewTourService, private readonly store?: ReviewTourStore, private readonly onStored?: (review: CompletedReviewJob) => void | Promise<void>, private readonly codeReviews?: CodeReviewJobs) {}
 
-  // start one latest-wins generation
-  async start(owner: string, agentId: string, input: ReviewTourInput, requestId?: string): Promise<ReviewJobStart> {
+  // start one latest-wins generation, with a Code review of the same Comparison when requested
+  async start(owner: string, agentId: string, input: ReviewTourInput, requestId?: string, codeReview?: CodeReviewOptions): Promise<ReviewJobStart> {
     // preserve legacy callers without retry identity
-    if (requestId === undefined) return await this.create(owner, agentId, input);
+    if (requestId === undefined) return await this.create(owner, agentId, input, codeReview);
     const key = `${owner}\0${requestId}`;
     const existing = this.idempotentStarts.get(key);
     // replay only the same logical request
     if (existing !== undefined) {
       // reject request-key reuse across inputs
-      if (existing.agentId !== agentId || !this.sameInput(existing.input, input)) throw new ReviewTourError('invalid_request', false);
+      if (existing.agentId !== agentId || !this.sameInput(existing.input, input) || !sameCodeReviewOptions(existing.codeReview, codeReview)) throw new ReviewTourError('invalid_request', false);
       return await existing.promise;
     }
-    const promise = this.create(owner, agentId, input);
-    const retained: IdempotentStart = { agentId, input, promise };
+    const promise = this.create(owner, agentId, input, codeReview);
+    const retained: IdempotentStart = { agentId, input, ...(codeReview === undefined ? {} : { codeReview }), promise };
     this.idempotentStarts.set(key, retained);
     try {
       const started = await promise;
@@ -54,12 +58,19 @@ export class ReviewTourJobs {
   }
 
   // create one latest-wins generation
-  private async create(owner: string, agentId: string, input: ReviewTourInput): Promise<ReviewJobStart> {
+  private async create(owner: string, agentId: string, input: ReviewTourInput, codeReview?: CodeReviewOptions): Promise<ReviewJobStart> {
+    // refuse an unusable Code review before anything starts
+    if (codeReview !== undefined) {
+      if (this.codeReviews === undefined) throw new ReviewTourError('capability_unavailable', false);
+      await this.codeReviews.validate(codeReview);
+    }
     const prepared = await this.service.prepare(agentId, input);
     const storeWithCurrency = this.store as (ReviewTourStore & { invalidate?: ReviewTourStore['invalidate']; saveIfCurrent?: ReviewTourStore['saveIfCurrent'] }) | undefined;
     const persistenceVersion = await storeWithCurrency?.invalidate?.(prepared.comparison.worktreeId, prepared.comparison.branch) ?? (this.persistenceVersions.get(prepared.comparison.worktreeId) ?? 0) + 1;
     this.persistenceVersions.set(prepared.comparison.worktreeId, persistenceVersion);
     this.supersede(owner, prepared);
+    // a new tour replaces the Worktree's Code review
+    this.codeReviews?.supersedeWorktree(prepared.comparison.worktreeId);
     // skip model generation for empty selections
     if (prepared.comparison.changes.length === 0) return { kind: 'empty', comparison: publicReviewComparison(prepared.comparison) };
     const id = randomBytes(18).toString('base64url');
@@ -70,7 +81,9 @@ export class ReviewTourJobs {
     this.jobs.set(id, job);
     this.latestByWorktree.set(this.latestKey(owner, job.worktreeId), id);
     void this.run(job, prepared);
-    return { kind: 'pending', job: { id, expiresAt: new Date(expiresAt).toISOString(), retryAfterMs: REVIEW_JOB_POLL_MS } };
+    // review the very Comparison the tour narrates
+    const review = codeReview === undefined || this.codeReviews === undefined ? undefined : await this.codeReviews.start(owner, agentId, prepared, codeReview);
+    return { kind: 'pending', job: { id, expiresAt: new Date(expiresAt).toISOString(), retryAfterMs: REVIEW_JOB_POLL_MS }, ...(review === undefined ? {} : { codeReview: { job: review } }) };
   }
 
   // publish a terminal generation result

@@ -6,7 +6,7 @@ import { runReviewProcess } from './process.js';
 import { ReviewRunError, unavailable, type KindReviewRunner, type ReviewRunCapability, type ReviewRunRequest } from './runner.js';
 
 // the result envelope carries the text result and usage beside the structured output
-const MAX_CLAUDE_ENVELOPE_BYTES = 4 * MAX_REVIEW_GENERATED_BYTES + 65_536;
+const envelopeBytes = (outputBytes: number) => 4 * outputBytes + 65_536;
 const requiredFlags = ['--json-schema', '--tools', '--output-format', '--effort', '--no-session-persistence', '--strict-mcp-config'];
 const authenticationFailure = /invalid api key|please run \/login|not logged in|authentication_error|oauth token (?:has )?expired/iu;
 
@@ -66,13 +66,14 @@ export class ClaudeHeadlessReviewRunner implements KindReviewRunner {
     const refused = unavailable(await this.capability());
     // fail closed when startup checks fail
     if (refused !== undefined) throw refused;
-    const result = await runReviewProcess({ binary: this.binary, args: claudePrintArgs(request), cwd: request.workspace, stdin: request.prompt, timeoutMs: request.timeoutMs, maxStdoutBytes: MAX_CLAUDE_ENVELOPE_BYTES }, signal);
+    const outputBytes = request.maxOutputBytes ?? MAX_REVIEW_GENERATED_BYTES;
+    const result = await runReviewProcess({ binary: this.binary, args: claudePrintArgs(request), cwd: request.workspace, stdin: request.prompt, timeoutMs: request.timeoutMs, maxStdoutBytes: envelopeBytes(outputBytes) }, signal);
     const envelope = result.overflowed ? undefined : resultEnvelope(result.stdout);
     // a non-zero exit or an error result is a failed run, classified from its text
     if (result.code !== 0 || envelope?.is_error === true) throw processFailure(result.diagnostics, envelope);
     const output = envelope?.structured_output;
     // require a bounded structured result
-    if (output === undefined || output === null || Buffer.byteLength(JSON.stringify(output)) > MAX_REVIEW_GENERATED_BYTES) throw new ReviewRunError('malformed_result', true);
+    if (output === undefined || output === null || Buffer.byteLength(JSON.stringify(output)) > outputBytes) throw new ReviewRunError('malformed_result', true);
     return output;
   }
 }

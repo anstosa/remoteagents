@@ -69,7 +69,7 @@ export class CodexHeadlessReviewRunner implements KindReviewRunner {
       if (result.code !== 0) throw processFailure(result.diagnostics);
       const raw = await readFile(outputPath);
       // reject oversized output
-      if (raw.length > MAX_REVIEW_GENERATED_BYTES) throw new ReviewRunError('malformed_result', true);
+      if (raw.length > (request.maxOutputBytes ?? MAX_REVIEW_GENERATED_BYTES)) throw new ReviewRunError('malformed_result', true);
       return JSON.parse(raw.toString('utf8')) as unknown;
     } catch (error) {
       // preserve typed failures

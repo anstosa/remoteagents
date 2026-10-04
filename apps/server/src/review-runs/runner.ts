@@ -5,8 +5,9 @@ export type ReviewRunUnavailableReason = 'generator_unavailable' | 'unsupported_
 export type ReviewRunCapability = { available: true } | { available: false; reason: ReviewRunUnavailableReason };
 // one Review run (ADR 0010): a prompt sent to one agent in the Worktree, answered with JSON
 // matching `schema`. `label` names an interactive run's Agent ("Tour · branch"); headless
-// runs ignore it. An absent model or effort leaves the CLI's own default.
-export type ReviewRunRequest = { kind: ReviewAgentKind; workspace: string; prompt: string; schema: object; model?: string; effort?: string; timeoutMs: number; label: string };
+// runs ignore it. An absent model or effort leaves the CLI's own default. `maxOutputBytes`
+// bounds the structured result, MAX_REVIEW_GENERATED_BYTES when absent.
+export type ReviewRunRequest = { kind: ReviewAgentKind; workspace: string; prompt: string; schema: object; model?: string; effort?: string; timeoutMs: number; label: string; maxOutputBytes?: number };
 export type ReviewRunErrorCode = 'capability_unavailable' | 'authentication_required' | 'generation_failed' | 'malformed_result' | 'timed_out' | 'cancelled';
 
 // a typed Review run failure; a ReviewTourError, so tour and review jobs map it unchanged

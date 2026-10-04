@@ -131,6 +131,12 @@ describe('headless Claude Review runner', () => {
     await expect(new ClaudeHeadlessReviewRunner(garbled.binary).run(request(garbled.root, { kind: 'claude' }), new AbortController().signal)).rejects.toMatchObject<ReviewRunError>({ code: 'malformed_result' });
   });
 
+  it('bounds the structured output by the request, else the tour limit', async () => {
+    const fixture = await fakeClaude({ stdout: claudeResult({ structured_output: { answer: 'x'.repeat(100_000) } }) });
+    await expect(new ClaudeHeadlessReviewRunner(fixture.binary).run(request(fixture.root, { kind: 'claude' }), new AbortController().signal)).rejects.toMatchObject<ReviewRunError>({ code: 'malformed_result' });
+    await expect(new ClaudeHeadlessReviewRunner(fixture.binary).run(request(fixture.root, { kind: 'claude', maxOutputBytes: 200_000 }), new AbortController().signal)).resolves.toEqual({ answer: 'x'.repeat(100_000) });
+  });
+
   it('classifies a missing login as authentication required', async () => {
     const fixture = await fakeClaude({ stdout: claudeResult({ is_error: true, result: 'Invalid API key · Please run /login' }), exit: 1 });
     await expect(new ClaudeHeadlessReviewRunner(fixture.binary).run(request(fixture.root, { kind: 'claude' }), new AbortController().signal)).rejects.toMatchObject<ReviewRunError>({ code: 'authentication_required', retryable: false });
