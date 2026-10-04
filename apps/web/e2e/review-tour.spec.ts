@@ -1009,3 +1009,187 @@ test('names the tour agent when guided review is unavailable', async ({ page }) 
     await expect(review).toHaveAttribute('title', reason);
   }
 });
+
+// a restored two-step tour (the comment tour's patches) with a stored AI review holding anchored and
+// general Findings, for the triage tests; `pendingRun` makes the stored review a running job instead
+const triageRoutePatch = 'diff --git a/src/route.ts b/src/route.ts\nindex 1111111..2222222 100644\n--- a/src/route.ts\n+++ b/src/route.ts\n@@ -10,4 +10,5 @@\n const a = 1;\n-const b = 2;\n+const b = 3;\n+const c = 4;\n const d = 5;\n export {};\n';
+const triageTour = { title: 'Triage tour', overview: 'Review the route constants.', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: 'triage-fingerprint-123456', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: triageRoutePatch }, { id: 'chg_service01', file: 'src/service.ts', category: 'implementation', kind: 'hunk', patch: 'diff --git a/src/service.ts b/src/service.ts\nindex 3333333..4444444 100644\n--- a/src/service.ts\n+++ b/src/service.ts\n@@ -4 +4 @@\n-old service\n+new service\n' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route renames its constants.', changeIds: ['chg_route0001'] }, { id: 'service', title: 'Apply the operation', explanation: 'The service performs the transition.', changeIds: ['chg_service01'] }] };
+const triageReview = { fingerprint: triageTour.fingerprint, preset: { id: 'correctness', label: 'Correctness', agent: 'claude' }, effort: 'high', completedAt: '2026-10-04T12:00:00.000Z', findings: [
+  { id: 'f-const', changeId: 'chg_route0001', side: 'additions', startLine: 12, endLine: 12, severity: 'high', title: 'Unchecked constant', body: 'c is never validated.\nAdd a guard.' },
+  { id: 'f-old', changeId: 'chg_route0001', side: 'deletions', startLine: 11, endLine: 11, severity: 'low', title: 'Lost value', body: 'b used to be 2.' },
+  { id: 'f-service', changeId: 'chg_service01', side: 'additions', startLine: 4, endLine: 4, severity: 'medium', title: 'Service naming', body: 'Name the operation.' }
+], general: [{ id: 'g-tests', severity: 'medium', title: 'No tests', body: 'Nothing covers the route.', file: 'src/route.ts' }] };
+async function openTriageTour(page: Page, { stored = { codeReview: triageReview } as Record<string, unknown>, codeReviewPoll }: { stored?: Record<string, unknown>; codeReviewPoll?: (route: Route) => Promise<void> } = {}): Promise<{ dialog: ReturnType<Page['getByRole']>; prompts: string[] }> {
+  const prompts: string[] = [];
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, ...claudeReviewCapabilities, reviews: [{ worktreeId: 'owen', branch: 'feature/review-tour', savedAt: '2026-10-04T12:00:00.000Z', title: triageTour.title, scope: 'working', includeTests: false, includeDocs: false, fingerprint: triageTour.fingerprint }], agents: [startSheetAgent, { ...startSheetAgent, id: 'agent-review', sessionId: 'socket:$2', title: 'Review · Correctness' }], projects: [] } });
+    if (await fulfillAgentSupport(route, url.pathname)) return;
+    if (url.pathname === '/api/worktrees/owen/review-tour') return route.fulfill({ json: { status: 'ready', review: { worktreeId: 'owen', branch: 'feature/review-tour', savedAt: '2026-10-04T12:00:00.000Z', tour: triageTour, ...stored } } });
+    if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') return route.fulfill({ json: { status: 'comparison', comparison: { scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: triageTour.fingerprint } } });
+    if (url.pathname.startsWith('/api/code-review/jobs/') && codeReviewPoll !== undefined) return codeReviewPoll(route);
+    if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') { prompts.push((request.postDataJSON() as { prompt: string }).prompt); return route.fulfill({ status: 204 }); }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Triage tour' });
+  await expect(dialog).toBeVisible();
+  return { dialog, prompts };
+}
+
+test('shows AI review Findings as suggested comments to keep or dismiss', async ({ page }) => {
+  const { dialog, prompts } = await openTriageTour(page);
+  const diffPane = dialog.getByLabel('Relevant changes');
+  await expect(diffPane.getByText('const c = 4;')).toBeVisible();
+  // each of the step's Findings shows on its lines with its severity, title, body and source
+  const suggestion = diffPane.getByRole('group', { name: 'Suggested comment: Unchecked constant' });
+  await expect(suggestion).toContainText('high');
+  await expect(suggestion).toContainText('c is never validated.\nAdd a guard.');
+  await expect(suggestion).toContainText('Line 12 · Correctness · Claude · high');
+  await expect(diffPane.getByRole('group', { name: 'Suggested comment: Lost value' })).toContainText('low');
+  await expect(diffPane.getByRole('group', { name: /Service naming/u })).toHaveCount(0);
+  // the suggestion sits under its line, inside the route diff
+  const lineBox = await diffPane.getByText('const c = 4;').boundingBox();
+  const suggestionBox = await suggestion.boundingBox();
+  expect(suggestionBox!.y).toBeGreaterThan(lineBox!.y);
+  expect(suggestionBox!.y - lineBox!.y).toBeLessThan(60);
+
+  // Dismiss collapses it to a row that restores it
+  await diffPane.getByRole('group', { name: 'Suggested comment: Lost value' }).getByRole('button', { name: 'Dismiss' }).click();
+  const dismissed = diffPane.getByRole('group', { name: 'Dismissed suggestion: Lost value' });
+  await expect(dismissed).toHaveText(/Dismissed · Lost value/u);
+  await dismissed.getByRole('button', { name: 'Restore' }).click();
+  await expect(diffPane.getByRole('group', { name: 'Suggested comment: Lost value' })).toBeVisible();
+  await diffPane.getByRole('group', { name: 'Suggested comment: Lost value' }).getByRole('button', { name: 'Dismiss' }).click();
+
+  // Keep turns it into the operator's own open comment, pre-filled; deleting it brings the suggestion back
+  await suggestion.getByRole('button', { name: 'Keep' }).click();
+  const editor = dialog.getByLabel('Comment on line 12');
+  await expect(editor).toBeFocused();
+  await expect(editor).toHaveValue('Unchecked constant\n\nc is never validated.\nAdd a guard.');
+  await expect(suggestion).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Delete' }).click();
+  await expect(suggestion).toBeVisible();
+  // closing it emptied does too
+  await suggestion.getByRole('button', { name: 'Keep' }).click();
+  await editor.fill('');
+  await dialog.getByRole('button', { name: 'Done' }).click();
+  await expect(suggestion).toBeVisible();
+  await suggestion.getByRole('button', { name: 'Keep' }).click();
+  await editor.fill('Validate c before use.');
+  await dialog.getByRole('button', { name: 'Done' }).click();
+  await expect(diffPane.locator('.review-tour-inline-comment')).toContainText('Validate c before use.');
+
+  // triage survives minimize and restore
+  await dialog.getByRole('button', { name: 'Minimize guided review' }).click();
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
+  await expect(diffPane.getByRole('group', { name: 'Dismissed suggestion: Lost value' })).toBeVisible();
+  await expect(diffPane.locator('.review-tour-inline-comment')).toContainText('Validate c before use.');
+  await expect(suggestion).toHaveCount(0);
+
+  // the kept comment is sent as the operator's own; the dismissed and untriaged Findings are not
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await expect(diffPane.getByRole('group', { name: 'Suggested comment: Service naming' })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  const draft = dialog.getByLabel('Consolidated change request');
+  const value = await draft.inputValue();
+  expect(value).toContain('### src/route.ts:12 (new)\n```diff\n+const c = 4;\n```\nValidate c before use.');
+  expect(value).not.toMatch(/Lost value|Service naming|Correctness|Claude/u);
+  await dialog.getByRole('button', { name: 'Send change request' }).click();
+  await expect.poll(() => prompts).toEqual([value]);
+});
+
+test('counts untriaged Findings per step and sends kept general Findings under General', async ({ page }) => {
+  const { dialog, prompts } = await openTriageTour(page);
+  const diffPane = dialog.getByLabel('Relevant changes');
+  const progress = dialog.locator('.review-tour-progress');
+  // the first step holds two anchored Findings and the general one
+  await expect(progress.locator('.review-tour-finding-count')).toHaveText('3 findings');
+  const general = dialog.getByRole('region', { name: 'General findings' });
+  const noTests = general.getByRole('group', { name: 'Suggested comment: No tests' });
+  await expect(noTests).toContainText('Nothing covers the route.');
+  await expect(noTests).toContainText('src/route.ts · Correctness · Claude · high');
+
+  // on a phone the general Findings sit in the step notes drawer, and its bar says so
+  await page.setViewportSize({ width: 390, height: 844 });
+  const notesBar = dialog.getByRole('button', { name: 'Show step notes' });
+  await expect(notesBar).toContainText('1 general');
+  await notesBar.click();
+  await expect(dialog.getByRole('dialog', { name: 'Step notes' }).getByRole('group', { name: 'Suggested comment: No tests' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(diffPane.getByRole('group', { name: 'Suggested comment: Unchecked constant' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  // triage lowers the count; a kept general Finding becomes an editable, pre-filled note
+  await diffPane.getByRole('group', { name: 'Suggested comment: Lost value' }).getByRole('button', { name: 'Dismiss' }).click();
+  await expect(progress.locator('.review-tour-finding-count')).toHaveText('2 findings');
+  await noTests.getByRole('button', { name: 'Keep' }).click();
+  const note = general.getByLabel('General note: No tests');
+  await expect(note).toBeFocused();
+  await expect(note).toHaveValue('No tests\n\nNothing covers the route.');
+  await expect(progress.locator('.review-tour-finding-count')).toHaveText('1 finding');
+  await note.fill('Add a route test.');
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await expect(progress.locator('.review-tour-finding-count')).toHaveText('1 finding');
+  await expect(dialog.getByRole('region', { name: 'General findings' })).toHaveCount(0);
+  await diffPane.getByRole('group', { name: 'Suggested comment: Service naming' }).getByRole('button', { name: 'Dismiss' }).click();
+  await expect(progress.locator('.review-tour-finding-count')).toHaveCount(0);
+
+  // the summary lists the general Findings too and leads the change request with them
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  const draft = dialog.getByLabel('Consolidated change request');
+  await expect(draft).toHaveValue(/Comparison: triage-finge\n\n## General\n\n### src\/route\.ts\nAdd a route test\.$/u);
+  const summaryGeneral = dialog.getByRole('region', { name: 'General findings' });
+  await summaryGeneral.getByRole('button', { name: 'Remove' }).click();
+  await expect(dialog.getByText('No feedback was recorded. You can finish without sending anything.')).toBeVisible();
+  await summaryGeneral.getByRole('group', { name: 'Suggested comment: No tests' }).getByRole('button', { name: 'Keep' }).click();
+  await summaryGeneral.getByLabel('General note: No tests').fill('Cover the route with a test.');
+  await expect(draft).toHaveValue(/## General\n\n### src\/route\.ts\nCover the route with a test\.$/u);
+  await dialog.getByRole('button', { name: 'Send change request' }).click();
+  await expect.poll(() => prompts).toHaveLength(1);
+  expect(prompts[0]).toContain('## General\n\n### src/route.ts\nCover the route with a test.');
+  expect(prompts[0]).not.toMatch(/Unchecked constant|Lost value|Service naming/u);
+});
+
+test('counts the Findings not reviewed on the summary and jumps back to them', async ({ page }) => {
+  const { dialog } = await openTriageTour(page);
+  const diffPane = dialog.getByLabel('Relevant changes');
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  const untriaged = dialog.locator('.review-tour-untriaged');
+  await expect(untriaged).toContainText('4 findings not reviewed');
+  await expect(dialog.locator('.review-tour-summary li').nth(0).locator('.review-tour-finding-count')).toHaveText('3');
+  await expect(dialog.locator('.review-tour-summary li').nth(1).locator('.review-tour-finding-count')).toHaveText('1');
+  // the jump lands on the first step holding one
+  await untriaged.getByRole('button', { name: 'Review findings' }).click();
+  await expect(dialog.getByText('Step 1 of 2')).toBeVisible();
+  await diffPane.getByRole('group', { name: 'Suggested comment: Unchecked constant' }).getByRole('button', { name: 'Dismiss' }).click();
+  await diffPane.getByRole('group', { name: 'Suggested comment: Lost value' }).getByRole('button', { name: 'Dismiss' }).click();
+  await dialog.getByRole('region', { name: 'General findings' }).getByRole('button', { name: 'Dismiss' }).click();
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  await expect(untriaged).toContainText('1 finding not reviewed');
+  await untriaged.getByRole('button', { name: 'Review findings' }).click();
+  await expect(dialog.getByText('Step 2 of 2')).toBeVisible();
+  await diffPane.getByRole('group', { name: 'Suggested comment: Service naming' }).getByRole('button', { name: 'Dismiss' }).click();
+  // a general Finding left alone brings a phone back to the first step's notes drawer
+  await dialog.getByRole('button', { name: 'Back' }).click();
+  await dialog.getByRole('region', { name: 'General findings' }).getByRole('button', { name: 'Restore' }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  await expect(untriaged).toContainText('1 finding not reviewed');
+  await untriaged.getByRole('button', { name: 'Review findings' }).click();
+  const drawer = dialog.getByRole('dialog', { name: 'Step notes' });
+  await expect(drawer.getByRole('group', { name: 'Suggested comment: No tests' })).toBeVisible();
+  await drawer.getByRole('button', { name: 'Dismiss' }).click();
+  await page.keyboard.press('Escape');
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  await expect(dialog.getByRole('heading', { name: 'Review complete' })).toBeVisible();
+  await expect(untriaged).toHaveCount(0);
+});

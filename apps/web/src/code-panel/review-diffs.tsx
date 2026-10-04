@@ -4,9 +4,9 @@
 // diffs). It is a second importer of the library, so — like code-panel.tsx — it is only ever reached
 // through a dynamic `import()` (review-tour.tsx lazy-loads it); review-tour.tsx itself is in the
 // eager dashboard bundle, so importing the library here directly would drag its ~177 kB in. Controlled:
-// the caller hands in the step's Changes and its inline comments, and this renders them, reporting
-// comment edits back — including which comments are open, which the caller holds so Escape can close
-// them from anywhere in the dialog. The only state it owns is visual: the Unified / Split choice,
+// the caller hands in the step's Changes, its inline comments and the AI review's suggested comments,
+// and this renders them, reporting comment edits and suggestion triage back — including which comments
+// are open, which the caller holds so Escape can close them from anywhere in the dialog. The only state it owns is visual: the Unified / Split choice,
 // which (rendered at the same spot for every step) carries across steps.
 import { type CSSProperties, useMemo, useState } from 'react';
 import type { CodeViewLineSelection, DiffLineAnnotation, SelectedLineRange } from '@pierre/diffs';
@@ -17,7 +17,8 @@ import { DiffLayoutSegment, SPLIT_MIN_WIDTH, useObservedWidth } from './diff-lay
 import { diffJumpLine, EditorJumpButton, type EditorTarget } from './editor-jump.js';
 import { codeViewBaseOptions, codeViewStyle, contentHash, diffItemForPatch } from './items.js';
 
-type CommentAnchor = { commentId: string };
+// an annotation is either an inline comment or a suggested comment (an untriaged or dismissed Finding)
+type CommentAnchor = { commentId: string } | { suggestionId: string };
 type ReviewItem = CodeViewItem<CommentAnchor>;
 type ReviewOptions = CodeViewReactOptions<CommentAnchor, undefined>;
 
@@ -34,6 +35,11 @@ export type ReviewDiffSide = 'deletions' | 'additions';
 // one — and the comment renders under its last line.
 export type ReviewDiffComment = { id: string; changeId: string; startSide: ReviewDiffSide; startLine: number; endSide: ReviewDiffSide; endLine: number; body: string };
 
+// A suggested comment: one AI review Finding on a line range of one Change (`side` and the lines
+// follow ReviewDiffComment's), with the `source` line naming the review that wrote it. A dismissed one
+// collapses to a row that can restore it.
+export type ReviewDiffSuggestion = { id: string; changeId: string; side: ReviewDiffSide; startLine: number; endLine: number; severity: 'high' | 'medium' | 'low'; title: string; body: string; source: string; dismissed: boolean };
+
 // The longest one inline comment may grow; the caller enforces the shared aggregate cap on top.
 export const MAX_INLINE_COMMENT = 4_000;
 
@@ -49,6 +55,11 @@ type ReviewDiffsProps = {
   // close an editor (Done), which discards a comment left empty
   onCommentClose: (id: string) => void;
   onCommentDelete: (id: string) => void;
+  // the step's suggested comments and their triage: Keep turns one into an inline comment
+  suggestions?: ReviewDiffSuggestion[];
+  onSuggestionKeep?: (id: string) => void;
+  onSuggestionDismiss?: (id: string) => void;
+  onSuggestionRestore?: (id: string) => void;
   // open a file at a line in the configured editor; the header button is hidden without it
   onOpenInEditor?: (target: EditorTarget) => void;
 };
@@ -88,8 +99,22 @@ function InlineComment({ comment, editing, onEdit, onChange, onDone, onDelete }:
   );
 }
 
+// One suggested comment: its severity, title, body and source with Keep and Dismiss, or, dismissed,
+// one row that restores it.
+function SuggestedComment({ suggestion, onKeep, onDismiss, onRestore }: { suggestion: ReviewDiffSuggestion; onKeep: () => void; onDismiss: () => void; onRestore: () => void }) {
+  if (suggestion.dismissed) return <div className="review-tour-suggestion dismissed" role="group" aria-label={`Dismissed suggestion: ${suggestion.title}`}><span>Dismissed · {suggestion.title}</span><button type="button" onClick={onRestore}>Restore</button></div>;
+  return (
+    <div className="review-tour-suggestion" role="group" aria-label={`Suggested comment: ${suggestion.title}`}>
+      <div className="review-tour-suggestion-title"><span className={`review-tour-severity ${suggestion.severity}`}>{suggestion.severity}</span><strong>{suggestion.title}</strong></div>
+      {suggestion.body.trim() !== '' && <p>{suggestion.body}</p>}
+      <small>{commentRangeLabel({ startSide: suggestion.side, startLine: suggestion.startLine, endSide: suggestion.side, endLine: suggestion.endLine })} · {suggestion.source}</small>
+      <div><button type="button" onClick={onDismiss}>Dismiss</button><button type="button" onClick={onKeep}>Keep</button></div>
+    </div>
+  );
+}
+
 // render one tour step with current display settings
-export default function ReviewDiffs({ changes, comments, openCommentIds, onCommentAdd, onCommentChange, onCommentOpen, onCommentClose, onCommentDelete, onOpenInEditor }: ReviewDiffsProps) {
+export default function ReviewDiffs({ changes, comments, openCommentIds, onCommentAdd, onCommentChange, onCommentOpen, onCommentClose, onCommentDelete, suggestions = [], onSuggestionKeep, onSuggestionDismiss, onSuggestionRestore, onOpenInEditor }: ReviewDiffsProps) {
   const theme = useColorTheme();
   const terminalFontSize = useTerminalFontSize();
   // Each renderable Change becomes one diff item, keyed by its Change id so a file split across
@@ -105,15 +130,18 @@ export default function ReviewDiffs({ changes, comments, openCommentIds, onComme
     return { baseItems, placeholders };
   }, [changes]);
 
-  // Each comment anchors one annotation under its last line. CodeView only re-reads an item when its
-  // version moves, so an item's version folds in where its comments sit — and only that, so typing
-  // into a comment (which changes no anchor) never re-lays out the diff.
-  const anchorKey = comments.map(comment => `${comment.id}@${comment.changeId}:${comment.endSide}:${comment.endLine}`).join('|');
+  // Each comment, and each suggested comment, anchors one annotation under its last line. CodeView only
+  // re-reads an item when its version moves, so an item's version folds in where its annotations sit —
+  // and only that, so typing into a comment (which changes no anchor) never re-lays out the diff.
+  const anchorKey = [...comments.map(comment => `${comment.id}@${comment.changeId}:${comment.endSide}:${comment.endLine}`), ...suggestions.map(suggestion => `${suggestion.id}@${suggestion.changeId}:${suggestion.side}:${suggestion.endLine}`)].join('|');
   const items = useMemo(() => [...baseItems].map(([changeId, item]): ReviewItem => {
-    const annotations: DiffLineAnnotation<CommentAnchor>[] = comments.filter(comment => comment.changeId === changeId).map(comment => ({ side: comment.endSide, lineNumber: comment.endLine, metadata: { commentId: comment.id } }));
+    const annotations: DiffLineAnnotation<CommentAnchor>[] = [
+      ...suggestions.filter(suggestion => suggestion.changeId === changeId).map(suggestion => ({ side: suggestion.side, lineNumber: suggestion.endLine, metadata: { suggestionId: suggestion.id } })),
+      ...comments.filter(comment => comment.changeId === changeId).map(comment => ({ side: comment.endSide, lineNumber: comment.endLine, metadata: { commentId: comment.id } }))
+    ];
     if (annotations.length === 0) return item as ReviewItem;
-    return { ...item, annotations, version: contentHash(`${item.version}|${annotations.map(annotation => `${annotation.metadata.commentId}:${annotation.side}:${annotation.lineNumber}`).join('|')}`) };
-  }), [baseItems, anchorKey]); // anchorKey stands in for `comments`: it covers every field read here
+    return { ...item, annotations, version: contentHash(`${item.version}|${annotations.map(annotation => `${'commentId' in annotation.metadata ? annotation.metadata.commentId : annotation.metadata.suggestionId}:${annotation.side}:${annotation.lineNumber}`).join('|')}`) };
+  }), [baseItems, anchorKey]); // anchorKey stands in for `comments` and `suggestions`: it covers every field read here
   const changeIdByItemId = useMemo(() => new Map([...baseItems].map(([changeId, item]) => [item.id, changeId])), [baseItems]);
   const fileByChangeId = useMemo(() => new Map(changes.map(change => [change.id, change.file])), [changes]);
 
@@ -145,7 +173,14 @@ export default function ReviewDiffs({ changes, comments, openCommentIds, onComme
   }), [changeIdByItemId, effectiveSplit, onCommentAdd, terminalFontSize, theme]);
 
   const commentsById = useMemo(() => new Map(comments.map(comment => [comment.id, comment])), [comments]);
+  const suggestionsById = useMemo(() => new Map(suggestions.map(suggestion => [suggestion.id, suggestion])), [suggestions]);
   const renderAnnotation = (annotation: { metadata?: CommentAnchor }) => {
+    // a suggested comment
+    if (annotation.metadata !== undefined && 'suggestionId' in annotation.metadata) {
+      const suggestion = suggestionsById.get(annotation.metadata.suggestionId);
+      if (suggestion === undefined) return null;
+      return <SuggestedComment suggestion={suggestion} onKeep={() => onSuggestionKeep?.(suggestion.id)} onDismiss={() => onSuggestionDismiss?.(suggestion.id)} onRestore={() => onSuggestionRestore?.(suggestion.id)} />;
+    }
     const comment = annotation.metadata === undefined ? undefined : commentsById.get(annotation.metadata.commentId);
     if (comment === undefined) return null;
     return <InlineComment comment={comment} editing={openCommentIds.has(comment.id)} onEdit={() => onCommentOpen(comment.id)} onChange={body => onCommentChange(comment.id, body)} onDone={() => onCommentClose(comment.id)} onDelete={() => onCommentDelete(comment.id)} />;

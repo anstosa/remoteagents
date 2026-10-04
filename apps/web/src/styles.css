@@ -1966,6 +1966,34 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .review-tour-inline-comment > div { display: flex; justify-content: flex-end; gap: .4rem; }
 .review-tour-inline-comment button { padding: .3rem .65rem; font-size: .68rem; box-shadow: none; }
 .review-tour-inline-comment button:first-child { border-color: var(--surface-2); background: transparent; color: var(--subtext-0); }
+/* an AI review Finding as a suggested comment: dashed and tinted, so it never reads as the operator's own */
+.review-tour-suggestion { display: grid; gap: .4rem; margin: .35rem .6rem .5rem; padding: .55rem .65rem; border: 1px dashed color-mix(in srgb, var(--mauve) 60%, var(--surface-2)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mauve) 7%, var(--mantle)); color: var(--text); font: 500 .76rem/1.45 var(--font-mono); white-space: normal; }
+.review-tour-suggestion-title { display: flex; min-width: 0; align-items: baseline; gap: .5rem; }
+.review-tour-suggestion-title strong { min-width: 0; overflow-wrap: anywhere; font-weight: 800; }
+.review-tour-suggestion > p { margin: 0; color: var(--subtext-1); white-space: pre-wrap; overflow-wrap: anywhere; }
+.review-tour-suggestion > small { color: var(--overlay-1); font: 700 .62rem var(--font-mono); }
+.review-tour-suggestion > div:last-child { display: flex; justify-content: flex-end; gap: .4rem; }
+.review-tour-suggestion button { padding: .3rem .65rem; font-size: .68rem; box-shadow: none; }
+.review-tour-suggestion button:first-child { border-color: var(--surface-2); background: transparent; color: var(--subtext-0); }
+.review-tour-suggestion.dismissed { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .25rem .25rem .25rem .65rem; border-color: var(--surface-1); background: transparent; color: var(--overlay-1); font-size: .68rem; }
+.review-tour-suggestion.dismissed > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-tour-suggestion.dismissed button { flex: none; border-color: transparent; background: transparent; color: var(--blue); }
+@media (pointer: coarse) { .review-tour-suggestion button { min-height: 2.2rem; padding-inline: .9rem; } }
+.review-tour-severity { flex: none; padding: .05rem .4rem; border: 1px solid currentColor; border-radius: 999px; color: var(--overlay-1); font: 800 .58rem var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
+.review-tour-severity.high { color: var(--red); }
+.review-tour-severity.medium { color: var(--peach); }
+/* the general Findings, listed on the first step and the summary */
+.review-tour-general { display: grid; gap: .45rem; margin-bottom: .4rem; }
+.review-tour-general > small { color: var(--mauve); font: 800 .65rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+.review-tour-general .review-tour-suggestion { margin: 0; }
+.review-tour-summary .review-tour-general { margin-top: .9rem; }
+.review-tour-general-note { display: grid; gap: .35rem; }
+.review-tour-narration .review-tour-general-note label, .review-tour-summary .review-tour-general-note label { margin-top: 0; }
+.review-tour-narration .review-tour-general-note textarea, .review-tour-summary .review-tour-general-note textarea { min-height: 5rem; }
+.review-tour-general-note > div { display: flex; justify-content: flex-end; }
+.review-tour-general-note button { padding: .3rem .65rem; border-color: var(--surface-2); background: transparent; box-shadow: none; color: var(--subtext-0); font-size: .68rem; }
+/* a step's count of AI review Findings not yet kept or dismissed */
+.review-tour-finding-count { margin-left: .5rem; padding: .05rem .45rem; border: 1px solid color-mix(in srgb, var(--mauve) 60%, var(--surface-2)); border-radius: 999px; color: var(--mauve); font: 800 .6rem var(--font-mono); }
 /* a diff file header's editor jump (Code panel, Review tour): light-DOM content slotted into the header's metadata slot */
 .editor-jump { display: inline-flex; align-items: center; gap: .3rem; padding: .2rem .45rem; border: 1px solid var(--surface-2); border-radius: var(--control-radius); background: transparent; box-shadow: none; color: var(--subtext-0); font: 700 .66rem var(--font-mono); cursor: pointer; }
 .editor-jump:hover, .editor-jump:focus-visible { border-color: var(--blue); color: var(--blue); }
@@ -1982,12 +2010,18 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .review-tour-summary { flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto; padding: 1.1rem; }
 .review-tour-summary h3 { margin: 0 0 .75rem; color: var(--text); font: 800 1rem var(--font-mono); }
 .review-tour-summary ul { display: grid; gap: .3rem; margin: 0; padding: 0; list-style: none; }
-.review-tour-summary li { display: grid; grid-template-columns: 5.2rem minmax(0, 1fr); align-items: center; gap: .5rem; padding: .35rem .45rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); color: var(--subtext-0); font-size: .74rem; }
+.review-tour-summary li { display: grid; grid-template-columns: 5.2rem minmax(0, 1fr) auto; align-items: center; gap: .5rem; padding: .35rem .45rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); color: var(--subtext-0); font-size: .74rem; }
 .review-tour-summary li > span { color: var(--overlay-0); font: 800 .61rem var(--font-mono); text-transform: uppercase; }
 .review-tour-summary li > span.visited { color: var(--green); }
 .review-tour-summary li > span.skipped { color: var(--yellow); }
 .review-tour-summary > p { color: var(--subtext-0); }
 .review-tour-sent { color: var(--green) !important; }
+/* the summary's count of Findings not yet kept or dismissed, with the jump back to them */
+.review-tour-untriaged { display: flex; align-items: center; gap: .75rem; margin-top: .75rem; padding: .5rem .65rem; border: 1px solid color-mix(in srgb, var(--mauve) 50%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mauve) 7%, var(--mantle)); color: var(--subtext-0); font-size: .74rem; }
+.review-tour-untriaged > span { min-width: 0; flex: 1 1 auto; }
+.review-tour-untriaged strong { margin-right: .35rem; color: var(--mauve); font-family: var(--font-mono); }
+.review-tour-untriaged button { flex: none; padding: .3rem .65rem; font-size: .68rem; box-shadow: none; }
+.review-tour-summary li > .review-tour-finding-count { margin-left: 0; }
 
 /* the phone step bar: the step's title and the start of its explanation, opening the notes drawer */
 .review-tour-notes-bar { display: flex; min-width: 0; align-items: center; gap: .6rem; padding: .55rem .75rem; border: 0; border-bottom: 1px solid var(--surface-1); border-radius: 0; background: var(--mantle); box-shadow: none; color: var(--text); text-align: left; }

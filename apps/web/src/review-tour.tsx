@@ -2,9 +2,9 @@ import { createPortal } from 'react-dom';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { prefersReducedMotion } from './reduced-motion.js';
 import { usePhoneLayout } from './panel-header.js';
-import type { ReviewDiffComment, ReviewDiffSide } from './code-panel/review-diffs.js';
+import type { ReviewDiffComment, ReviewDiffSide, ReviewDiffSuggestion } from './code-panel/review-diffs.js';
 import type { EditorTarget } from './code-panel/editor-jump.js';
-import { codeReviewCount, codeReviewErrorMessage, failureCode, isCodeReviewJob, useCodeReviewPoll, useJobElapsed, type CodeReview, type CodeReviewCapability, type CodeReviewJob, type CodeReviewOptions, type CodeReviewOutcome } from './code-review.js';
+import { codeReviewCount, codeReviewErrorMessage, failureCode, isCodeReviewJob, useCodeReviewPoll, useJobElapsed, type CodeReview, type CodeReviewCapability, type CodeReviewJob, type CodeReviewOptions, type CodeReviewOutcome, type GeneralFinding } from './code-review.js';
 import { CodeReviewSheet, reviewAgentLabel, type ReviewAgentKind } from './review-start.js';
 
 // The diff renderer pulls in `@pierre/diffs` (~177 kB), so it is loaded on demand — this dialog is in
@@ -29,6 +29,11 @@ type Job = { id: string; expiresAt: string; retryAfterMs: number };
 type PublicReviewComparison = { scope: ReviewScope; base: string; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ViewState = 'loading' | 'tour' | 'summary' | 'empty' | 'error' | 'cancelled';
 type ReviewFailure = { code?: string; message?: string };
+// How the operator triaged one Finding: an anchored one kept as the inline comment `commentId`, a
+// general one kept as an editable `note`, or either dismissed. Absent means untriaged, never sent.
+type FindingTriage = { state: 'kept'; commentId: string } | { state: 'noted'; note: string } | { state: 'dismissed' };
+// a kept general Finding and its note
+type GeneralNote = { finding: GeneralFinding; note: string };
 
 const maxFeedback = 4_000;
 const maxFeedbackTotal = 20_000;
@@ -180,12 +185,33 @@ function commentNote(change: ReviewChange, comment: ReviewDiffComment): string {
 }
 
 // the characters of feedback recorded so far, against the shared aggregate cap
-function feedbackLength(feedback: Record<string, string>, comments: ReviewDiffComment[], orphanFeedback: string): number {
-  return Object.values(feedback).reduce((sum, note) => sum + note.length, orphanFeedback.length) + comments.reduce((sum, comment) => sum + comment.body.length, 0);
+function feedbackLength(feedback: Record<string, string>, comments: ReviewDiffComment[], orphanFeedback: string, generalNotes: GeneralNote[]): number {
+  return Object.values(feedback).reduce((sum, note) => sum + note.length, orphanFeedback.length) + comments.reduce((sum, comment) => sum + comment.body.length, 0) + generalNotes.reduce((sum, { note }) => sum + note.length, 0);
+}
+
+// the review's kept general Findings with their notes, in the review's order
+function generalNotesOf(review: CodeReview | undefined, triage: Record<string, FindingTriage>): GeneralNote[] {
+  return review?.general.flatMap(finding => {
+    const entry = triage[finding.id];
+    return entry?.state === 'noted' ? [{ finding, note: entry.note }] : [];
+  }) ?? [];
+}
+
+// A Finding's triage. A kept Finding whose comment was deleted or closed empty is untriaged again.
+function findingTriage(triage: Record<string, FindingTriage>, comments: ReviewDiffComment[], id: string): FindingTriage | undefined {
+  const entry = triage[id];
+  return entry?.state === 'kept' && !comments.some(comment => comment.id === entry.commentId) ? undefined : entry;
+}
+
+// "Correctness · Claude · high": the preset, agent and effort that wrote a review's Findings
+function findingSource(review: CodeReview): string {
+  return [review.preset.label, reviewAgentLabel(review.preset.agent), ...(review.effort === undefined ? [] : [review.effort])].join(' · ');
 }
 
 // format one consolidated change request
-function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, comments: ReviewDiffComment[], statuses: Record<string, StepState>, orphanFeedback: string): string {
+function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, comments: ReviewDiffComment[], statuses: Record<string, StepState>, orphanFeedback: string, generalNotes: GeneralNote[]): string {
+  // kept general Findings lead, each under the file it names
+  const general = generalNotes.flatMap(({ finding, note }) => note.trim() === '' ? [] : [finding.file === undefined ? note.trim() : `### ${finding.file}\n${note.trim()}`]);
   const notes = tour.steps.flatMap(step => {
     const note = feedback[step.id]?.trim();
     // a step's inline comments follow its changes in tour order, then top to bottom
@@ -196,7 +222,7 @@ function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, comme
     });
     return note || inline.length > 0 ? [[`## ${step.title} (${statuses[step.id] ?? 'unvisited'})`, ...(note ? [note] : []), ...inline].join('\n\n')] : [];
   });
-  return [`Please address the feedback from my guided review of ${tour.scope === 'working' ? 'Working' : 'All PR'} changes against ${tour.base}.`, `Tour: ${displayedTourTitle(tour)}`, `Comparison: ${tour.fingerprint.slice(0, 12)}`, ...notes, ...(orphanFeedback.trim() === '' ? [] : [`## Feedback retained from regenerated steps\n${orphanFeedback.trim()}`])].join('\n\n');
+  return [`Please address the feedback from my guided review of ${tour.scope === 'working' ? 'Working' : 'All PR'} changes against ${tour.base}.`, `Tour: ${displayedTourTitle(tour)}`, `Comparison: ${tour.fingerprint.slice(0, 12)}`, ...(general.length === 0 ? [] : [['## General', ...general].join('\n\n')]), ...notes, ...(orphanFeedback.trim() === '' ? [] : [`## Feedback retained from regenerated steps\n${orphanFeedback.trim()}`])].join('\n\n');
 }
 
 // render and manage one guided review
@@ -239,6 +265,11 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
   const [addingCodeReview, setAddingCodeReview] = useState(false);
   const [retryingCodeReview, setRetryingCodeReview] = useState(false);
   const codeReviewElapsed = useJobElapsed(codeReviewJob);
+  // the triage of each Finding by id, and whether the last Keep was refused at the aggregate cap
+  const [triage, setTriage] = useState<Record<string, FindingTriage>>({});
+  const [limitNotice, setLimitNotice] = useState(false);
+  // the general note just kept, focused once it renders
+  const [focusedNote, setFocusedNote] = useState<string>();
   const agentName = reviewAgentLabel(tourAgent);
   const generation = useRef(0);
   const dialog = useRef<HTMLDivElement | null>(null);
@@ -433,6 +464,13 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
   }, []);
   useCodeReviewPoll(request, codeReviewJob, codeReviewSettled);
 
+  // a replacing Code review keeps the triage of the Findings it still holds
+  useEffect(() => {
+    if (codeReview === undefined) return;
+    const ids = new Set([...codeReview.findings, ...codeReview.general].map(finding => finding.id));
+    setTriage(current => Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id))));
+  }, [codeReview]);
+
   // cancel a running Code review with the tour it belongs to
   const cancelCodeReview = () => {
     if (codeReviewJob !== undefined) void request(`/api/code-review/jobs/${encodeURIComponent(codeReviewJob.id)}`, { method: 'DELETE' }, false);
@@ -472,19 +510,44 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
   const step = tour?.steps[current];
   const stepFeedback = step === undefined ? '' : feedback[step.id] ?? '';
   const changes = useMemo(() => step === undefined || tour === undefined ? [] : step.changeIds.map(id => tour.changes.find(change => change.id === id)).filter((change): change is ReviewChange => change !== undefined), [step, tour]);
-  const feedbackTotal = feedbackLength(feedback, comments, orphanFeedback);
+  const generalNotes = generalNotesOf(codeReview, triage);
+  const feedbackTotal = feedbackLength(feedback, comments, orphanFeedback, generalNotes);
   const complete = tour !== undefined && tour.steps.every(candidate => statuses[candidate.id] === 'visited' || statuses[candidate.id] === 'skipped');
+  // the step's Findings that are not kept, as suggested comments in its diffs
+  const suggestions = useMemo((): ReviewDiffSuggestion[] => {
+    if (codeReview === undefined || step === undefined) return [];
+    const source = findingSource(codeReview);
+    return codeReview.findings.flatMap(finding => {
+      const state = findingTriage(triage, comments, finding.id)?.state;
+      return step.changeIds.includes(finding.changeId) && state !== 'kept' ? [{ id: finding.id, changeId: finding.changeId, side: finding.side, startLine: finding.startLine, endLine: finding.endLine, severity: finding.severity, title: finding.title, body: finding.body, source, dismissed: state === 'dismissed' }] : [];
+    });
+  }, [codeReview, step, triage, comments]);
+
+  // a refused Keep's limit notice lasts until the feedback total moves
+  useEffect(() => setLimitNotice(false), [feedbackTotal]);
+  // move focus into a newly kept general note
+  useEffect(() => {
+    if (focusedNote === undefined) return;
+    dialog.current?.querySelector<HTMLTextAreaElement>(`textarea[data-note="${CSS.escape(focusedNote)}"]`)?.focus();
+    setFocusedNote(undefined);
+  }, [focusedNote]);
+  // the untriaged Findings each step holds: its Changes' anchored Findings, plus the general ones on
+  // the first step, where they are listed
+  const untriagedGeneral = codeReview?.general.filter(finding => findingTriage(triage, comments, finding.id) === undefined).length ?? 0;
+  const untriagedByStep = useMemo(() => new Map(tour?.steps.map((candidate, index) => [candidate.id, (codeReview?.findings.filter(finding => candidate.changeIds.includes(finding.changeId) && findingTriage(triage, comments, finding.id) === undefined).length ?? 0) + (index === 0 ? untriagedGeneral : 0)]) ?? []), [tour, codeReview, triage, comments, untriagedGeneral]);
+  const stepUntriaged = step === undefined ? 0 : untriagedByStep.get(step.id) ?? 0;
+  const untriagedTotal = [...untriagedByStep.values()].reduce((sum, count) => sum + count, 0);
 
   // enforce the aggregate feedback boundary
   const updateFeedback = (stepId: string, value: string) => {
     const nextFeedback = { ...feedback, [stepId]: value };
-    if (feedbackLength(nextFeedback, comments, orphanFeedback) <= maxFeedbackTotal) setFeedback(nextFeedback);
+    if (feedbackLength(nextFeedback, comments, orphanFeedback, generalNotes) <= maxFeedbackTotal) setFeedback(nextFeedback);
   };
 
   // edit retained regeneration feedback within the aggregate cap
   const updateOrphanFeedback = (value: string) => {
     // always allow reductions from an over-limit retained label
-    if (feedbackLength(feedback, comments, value) <= maxFeedbackTotal || value.length < orphanFeedback.length) setOrphanFeedback(value);
+    if (feedbackLength(feedback, comments, value, generalNotes) <= maxFeedbackTotal || value.length < orphanFeedback.length) setOrphanFeedback(value);
   };
 
   // add, edit, and remove inline comments, holding edits to the aggregate cap
@@ -500,11 +563,47 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
   };
   const updateComment = (id: string, body: string) => {
     const nextComments = comments.map(comment => comment.id === id ? { ...comment, body } : comment);
-    if (feedbackLength(feedback, nextComments, orphanFeedback) <= maxFeedbackTotal) setComments(nextComments);
+    if (feedbackLength(feedback, nextComments, orphanFeedback, generalNotes) <= maxFeedbackTotal) setComments(nextComments);
   };
   const deleteComment = (id: string) => {
     setOpenCommentIds(current => { const next = new Set(current); next.delete(id); return next; });
     setComments(current => current.filter(comment => comment.id !== id));
+  };
+  // Keep a Finding: an ordinary inline comment on its lines, pre-filled with its title and body and
+  // open for rewording. Refused, with the limit notice, when it would pass the aggregate cap.
+  const keepFinding = (id: string) => {
+    const finding = codeReview?.findings.find(candidate => candidate.id === id);
+    if (finding === undefined) return;
+    const comment: ReviewDiffComment = { id: crypto.randomUUID(), changeId: finding.changeId, startSide: finding.side, startLine: finding.startLine, endSide: finding.side, endLine: finding.endLine, body: [finding.title.trim(), finding.body.trim()].filter(Boolean).join('\n\n').slice(0, maxFeedback) };
+    const nextComments = [...comments, comment];
+    if (feedbackLength(feedback, nextComments, orphanFeedback, generalNotes) > maxFeedbackTotal) { setLimitNotice(true); return; }
+    setComments(nextComments);
+    setOpenCommentIds(current => new Set(current).add(comment.id));
+    setTriage(current => ({ ...current, [id]: { state: 'kept', commentId: comment.id } }));
+  };
+  // Apply a triage change. On the summary the change request is rebuilt, since general notes are part
+  // of it.
+  const retriage = (nextTriage: Record<string, FindingTriage>) => {
+    setTriage(nextTriage);
+    if (state === 'summary' && tour !== undefined) setDispatch(feedbackDraft(tour, feedback, comments, statuses, orphanFeedback, generalNotesOf(codeReview, nextTriage)));
+  };
+  // dismiss a Finding to a one-line row, or restore it to untriaged
+  const dismissFinding = (id: string) => retriage({ ...triage, [id]: { state: 'dismissed' } });
+  const restoreFinding = (id: string) => retriage(Object.fromEntries(Object.entries(triage).filter(([candidate]) => candidate !== id)));
+  // Keep a general Finding as an editable note pre-filled with its title and body, within the cap.
+  const keepGeneralFinding = (id: string) => {
+    const finding = codeReview?.general.find(candidate => candidate.id === id);
+    if (finding === undefined) return;
+    const nextTriage: Record<string, FindingTriage> = { ...triage, [id]: { state: 'noted', note: [finding.title.trim(), finding.body.trim()].filter(Boolean).join('\n\n').slice(0, maxFeedback) } };
+    if (feedbackLength(feedback, comments, orphanFeedback, generalNotesOf(codeReview, nextTriage)) > maxFeedbackTotal) { setLimitNotice(true); return; }
+    retriage(nextTriage);
+    setFocusedNote(id);
+  };
+  // edit a general note within the aggregate cap, always allowing it to shrink
+  const updateGeneralNote = (id: string, note: string) => {
+    const previous = triage[id];
+    const nextTriage: Record<string, FindingTriage> = { ...triage, [id]: { state: 'noted', note } };
+    if (feedbackLength(feedback, comments, orphanFeedback, generalNotesOf(codeReview, nextTriage)) <= maxFeedbackTotal || (previous?.state === 'noted' && note.length < previous.note.length)) retriage(nextTriage);
   };
   // close the step notes drawer, handing focus back to the bar that opened it
   const closeNotes = () => { setNotesOpen(false); notesBar.current?.focus(); };
@@ -523,6 +622,15 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
     return currentComparison;
   };
 
+  // Jump from the summary to the first step holding an untriaged Finding. When that is only the
+  // general Findings, a phone opens the notes drawer they are listed in.
+  const reviewUntriaged = () => {
+    const index = tour?.steps.findIndex(candidate => (untriagedByStep.get(candidate.id) ?? 0) > 0) ?? -1;
+    if (tour === undefined || index < 0) return;
+    setCurrent(index);
+    setState('tour');
+    if (phone && index === 0 && (untriagedByStep.get(tour.steps[0]!.id) ?? 0) === untriagedGeneral) setNotesOpen(true);
+  };
   // move to the previous step
   const back = () => { setCurrent(index => Math.max(0, index - 1)); setState('tour'); };
   // visit and advance one step
@@ -545,7 +653,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
     if (!complete || stale || tour === undefined || feedbackTotal > maxFeedbackTotal) return;
     // reject changed Comparisons at the transition
     if (!await comparisonCurrent()) return;
-    setDispatch(feedbackDraft(tour, feedback, comments, statuses, orphanFeedback));
+    setDispatch(feedbackDraft(tour, feedback, comments, statuses, orphanFeedback, generalNotes));
     setState('summary');
   };
   // dispatch one consolidated request
@@ -619,8 +727,17 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
   const scopeLabel = launch.scope === 'working' ? 'Working' : 'All PR';
   // the launch's Comparison, read-only: changing it means starting again from the Review button
   const comparisonLabel = [scopeLabel, includeTests ? 'tests included' : 'tests excluded', includeDocs ? 'docs included' : 'docs excluded', ...(tour?.base ? [`vs ${tour.base}`] : [])].join(' · ');
-  // the step's narration and feedback: a left column on desktop, the notes drawer on a phone
-  const narration = step && <><small>Logical change</small><h3>{step.title}</h3><p>{step.explanation}</p><label>Feedback for this change<textarea value={stepFeedback} maxLength={maxFeedback} onChange={event => updateFeedback(step.id, event.target.value)} />{stepFeedback.length >= maxFeedback && <span role="status">{maxFeedback.toLocaleString()} character limit reached</span>}</label>{orphanFeedback !== '' && <label>Feedback from regenerated steps<textarea value={orphanFeedback} maxLength={maxFeedbackTotal} onChange={event => updateOrphanFeedback(event.target.value)} />{orphanFeedback.length >= maxFeedbackTotal && <span role="status">{maxFeedbackTotal.toLocaleString()} retained feedback character limit reached</span>}</label>}</>;
+  // The general Findings, on the first step and the summary: an untriaged one offers Keep and Dismiss,
+  // a kept one is an editable note, and a dismissed one a row that restores it.
+  const generalFindings = codeReview !== undefined && codeReview.general.length > 0 && <section className="review-tour-general" aria-label="General findings"><small>General findings</small>{codeReview.general.map(finding => {
+    const entry = triage[finding.id];
+    if (entry?.state === 'dismissed') return <div key={finding.id} className="review-tour-suggestion dismissed" role="group" aria-label={`Dismissed suggestion: ${finding.title}`}><span>Dismissed · {finding.title}</span><button type="button" onClick={() => restoreFinding(finding.id)}>Restore</button></div>;
+    if (entry?.state === 'noted') return <div key={finding.id} className="review-tour-general-note"><label>General note{finding.file === undefined ? '' : ` · ${finding.file}`}<textarea data-note={finding.id} aria-label={`General note: ${finding.title}`} value={entry.note} maxLength={maxFeedback} onChange={event => updateGeneralNote(finding.id, event.target.value)} /></label><div><button type="button" onClick={() => restoreFinding(finding.id)}>Remove</button></div></div>;
+    return <div key={finding.id} className="review-tour-suggestion" role="group" aria-label={`Suggested comment: ${finding.title}`}><div className="review-tour-suggestion-title"><span className={`review-tour-severity ${finding.severity}`}>{finding.severity}</span><strong>{finding.title}</strong></div>{finding.body.trim() !== '' && <p>{finding.body}</p>}<small>{[...(finding.file === undefined ? [] : [finding.file]), findingSource(codeReview)].join(' · ')}</small><div><button type="button" onClick={() => dismissFinding(finding.id)}>Dismiss</button><button type="button" onClick={() => keepGeneralFinding(finding.id)}>Keep</button></div></div>;
+  })}</section>;
+  // the step's narration and feedback: a left column on desktop, the notes drawer on a phone; the
+  // first step leads with the general Findings
+  const narration = step && <>{current === 0 && generalFindings}<small>Logical change</small><h3>{step.title}</h3><p>{step.explanation}</p><label>Feedback for this change<textarea value={stepFeedback} maxLength={maxFeedback} onChange={event => updateFeedback(step.id, event.target.value)} />{stepFeedback.length >= maxFeedback && <span role="status">{maxFeedback.toLocaleString()} character limit reached</span>}</label>{orphanFeedback !== '' && <label>Feedback from regenerated steps<textarea value={orphanFeedback} maxLength={maxFeedbackTotal} onChange={event => updateOrphanFeedback(event.target.value)} />{orphanFeedback.length >= maxFeedbackTotal && <span role="status">{maxFeedbackTotal.toLocaleString()} retained feedback character limit reached</span>}</label>}</>;
   // The Code review's state in the header: running with its time, its Findings count, a failure with
   // Retry, or "Add AI review" for a current tour with none.
   const codeReviewChip = codeReviewJob !== undefined
@@ -642,11 +759,11 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
     {state === 'loading' && <div className="review-tour-message" role="status"><span className="spinner" /><strong>Building the narrated tour…</strong><p>The AI is organizing the selected implementation changes into logical steps.</p><button type="button" onClick={() => { generation.current += 1; if (job !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' }, false); cancelCodeReview(); setState('cancelled'); }}>Cancel</button></div>}
     {state === 'empty' && <div className="review-tour-message" role="status"><strong>No included changes</strong><p>Implementation changes are empty for this scope. Start again with Tests or Docs included if those are the only changed files.</p></div>}
     {(state === 'error' || state === 'cancelled') && <div className="review-tour-message error" role="alert"><strong>{state === 'cancelled' ? 'Tour cancelled' : 'Unable to build tour'}</strong><p>{error || 'Generate again when you are ready.'}</p><button type="button" onClick={() => { setRetry(value => value + 1); setState('loading'); }}>Try again</button></div>}
-    {tour && state === 'tour' && step && <><div className="review-tour-progress"><span>Step {current + 1} of {tour.steps.length}</span><span>{Object.values(statuses).filter(value => value === 'visited').length} visited · {Object.values(statuses).filter(value => value === 'skipped').length} skipped</span></div><main className="review-tour-step">{phone
-      ? <><button ref={notesBar} type="button" className="review-tour-notes-bar" aria-label="Show step notes" aria-expanded={notesOpen} onClick={() => setNotesOpen(true)}><span><strong>{step.title}</strong><span>{step.explanation}</span></span><small className={stepFeedback.trim() === '' ? undefined : 'has-feedback'}>{stepFeedback.trim() === '' ? 'Notes' : 'Feedback'}</small></button>
+    {tour && state === 'tour' && step && <><div className="review-tour-progress"><span>Step {current + 1} of {tour.steps.length}{stepUntriaged > 0 && <span className="review-tour-finding-count" title="AI review findings not yet kept or dismissed">{stepUntriaged} {stepUntriaged === 1 ? 'finding' : 'findings'}</span>}</span><span>{Object.values(statuses).filter(value => value === 'visited').length} visited · {Object.values(statuses).filter(value => value === 'skipped').length} skipped</span></div><main className="review-tour-step">{phone
+      ? <><button ref={notesBar} type="button" className="review-tour-notes-bar" aria-label="Show step notes" aria-expanded={notesOpen} onClick={() => setNotesOpen(true)}><span><strong>{step.title}</strong><span>{step.explanation}</span></span>{current === 0 && untriagedGeneral > 0 ? <small className="has-feedback">{untriagedGeneral} general</small> : <small className={stepFeedback.trim() === '' ? undefined : 'has-feedback'}>{stepFeedback.trim() === '' ? 'Notes' : 'Feedback'}</small>}</button>
         {notesOpen && <><button type="button" className="review-tour-notes-backdrop" aria-label="Close step notes" onClick={closeNotes} /><section ref={notesDrawer} className="review-tour-narration review-tour-notes-drawer" role="dialog" aria-label="Step notes" tabIndex={-1}><div className="review-tour-notes-head"><span>Step notes</span><button type="button" aria-label="Close step notes" title="Close" onClick={closeNotes}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>{narration}</section></>}</>
-      : <section className="review-tour-narration">{narration}</section>}<section className="review-tour-diffs" aria-label="Relevant changes"><Suspense fallback={<p className="review-tour-diff-loading" role="status">Loading diff…</p>}><ReviewDiffs changes={changes} comments={comments} openCommentIds={openCommentIds} onCommentAdd={addComment} onCommentChange={updateComment} onCommentOpen={openComment} onCommentClose={closeComment} onCommentDelete={deleteComment} {...(onOpenInEditor === undefined ? {} : { onOpenInEditor })} /></Suspense></section></main><footer className="review-tour-actions"><button type="button" disabled={current === 0} onClick={back}>Back</button><button type="button" onClick={skip}>Skip</button><span>{feedbackTotal >= maxFeedbackTotal ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{complete ? <button type="button" disabled={stale || feedbackTotal > maxFeedbackTotal} onClick={() => void summarize()}>Review summary</button> : <button type="button" onClick={next}>Next</button>}</footer></>}
-    {tour && state === 'summary' && <main className="review-tour-summary"><h3>Review complete</h3><ul>{tour.steps.map(candidate => <li key={candidate.id}><span className={statuses[candidate.id]}>{statuses[candidate.id]}</span><strong>{candidate.title}</strong></li>)}</ul>{orphanFeedback !== '' && <p>Feedback from regenerated steps is retained in the consolidated change request.</p>}{feedbackTotal === 0 ? <p>No feedback was recorded. You can finish without sending anything.</p> : <label>Consolidated change request<textarea value={dispatch} maxLength={maxDispatch} onChange={event => setDispatch(event.target.value)} />{dispatch.length >= maxDispatch && <span role="status">{maxDispatch.toLocaleString()} character limit reached</span>}</label>}{error && <p ref={dispatchError} className="review-tour-error" role="alert" tabIndex={-1}>{error}</p>}{sent && <p className="review-tour-sent" role="status">Change request sent to the implementation agent.</p>}<footer className="review-tour-actions"><button type="button" onClick={() => setState('tour')}>Back to tour</button><span />{feedbackTotal > 0 && !sent && <button type="button" disabled={dispatching || dispatch.trim() === '' || dispatch.length > maxDispatch} onClick={() => void send()}>{dispatching ? 'Sending…' : 'Send change request'}</button>}<button type="button" onClick={minimize}>Finish</button></footer></main>}
+      : <section className="review-tour-narration">{narration}</section>}<section className="review-tour-diffs" aria-label="Relevant changes"><Suspense fallback={<p className="review-tour-diff-loading" role="status">Loading diff…</p>}><ReviewDiffs changes={changes} comments={comments} openCommentIds={openCommentIds} onCommentAdd={addComment} onCommentChange={updateComment} onCommentOpen={openComment} onCommentClose={closeComment} onCommentDelete={deleteComment} suggestions={suggestions} onSuggestionKeep={keepFinding} onSuggestionDismiss={dismissFinding} onSuggestionRestore={restoreFinding} {...(onOpenInEditor === undefined ? {} : { onOpenInEditor })} /></Suspense></section></main><footer className="review-tour-actions"><button type="button" disabled={current === 0} onClick={back}>Back</button><button type="button" onClick={skip}>Skip</button><span>{feedbackTotal >= maxFeedbackTotal || limitNotice ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{complete ? <button type="button" disabled={stale || feedbackTotal > maxFeedbackTotal} onClick={() => void summarize()}>Review summary</button> : <button type="button" onClick={next}>Next</button>}</footer></>}
+    {tour && state === 'summary' && <main className="review-tour-summary"><h3>Review complete</h3><ul>{tour.steps.map(candidate => <li key={candidate.id}><span className={statuses[candidate.id]}>{statuses[candidate.id]}</span><strong>{candidate.title}</strong>{(untriagedByStep.get(candidate.id) ?? 0) > 0 && <small className="review-tour-finding-count" title="AI review findings not yet kept or dismissed">{untriagedByStep.get(candidate.id)}</small>}</li>)}</ul>{untriagedTotal > 0 && <div className="review-tour-untriaged" role="status"><span><strong>{untriagedTotal} {untriagedTotal === 1 ? 'finding' : 'findings'} not reviewed</strong> Untriaged findings are not sent.</span><button type="button" onClick={reviewUntriaged}>Review findings</button></div>}{generalFindings}{orphanFeedback !== '' && <p>Feedback from regenerated steps is retained in the consolidated change request.</p>}{feedbackTotal === 0 ? <p>No feedback was recorded. You can finish without sending anything.</p> : <label>Consolidated change request<textarea value={dispatch} maxLength={maxDispatch} onChange={event => setDispatch(event.target.value)} />{dispatch.length >= maxDispatch && <span role="status">{maxDispatch.toLocaleString()} character limit reached</span>}</label>}{error && <p ref={dispatchError} className="review-tour-error" role="alert" tabIndex={-1}>{error}</p>}{sent && <p className="review-tour-sent" role="status">Change request sent to the implementation agent.</p>}<footer className="review-tour-actions"><button type="button" onClick={() => setState('tour')}>Back to tour</button><span>{limitNotice ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{feedbackTotal > 0 && !sent && <button type="button" disabled={dispatching || dispatch.trim() === '' || dispatch.length > maxDispatch} onClick={() => void send()}>{dispatching ? 'Sending…' : 'Send change request'}</button>}<button type="button" onClick={minimize}>Finish</button></footer></main>}
     </div>
     <p className="review-tour-comparison">{comparisonLabel}</p>
     {codeReviewSheet}
