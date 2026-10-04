@@ -35,11 +35,19 @@ const maxListTailBytes = 256 * 1024;
 // a `-p`/SDK run is persisted but hidden from Claude's own picker and `--continue`; its
 // message records carry one of these entrypoints (read from the head or the tail).
 const sdkEntrypoints = new Set(['sdk-cli', 'sdk-ts', 'sdk-py']);
+// bound the final-message read: the reply sits at the transcript's end, and a Review run's
+// JSON reply may run to hundreds of kilobytes once escaped
+const maxFinalMessageScanBytes = 8 * 1024 * 1024;
 // a top-level transcript filename is exactly `<session-uuid>.jsonl`
 const transcriptFile = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/iu;
 
 export function validClaudeSessionId(id: string): boolean {
   return sessionId.test(id);
+}
+
+// a Conversation's transcript path under the config directory
+function transcriptPath(id: string, cwd: string, env: NodeJS.ProcessEnv): string {
+  return join(claudeConfigDir(env), 'projects', encodeProject(cwd), `${id}.jsonl`);
 }
 
 // whitespace-normalize and clamp a title, so unbounded operator text never reaches
@@ -107,7 +115,7 @@ async function sidecarCustomTitle(transcriptPath: string, id: string): Promise<s
  */
 export async function claudeConversationName(id: string, cwd: string | undefined, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
   if (!validClaudeSessionId(id) || cwd === undefined) return undefined;
-  const path = join(claudeConfigDir(env), 'projects', encodeProject(cwd), `${id}.jsonl`);
+  const path = transcriptPath(id, cwd, env);
   const lines = await readFileHead(path, maxTitleScanBytes).catch(() => undefined);
   if (lines === undefined) return undefined;
   let customTitle: string | undefined;
@@ -207,4 +215,43 @@ export async function claudeConversationSummaries(directories: readonly string[]
   }
   summaries.sort((left, right) => right.lastActiveAt - left.lastActiveAt);
   return summaries;
+}
+
+type AssistantRecord = { type?: unknown; isSidechain?: unknown; message?: { id?: unknown; content?: unknown } };
+
+/**
+ * The text of the last assistant message among these transcript records. The transcript
+ * format is Claude Code's internal one, so this is the single place that reads it: each
+ * content block of one model message (thinking, text, tool use) is its own
+ * `type: "assistant"` record carrying the same `message.id`, so the last message is the text
+ * blocks of the records sharing the last assistant record's id, joined in order. Subagent
+ * (sidechain) records are skipped. `undefined` when no assistant message has any text.
+ */
+export function lastAssistantTextFromRecords(lines: Iterable<string>): string | undefined {
+  let messageId: unknown;
+  let texts: string[] = [];
+  for (const line of lines) {
+    if (line === '') continue;
+    let record: AssistantRecord;
+    try { record = JSON.parse(line) as AssistantRecord; } catch { continue; }
+    if (record.type !== 'assistant' || record.isSidechain === true || record.message === undefined || record.message === null) continue;
+    // a new message id starts the next model message
+    if (record.message.id !== messageId || messageId === undefined) { messageId = record.message.id; texts = []; }
+    const content = record.message.content;
+    if (typeof content === 'string') texts.push(content);
+    else if (Array.isArray(content)) for (const block of content as Array<{ type?: unknown; text?: unknown }>) if (block?.type === 'text' && typeof block.text === 'string') texts.push(block.text);
+  }
+  const text = texts.join('\n\n');
+  return text.trim() === '' ? undefined : text;
+}
+
+/**
+ * The last assistant message's text of a known Claude Conversation (an interactive Review
+ * run's reply, ADR 0010), read from a bounded tail of its transcript. `undefined` on an
+ * invalid id, an unknown cwd, an unreadable transcript or a message with no text.
+ */
+export async function claudeLastAssistantText(id: string, cwd: string | undefined, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
+  if (!validClaudeSessionId(id) || cwd === undefined) return undefined;
+  const lines = await readFileTail(transcriptPath(id, cwd, env), maxFinalMessageScanBytes).catch(() => undefined);
+  return lines === undefined ? undefined : lastAssistantTextFromRecords(lines);
 }

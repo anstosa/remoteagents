@@ -385,8 +385,9 @@ export async function codexConversationSummaries(directories: readonly string[],
  * that one turn.
  */
 
-// the newest terminal turn among these rollout records past `sinceOrdinal`
-export function completionFromRecords(lines: Iterable<string>, sinceOrdinal: number): CompletionEvent {
+// the newest terminal turn among these rollout records past `sinceOrdinal`, its answer clamped
+// to `maxAnswer` characters (a Review run reads a longer one than a captured Turn)
+export function completionFromRecords(lines: Iterable<string>, sinceOrdinal: number, maxAnswer = maxAnswerLength): CompletionEvent {
   let newest: { kind: 'completed'; ordinal: number; answer: string } | { kind: 'aborted'; ordinal: number } | undefined;
   for (const line of lines) {
     let record: { type?: unknown; ordinal?: unknown; payload?: unknown };
@@ -400,7 +401,7 @@ export function completionFromRecords(lines: Iterable<string>, sinceOrdinal: num
     const payload = record.payload as { type?: unknown; last_agent_message?: unknown };
     if (payload.type === 'task_complete') {
       const message = typeof payload.last_agent_message === 'string' ? payload.last_agent_message : '';
-      newest = { kind: 'completed', ordinal: record.ordinal, answer: message.length <= maxAnswerLength ? message : message.slice(0, maxAnswerLength) };
+      newest = { kind: 'completed', ordinal: record.ordinal, answer: message.length <= maxAnswer ? message : message.slice(0, maxAnswer) };
     } else if (payload.type === 'turn_aborted') {
       newest = { kind: 'aborted', ordinal: record.ordinal };
     }
@@ -482,13 +483,13 @@ async function rolloutForBaseline(baseline: CompletionBaseline): Promise<Baselin
 // baseline reads the exact file it pinned, so it never drifts to a sibling pane's
 // rollout mid-turn; a deferred baseline resolves the post-reset thread first (the
 // newest cwd-matching rollout created after the reset), staying `pending` until it
-// appears.
-export async function codexTurnSince(baseline: CompletionBaseline): Promise<CompletionEvent | undefined> {
+// appears. `maxAnswer` clamps the answer, the captured-Turn bound when absent.
+export async function codexTurnSince(baseline: CompletionBaseline, maxAnswer = maxAnswerLength): Promise<CompletionEvent | undefined> {
   const rollout = await rolloutForBaseline(baseline);
   // keep polling until a deferred rollout appears
   if (rollout.kind === 'pending') return { kind: 'pending' };
   const lines = await readFileTail(rollout.file, maxCompletionScanBytes).catch(() => undefined);
-  return lines === undefined ? undefined : completionFromRecords(lines, baseline.ordinal);
+  return lines === undefined ? undefined : completionFromRecords(lines, baseline.ordinal, maxAnswer);
 }
 
 // confirm Codex durably recorded the submitted prompt after its baseline

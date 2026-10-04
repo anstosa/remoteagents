@@ -81,4 +81,7 @@ sequences. `conversations.json` covers the session-UUID `validId`. `hooks.json` 
 the golden render of the injected `--settings` file, pinned by
 `../adapters/claude-hooks.test.ts`. `new-conversation.json` pins the `/clear`
 reset: the empty `❯ ` composer, a fresh session's reported id, and the
-untrusted-directory safety-check block.
+untrusted-directory safety-check block. `final-message.jsonl` is a trimmed session
+transcript (one record per content block, records of one message sharing
+`message.id`, a sidechain reply) that `../adapters/claude-conversations.test.ts`
+reads the final assistant message from, as an interactive Review run does.

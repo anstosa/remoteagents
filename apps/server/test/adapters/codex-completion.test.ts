@@ -51,6 +51,11 @@ describe('Codex rollout completion', () => {
     expect(completionFromRecords(lines(records), 4)).toEqual({ kind: 'completed', ordinal: 8, answer: 'Second answer' });
     // baseline at or past the newest completion: nothing new yet
     expect(completionFromRecords(lines(records), 8)).toEqual({ kind: 'pending' });
+    // a Review run reads past the captured-Turn bound
+    const long = 'x'.repeat(70_000);
+    const longRecords = [{ type: 'event_msg', ordinal: 1, payload: { type: 'task_complete', last_agent_message: long } }];
+    expect((completionFromRecords(lines(longRecords), 0) as { answer: string }).answer).toHaveLength(64_000);
+    expect((completionFromRecords(lines(longRecords), 0, 100_000) as { answer: string }).answer).toHaveLength(70_000);
   });
 
   it('reports an interrupted turn as aborted', () => {
