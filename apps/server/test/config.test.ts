@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
 import { applyListenOverrides, validateConfig } from '../src/config/schema.js';
+import { builtInCorrectnessPrompt, builtInTourPrompt } from '../src/review-runs/config.js';
 import { defaultDavoContext } from '../src/integrations/realtime/settings.js';
 import { run } from '../src/tmux/command.js';
 
@@ -513,5 +514,55 @@ describe('omx adapter configuration', () => {
     const legacy: string[] = [];
     await validateConfig({ ...scratch, adapters: { codex: { program: omxJs! } } }, { warn: m => legacy.push(m) });
     expect(legacy).toEqual([expect.stringContaining('adapters.codex.program looks like OMX')]);
+  });
+});
+
+describe('review configuration', () => {
+  const scratch = { publicOrigin: 'https://agents.example.com', projects: [] as unknown[] };
+  const codex = { codex: { program: process.execPath } };
+  const claude = { claude: { program: process.execPath } };
+  const both = { ...codex, ...claude };
+  const preset = (extra: Record<string, unknown> = {}) => ({ id: 'deep', label: 'Deep', agent: 'claude', prompt: 'Look hard.', ...extra });
+
+  it('defaults to headless runs, a Codex tour and one built-in Correctness preset on the tour agent', async () => {
+    const config = await validateConfig({ ...scratch, adapters: both });
+    expect(config.review.agents).toEqual({ codex: { mode: 'headless' }, claude: { mode: 'headless' } });
+    expect(config.review.tour).toEqual({ agent: 'codex', prompt: builtInTourPrompt });
+    expect(config.review.presets).toEqual([{ id: 'correctness', label: 'Correctness', agent: 'codex', prompt: builtInCorrectnessPrompt }]);
+    expect(config.review.defaultPreset).toBe('correctness');
+  });
+
+  it('falls back to Claude without Codex, and to an unavailable Codex with neither', async () => {
+    expect((await validateConfig({ ...scratch, adapters: claude })).review.tour.agent).toBe('claude');
+    expect((await validateConfig({ ...scratch, adapters: claude })).review.presets[0]!.agent).toBe('claude');
+    expect((await validateConfig(scratch)).review.tour.agent).toBe('codex');
+  });
+
+  it('carries configured modes, tour settings, presets and the default preset', async () => {
+    const config = await validateConfig({ ...scratch, adapters: both, review: { agents: { claude: { mode: 'interactive' } }, tour: { agent: 'claude', model: 'claude-opus-4-1[1m]', effort: 'max', prompt: 'Narrate it.' }, presets: [{ id: 'quick', label: 'Quick', agent: 'codex', effort: 'minimal', prompt: 'Skim.' }, preset({ model: 'opus' })], defaultPreset: 'deep' } });
+    expect(config.review.agents).toEqual({ codex: { mode: 'headless' }, claude: { mode: 'interactive' } });
+    expect(config.review.tour).toEqual({ agent: 'claude', model: 'claude-opus-4-1[1m]', effort: 'max', prompt: 'Narrate it.' });
+    expect(config.review.presets).toEqual([{ id: 'quick', label: 'Quick', agent: 'codex', effort: 'minimal', prompt: 'Skim.' }, { id: 'deep', label: 'Deep', agent: 'claude', model: 'opus', prompt: 'Look hard.' }]);
+    expect(config.review.defaultPreset).toBe('deep');
+    expect((await validateConfig({ ...scratch, adapters: both, review: { presets: [preset()] } })).review.defaultPreset).toBe('deep');
+  });
+
+  it('refuses unconfigured or unknown agents and efforts the agent does not accept', async () => {
+    await expect(validateConfig({ ...scratch, adapters: codex, review: { tour: { agent: 'claude' } } })).rejects.toThrow('review.tour runs on claude, which is not configured');
+    await expect(validateConfig({ ...scratch, adapters: codex, review: { presets: [preset()] } })).rejects.toThrow('review.presets.deep runs on claude');
+    await expect(validateConfig({ ...scratch, adapters: { ...both, omx: { program: process.execPath } }, review: { tour: { agent: 'omx' } } })).rejects.toThrow();
+    await expect(validateConfig({ ...scratch, adapters: codex, review: { tour: { effort: 'max' } } })).rejects.toThrow("effort `max` is not one of codex's levels");
+    await expect(validateConfig({ ...scratch, adapters: both, review: { presets: [preset({ effort: 'minimal' })] } })).rejects.toThrow("not one of claude's levels");
+  });
+
+  it('refuses duplicate preset ids, an unknown default preset and out-of-bounds fields', async () => {
+    await expect(validateConfig({ ...scratch, adapters: both, review: { presets: [preset(), preset()] } })).rejects.toThrow('duplicate id `deep`');
+    await expect(validateConfig({ ...scratch, adapters: both, review: { defaultPreset: 'deep' } })).rejects.toThrow('review.defaultPreset `deep` names no preset');
+    await expect(validateConfig({ ...scratch, adapters: both, review: { presets: [preset({ id: 'has space' })] } })).rejects.toThrow('preset ids');
+    await expect(validateConfig({ ...scratch, adapters: both, review: { presets: [preset({ label: 'x'.repeat(81) })] } })).rejects.toThrow();
+    await expect(validateConfig({ ...scratch, adapters: both, review: { presets: [preset({ prompt: 'x'.repeat(8_001) })] } })).rejects.toThrow();
+    await expect(validateConfig({ ...scratch, adapters: both, review: { tour: { model: '--dangerous' } } })).rejects.toThrow('model names');
+    await expect(validateConfig({ ...scratch, adapters: both, review: { agents: { codex: { mode: 'sometimes' } } } })).rejects.toThrow();
+    await expect(validateConfig({ ...scratch, adapters: both, review: { extra: true } })).rejects.toThrow(/[Uu]nrecognized/);
   });
 });

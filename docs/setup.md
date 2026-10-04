@@ -137,9 +137,11 @@ dropped with a boot warning. An OMX pane is badged OMX, the plain-Codex team
 workers OMX spawns stay hidden from the dashboard, and a listed Codex Conversation
 resumes under the kind the worktree last used (codex or omx).
 
-The Codex-only features — review tour, ChatGPT accounts, update advisor, the
-app-server command catalog — still read `adapters.codex`; an OMX-only
-configuration does without them. A `codex` entry whose program is actually OMX
+The Codex-only features — ChatGPT accounts, update advisor, the app-server
+command catalog — still read `adapters.codex`; an OMX-only configuration does
+without them. The review tour is not one of them: it runs on the agent
+[`review.tour`](#reviews) names, so an OMX-only configuration can generate tours
+with Claude. A `codex` entry whose program is actually OMX
 (the pre-split configuration) still launches, but as the wrong kind; the console
 warns at boot and in `pnpm config:check`.
 
@@ -181,8 +183,9 @@ Set `RAC_HOST_PATH` to a complete PATH when host commands require executables
 outside the host shell's normal startup environment.
 
 When `adapters.codex` is configured it also becomes the Codex binary that
-container-local or direct review tours and ChatGPT account management use;
-`RAC_CODEX_BIN` overrides it. A host-tmux update advisor instead uses
+container-local or direct headless Review runs and ChatGPT account management
+use; `RAC_CODEX_BIN` overrides it. Headless Claude Review runs likewise use
+`adapters.claude.program`, overridden by `RAC_CLAUDE_BIN`. A host-tmux update advisor instead uses
 `RAC_HOST_CODEX_BIN`, falling back to the host-side `adapters.codex.program`.
 With neither applicable value set, the Codex-only feature reports unavailable
 rather than spawning a bare `codex` from `PATH`. The **Global settings** flyout
@@ -246,6 +249,55 @@ under `<RAC_HOST_REPOSITORY>/.data/adapters` (or `RAC_ADAPTER_FILES_DIR`); that
 directory must resolve to the same bytes inside the container and on the host — a
 bind mount at the same path, or an explicit shared `RAC_ADAPTER_FILES_DIR` — so the
 host-side agent reads the file the container wrote.
+
+## Reviews
+
+The guided **Review tour** and the opt-in AI **Code review** are both a *Review
+run*: one prompt sent to one agent in the Worktree, which answers with JSON the
+console validates (ADR 0010). Only `codex` and `claude` can run one. The optional
+`review` section chooses how:
+
+```json
+{
+  "review": {
+    "agents": { "claude": { "mode": "interactive" }, "codex": { "mode": "headless" } },
+    "tour": { "agent": "codex", "model": "gpt-5-codex", "effort": "low", "prompt": "…" },
+    "defaultPreset": "correctness",
+    "presets": [{ "id": "correctness", "label": "Correctness", "agent": "claude", "effort": "high", "prompt": "…" }]
+  }
+}
+```
+
+Every field is optional.
+
+- `agents.<kind>.mode` is `headless` (the default) or `interactive`. A headless
+  run is a child process with schema-constrained output: `codex exec --sandbox
+  read-only`, or `claude -p --tools Read,Grep,Glob --no-session-persistence`.
+  Claude bills `-p` use separately from interactive use, which is why the mode is
+  set per kind. Interactive runs are not available yet; a kind set to
+  `interactive` reports its Review runs unavailable.
+- `tour` names the agent, `model`, `effort` and `prompt` that narrate the tour.
+  The agent defaults to `codex` when `adapters.codex` is configured, else
+  `claude`; with neither the tour reports unavailable. Without a `prompt` the
+  console uses its built-in narration guidance. The browser may pick another of
+  the agent's effort levels for one tour.
+- `presets` (≤20) are the Code review's **Review presets**: `{ id, label, agent,
+  model?, effort?, prompt }`, with `id` 1–40 letters, digits, `_` or `-`, `label`
+  ≤80 characters. With no presets, one built-in **Correctness** preset (bugs,
+  regressions, edge cases and security, not style) runs on the tour's agent.
+  `defaultPreset` defaults to the first preset.
+- `effort` must be one of the agent's levels: Codex accepts `minimal`, `low`,
+  `medium`, `high`, `xhigh` (passed as `-c model_reasoning_effort=…`); Claude
+  accepts `low`, `medium`, `high`, `xhigh`, `max` (`--effort`). Without one the
+  CLI's own default applies. `model` is passed as `-m` / `--model`.
+- A `prompt` (≤8000 characters) says what to look for. The console always
+  appends the change list, the output shape and the rules its parser enforces,
+  so a custom prompt cannot break the result.
+
+A tour or preset naming an agent that is not configured under `adapters`, an
+effort that agent does not accept, a duplicate preset id or an unknown
+`defaultPreset` fails config validation. A Review run never modifies the
+Worktree.
 
 ## Projects
 

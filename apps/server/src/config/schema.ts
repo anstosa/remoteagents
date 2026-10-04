@@ -12,6 +12,7 @@ import { agentKinds, type AdapterConfigs, type AdapterLaunchConfig, type AgentKi
 import { instanceIconNames, type InstanceIcon } from '../instance-icon.js';
 import { isIP } from 'node:net';
 import { defaultDavoContext, defaultDavoName } from '../integrations/realtime/settings.js';
+import { resolveReviewConfig, reviewConfigSchema, type ResolvedReviewConfig } from '../review-runs/config.js';
 
 const loopback = new Set(['127.0.0.1', '::1']);
 // wildcard binds expose every interface; require an explicit address instead
@@ -114,6 +115,8 @@ const sourceSchema = z.object({
   editor: z.string().trim().min(1).max(4096).refine(value => !/[\0\r\n]/u.test(value), 'NUL and newlines are forbidden').optional(),
   adapters: adaptersSchema.default({}),
   integrations: integrationFeatures,
+  // how the Review tour and the opt-in Code review run (ADR 0010); every field is optional
+  review: reviewConfigSchema.optional(),
   // a repository the console manages; its checkouts are discovered from git, never
   // declared. `path` is any checkout (a bare repository included); `hostPath` maps the
   // Main worktree's container path to the host under Docker; `worktreesDirectory` is
@@ -125,7 +128,7 @@ export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
 export type IntegrationConfig = z.output<typeof integrationFeatures>;
 export type DavoSettings = z.output<typeof davoSettingsSchema>;
-export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; defaultAgent?: AgentKind; scratchDirectory?: string; editor?: string; adapters: AdapterConfigs; integrations?: IntegrationConfig; projects: Project[] };
+export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; defaultAgent?: AgentKind; scratchDirectory?: string; editor?: string; adapters: AdapterConfigs; integrations?: IntegrationConfig; review: ResolvedReviewConfig; projects: Project[] };
 // how validation surfaces non-fatal facts: `warn` collects boot warnings (non-executable
 // programs, a crossed OMX/Codex program); `checkExecutables` runs the boot X_OK probe
 // and is skipped under the host bridge, where `program` is a host path the container
@@ -144,6 +147,17 @@ export function parseDavoSettings(value: unknown): DavoSettings | undefined {
 // RAC_CODEX_BIN override, else the configured adapters.codex program
 export function resolveCodexProgram(config: Pick<ValidatedConfig, 'adapters'>, env: NodeJS.ProcessEnv = process.env): string | undefined {
   return env.RAC_CODEX_BIN ?? config.adapters.codex?.program;
+}
+
+// the Claude binary a headless Review run spawns: an explicit RAC_CLAUDE_BIN override, else
+// the configured adapters.claude program
+export function resolveClaudeProgram(config: Pick<ValidatedConfig, 'adapters'>, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return env.RAC_CLAUDE_BIN ?? config.adapters.claude?.program;
+}
+
+// the resolved `review` section, defaulted for fixtures that predate it
+export function reviewConfig(config: Pick<ValidatedConfig, 'adapters'> & { review?: ResolvedReviewConfig }): ResolvedReviewConfig {
+  return config.review ?? resolveReviewConfig(undefined, config.adapters);
 }
 
 // require one canonical browser origin
@@ -350,6 +364,7 @@ export async function validateConfig(input: unknown, options: ValidateConfigOpti
   // the host bridge cannot stat host program paths from inside the container
   const checkExecutables = options.checkExecutables ?? process.env.RAC_HOST_TMUX_DIR === undefined;
   const adapters = await resolveAdapters(parsed.adapters, checkExecutables, warn);
+  const review = resolveReviewConfig(parsed.review, parsed.adapters);
   if (isIP(parsed.listen.host) === 0) throw new Error('listener host must be an IP address literal');
   if (wildcard.has(parsed.listen.host)) throw new Error('listener must bind to a specific address, not a wildcard');
   if (parsed.proxy.trustedSourceIps.some((ip) => !loopback.has(ip))) throw new Error('only loopback proxy sources are permitted');
@@ -373,5 +388,5 @@ export async function validateConfig(input: unknown, options: ValidateConfigOpti
     else { if (identities.has(project.identity)) throw new Error('duplicate project identity'); identities.add(project.identity); }
     projects.push(project);
   }
-  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, ...(parsed.defaultAgent === undefined ? {} : { defaultAgent: parsed.defaultAgent }), ...(parsed.scratchDirectory === undefined ? {} : { scratchDirectory: resolve(parsed.scratchDirectory) }), ...(parsed.editor === undefined ? {} : { editor: parsed.editor }), adapters, integrations: parsed.integrations, projects };
+  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, ...(parsed.defaultAgent === undefined ? {} : { defaultAgent: parsed.defaultAgent }), ...(parsed.scratchDirectory === undefined ? {} : { scratchDirectory: resolve(parsed.scratchDirectory) }), ...(parsed.editor === undefined ? {} : { editor: parsed.editor }), adapters, integrations: parsed.integrations, review, projects };
 }
