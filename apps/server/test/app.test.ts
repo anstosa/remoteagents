@@ -1100,6 +1100,31 @@ describe('Console shells server lifecycle', () => {
     } finally { await app.close(); }
   }, 15_000);
 
+  it('opens the configured editor at a file and line inside the Place', async () => {
+    const createConsoleShell = vi.fn(async () => '%9');
+    const { app, headers } = await start({ launch: { createConsoleShell }, editor: '/usr/local/bin/nvim -p' });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { editor: true, file: "src/it's.ts", line: 42 } });
+      expect(response.statusCode).toBe(201);
+      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), 'nvim', "/usr/local/bin/nvim -p +42 'src/it'\\''s.ts'");
+      const dashed = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { editor: true, file: '-rf', line: 1 } });
+      expect(dashed.statusCode).toBe(201);
+      expect(createConsoleShell).toHaveBeenLastCalledWith(worktreePlace(worktree as never), 'nvim', "/usr/local/bin/nvim -p +1 './-rf'");
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('refuses an editor file outside the Place, a bad line, or a file without the editor', async () => {
+    const createConsoleShell = vi.fn(async () => '%9');
+    const { app, headers } = await start({ launch: { createConsoleShell }, editor: 'nvim' });
+    try {
+      for (const payload of [{ editor: true, file: '/etc/passwd', line: 1 }, { editor: true, file: 'src/../../secret', line: 1 }, { editor: true, file: 'a\nb', line: 1 }, { editor: true, file: 'a.ts', line: 0 }, { editor: true, file: 'a.ts', line: 1.5 }, { editor: true, line: 3 }, { file: 'a.ts', line: 1 }]) {
+        const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload });
+        expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+      }
+      expect(createConsoleShell).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  }, 15_000);
+
   it('refuses an editor shell when no editor is configured, and leaves it off the dashboard', async () => {
     const createConsoleShell = vi.fn(async () => '%9');
     const { app, headers } = await start({ launch: { createConsoleShell } });

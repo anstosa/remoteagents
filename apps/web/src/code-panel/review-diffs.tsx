@@ -9,7 +9,7 @@
 // them from anywhere in the dialog. The only state it owns is visual: the Unified / Split choice,
 // which (rendered at the same spot for every step) carries across steps.
 import { type CSSProperties, useMemo, useState } from 'react';
-import type { CodeViewLineSelection, DiffLineAnnotation, SelectedLineRange } from '@pierre/diffs';
+import type { CodeViewLineSelection, DiffLineAnnotation, FileDiffMetadata, SelectedLineRange } from '@pierre/diffs';
 import { CodeView, type CodeViewItem, type CodeViewReactOptions } from '@pierre/diffs/react';
 import { useColorTheme } from '../color-theme.js';
 import { useTerminalFontSize } from '../terminal-font-size.js';
@@ -33,6 +33,10 @@ export type ReviewDiffSide = 'deletions' | 'additions';
 // one — and the comment renders under its last line.
 export type ReviewDiffComment = { id: string; changeId: string; startSide: ReviewDiffSide; startLine: number; endSide: ReviewDiffSide; endLine: number; body: string };
 
+// Where the guided review's editor jump lands: a file relative to the Place folder, and a line in
+// the working tree's copy of it.
+export type EditorTarget = { file: string; line: number };
+
 // The longest one inline comment may grow; the caller enforces the shared aggregate cap on top.
 export const MAX_INLINE_COMMENT = 4_000;
 
@@ -48,6 +52,8 @@ type ReviewDiffsProps = {
   // close an editor (Done), which discards a comment left empty
   onCommentClose: (id: string) => void;
   onCommentDelete: (id: string) => void;
+  // open a file at a line in the configured editor; the header button is hidden without it
+  onOpenInEditor?: (target: EditorTarget) => void;
 };
 
 // A human label for a comment's line range, e.g. "Line 12", "Lines 12–14", "Lines old 9 – new 11".
@@ -63,6 +69,36 @@ const orderedRange = (range: SelectedLineRange): Pick<ReviewDiffComment, 'startS
   const endSide = range.endSide ?? startSide;
   if (startSide === endSide) return { startSide, startLine: Math.min(range.start, range.end), endSide, endLine: Math.max(range.start, range.end) };
   return startSide === 'deletions' ? { startSide, startLine: range.start, endSide, endLine: range.end } : { startSide: endSide, startLine: range.end, endSide: startSide, endLine: range.start };
+};
+
+// The working tree's line for a line of a diff. An added or context line already counts there; a
+// removed line no longer exists, so it maps to where it was — the line now standing in its place.
+const newSideLine = (fileDiff: FileDiffMetadata, side: ReviewDiffSide, line: number): number => {
+  if (side === 'additions') return line;
+  for (const hunk of fileDiff.hunks) {
+    let deletion = hunk.deletionStart;
+    let addition = hunk.additionStart;
+    for (const content of hunk.hunkContent) {
+      const count = content.type === 'context' ? content.lines : content.deletions;
+      if (line >= deletion && line < deletion + count) return Math.max(1, content.type === 'context' ? addition + line - deletion : addition);
+      deletion += count;
+      addition += content.type === 'context' ? content.lines : content.additions;
+    }
+  }
+  return Math.max(1, line);
+};
+
+// The working tree's line where a diff's first change sits: its first added line, or for a pure
+// removal the line now standing where the removed ones were.
+const firstChangedLine = (fileDiff: FileDiffMetadata): number => {
+  const hunk = fileDiff.hunks[0];
+  if (hunk === undefined) return 1;
+  let addition = hunk.additionStart;
+  for (const content of hunk.hunkContent) {
+    if (content.type === 'change') break;
+    addition += content.lines;
+  }
+  return Math.max(1, addition);
 };
 
 // One inline comment: an editor while it is new or reopened, and the saved text otherwise.
@@ -86,7 +122,7 @@ function InlineComment({ comment, editing, onEdit, onChange, onDone, onDelete }:
 }
 
 // render one tour step with current display settings
-export default function ReviewDiffs({ changes, comments, openCommentIds, onCommentAdd, onCommentChange, onCommentOpen, onCommentClose, onCommentDelete }: ReviewDiffsProps) {
+export default function ReviewDiffs({ changes, comments, openCommentIds, onCommentAdd, onCommentChange, onCommentOpen, onCommentClose, onCommentDelete, onOpenInEditor }: ReviewDiffsProps) {
   const theme = useColorTheme();
   const terminalFontSize = useTerminalFontSize();
   // Each renderable Change becomes one diff item, keyed by its Change id so a file split across
@@ -112,6 +148,7 @@ export default function ReviewDiffs({ changes, comments, openCommentIds, onComme
     return { ...item, annotations, version: contentHash(`${item.version}|${annotations.map(annotation => `${annotation.metadata.commentId}:${annotation.side}:${annotation.lineNumber}`).join('|')}`) };
   }), [baseItems, anchorKey]); // anchorKey stands in for `comments`: it covers every field read here
   const changeIdByItemId = useMemo(() => new Map([...baseItems].map(([changeId, item]) => [item.id, changeId])), [baseItems]);
+  const fileByChangeId = useMemo(() => new Map(changes.map(change => [change.id, change.file])), [changes]);
 
   // The selected line range, held here so starting a comment can clear it: while a range is selected
   // the library pins the "+" to it, so a stale selection would steal the next comment's placement.
@@ -147,6 +184,20 @@ export default function ReviewDiffs({ changes, comments, openCommentIds, onComme
     return <InlineComment comment={comment} editing={openCommentIds.has(comment.id)} onEdit={() => onCommentOpen(comment.id)} onChange={body => onCommentChange(comment.id, body)} onDone={() => onCommentClose(comment.id)} onDelete={() => onCommentDelete(comment.id)} />;
   };
 
+  // Each file header's editor button opens the working tree's copy at the selected line when one is
+  // selected in that diff (clicking a line number selects it), else at the diff's first change. A
+  // deleted file has no copy to open.
+  const renderHeaderMetadata = (item: ReviewItem) => {
+    if (onOpenInEditor === undefined || item.type !== 'diff' || item.fileDiff.type === 'deleted') return null;
+    const changeId = changeIdByItemId.get(item.id);
+    const file = changeId === undefined ? undefined : fileByChangeId.get(changeId);
+    if (file === undefined) return null;
+    const selected = selection?.id === item.id ? orderedRange(selection.range) : undefined;
+    const line = selected === undefined ? firstChangedLine(item.fileDiff) : newSideLine(item.fileDiff, selected.startSide, selected.startLine);
+    const label = `Open ${file} at line ${line} in the editor`;
+    return <button type="button" className="review-tour-open-editor" aria-label={label} title={label} onClick={() => onOpenInEditor({ file, line })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg><span>{line}</span></button>;
+  };
+
   const style = codeViewStyle(terminalFontSize) as CSSProperties;
   return (
     <div className="review-tour-diff-view" style={style} ref={viewRef}>
@@ -161,7 +212,7 @@ export default function ReviewDiffs({ changes, comments, openCommentIds, onComme
           ))}
         </ul>
       )}
-      {items.length > 0 && <CodeView className="review-tour-diff-scroll" options={options} items={items} renderAnnotation={renderAnnotation} selectedLines={selection} onSelectedLinesChange={setSelection} disableWorkerPool />}
+      {items.length > 0 && <CodeView className="review-tour-diff-scroll" options={options} items={items} renderAnnotation={renderAnnotation} {...(onOpenInEditor === undefined ? {} : { renderHeaderMetadata })} selectedLines={selection} onSelectedLinesChange={setSelection} disableWorkerPool />}
     </div>
   );
 }

@@ -1923,6 +1923,11 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .review-tour-inline-comment > div { display: flex; justify-content: flex-end; gap: .4rem; }
 .review-tour-inline-comment button { padding: .3rem .65rem; font-size: .68rem; box-shadow: none; }
 .review-tour-inline-comment button:first-child { border-color: var(--surface-2); background: transparent; color: var(--subtext-0); }
+/* a file header's editor jump: light-DOM content slotted into the header's metadata slot */
+.review-tour-open-editor { display: inline-flex; align-items: center; gap: .3rem; padding: .2rem .45rem; border: 1px solid var(--surface-2); border-radius: var(--control-radius); background: transparent; box-shadow: none; color: var(--subtext-0); font: 700 .66rem var(--font-mono); cursor: pointer; }
+.review-tour-open-editor:hover, .review-tour-open-editor:focus-visible { border-color: var(--blue); color: var(--blue); }
+@media (pointer: coarse) { .review-tour-open-editor { min-height: 2rem; padding-inline: .65rem; } }
+.review-tour-open-editor svg { width: .85rem; height: .85rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .review-tour-diff-loading { margin: 0; padding: .8rem; color: var(--subtext-0); font: 500 .72rem var(--font-mono); }
 .review-tour-diff-placeholders { display: grid; gap: .3rem; margin: 0; padding: .6rem; list-style: none; }
 .review-tour-diff-placeholders li { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 1rem; padding: .4rem .55rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: var(--mantle); color: var(--subtext-1); font: 700 .66rem var(--font-mono); }

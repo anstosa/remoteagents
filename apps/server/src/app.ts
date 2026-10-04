@@ -83,6 +83,17 @@ declare module 'fastify' {
 // how long a pane must be quiet after output before its live frame is captured
 const logQuietWindowMs = 250;
 const body = (request: FastifyRequest): Record<string, unknown> => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {});
+// a path relative to a Place's folder that cannot climb out of it: no leading `/`, no `..`
+// segment, and nothing a shell line or tmux could misread
+const isPlaceRelativeFile = (value: unknown): value is string => typeof value === 'string' && value !== '' && value.length <= 4096 && !/[\0\r\n]/u.test(value) && !value.startsWith('/') && !value.split('/').includes('..');
+// the configured editor's command line, opening `file` (relative to the shell's cwd, the Place
+// folder) at `line` with the `+N file` convention vim, nvim, emacs, nano, micro and kakoune share
+const editorCommand = (editor: string, file?: string, line?: number): string => {
+  if (file === undefined) return editor;
+  // `./` keeps a path that begins with `-` from reading as an option
+  const path = `'${(file.startsWith('-') ? `./${file}` : file).replaceAll("'", "'\\''")}'`;
+  return line === undefined ? `${editor} ${path}` : `${editor} +${line} ${path}`;
+};
 // the requested Comparison kind, or undefined when the body names neither Working nor All PR
 const comparisonKind = (request: FastifyRequest): 'working' | 'pr' | undefined => { const kind = body(request).kind; return kind === 'working' || kind === 'pr' ? kind : undefined; };
 // one Named conversation on the wire: the Adapter's summary tagged with its kind, plus the
@@ -2487,12 +2498,16 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     const place = await resolvePlace((request.params as { id: string }).id);
     if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
-    const { name, editor } = body(request);
+    const { name, editor, file, line } = body(request);
     if (name !== undefined && (typeof name !== 'string' || name.length > 120 || name.includes('\0') || /[\r\n]/u.test(name))) return reply.code(400).send({ error: 'invalid terminal name' });
     if (editor !== undefined && typeof editor !== 'boolean') return reply.code(400).send({ error: 'invalid editor flag' });
     // the Editor button: a shell that runs the configured editor first, named for its program
     if (editor === true && config.editor === undefined) return reply.code(400).send({ error: 'no editor is configured' });
-    const command = editor === true ? config.editor ?? '' : '';
+    // the guided review's jump to a line: a file inside the Place, opened at that line
+    if ((file !== undefined || line !== undefined) && editor !== true) return reply.code(400).send({ error: 'a file opens only in the editor' });
+    if (file !== undefined && !isPlaceRelativeFile(file)) return reply.code(400).send({ error: 'invalid file' });
+    if (line !== undefined && (file === undefined || !Number.isSafeInteger(line) || (line as number) < 1)) return reply.code(400).send({ error: 'invalid line' });
+    const command = editor === true ? editorCommand(config.editor ?? '', file as string | undefined, line as number | undefined) : '';
     const paneId = await launch.createConsoleShell(place, typeof name === 'string' ? name : command === '' ? '' : basename(command.split(/\s+/u)[0]!), command);
     if (paneId === undefined) return reply.code(500).send({ error: 'could not open a terminal' });
     await dashboardUpdates.refresh().catch(() => undefined);

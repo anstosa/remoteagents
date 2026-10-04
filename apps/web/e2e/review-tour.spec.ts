@@ -24,12 +24,12 @@ async function fulfillAgentSupport(route: Route, pathname: string): Promise<bool
 }
 
 // serve one authenticated review console
-async function fulfillReviewConsole(route: Route, pathname: string): Promise<boolean> {
+async function fulfillReviewConsole(route: Route, pathname: string, editor = false): Promise<boolean> {
   // serve the authenticated browser
   if (pathname === '/api/auth/session') { await route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } }); return true; }
   // expose one reviewable agent
   if (pathname === '/api/dashboard') {
-    await route.fulfill({ json: { generation: 1, reviewTour: { available: true }, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', branch: 'feature/review-tour', title: 'Ready', gitStatus: { files: 1, staged: 0, unstaged: 1, untracked: 0, conflicted: 0, changes: [{ code: ' M', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] }, gitPrStatus: { base: 'origin/main', files: 1, changes: [{ code: 'M ', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] } }], projects: [] } });
+    await route.fulfill({ json: { generation: 1, reviewTour: { available: true }, ...(editor ? { editor: true } : {}), agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', branch: 'feature/review-tour', title: 'Ready', gitStatus: { files: 1, staged: 0, unstaged: 1, untracked: 0, conflicted: 0, changes: [{ code: ' M', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] }, gitPrStatus: { base: 'origin/main', files: 1, changes: [{ code: 'M ', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] } }], projects: [] } });
     return true;
   }
   return await fulfillAgentSupport(route, pathname);
@@ -336,17 +336,21 @@ test('renders a placeholder for a binary or unparseable change', async ({ page }
 });
 
 // open a ready two-step tour whose first step is a small parseable patch, for the inline-comment tests
-async function openCommentTour(page: Page): Promise<{ dialog: ReturnType<Page['getByRole']>; prompts: string[] }> {
+async function openCommentTour(page: Page, { editor = false } = {}): Promise<{ dialog: ReturnType<Page['getByRole']>; prompts: string[]; shells: unknown[] }> {
   const routePatch = 'diff --git a/src/route.ts b/src/route.ts\nindex 1111111..2222222 100644\n--- a/src/route.ts\n+++ b/src/route.ts\n@@ -10,4 +10,5 @@\n const a = 1;\n-const b = 2;\n+const b = 3;\n+const c = 4;\n const d = 5;\n export {};\n';
   const servicePatch = 'diff --git a/src/service.ts b/src/service.ts\nindex 3333333..4444444 100644\n--- a/src/service.ts\n+++ b/src/service.ts\n@@ -4 +4 @@\n-old service\n+new service\n';
   const tour = { title: 'Comment tour', overview: 'Review the route constants.', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: 'comment-fingerprint-123456', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: routePatch }, { id: 'chg_service01', file: 'src/service.ts', category: 'implementation', kind: 'hunk', patch: servicePatch }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route renames its constants.', changeIds: ['chg_route0001'] }, { id: 'service', title: 'Apply the operation', explanation: 'The service performs the transition.', changeIds: ['chg_service01'] }] };
   const prompts: string[] = [];
+  const shells: unknown[] = [];
   await installAgentWebSocket(page);
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
+    // with an editor configured, record the editor's shells
+    if (editor && url.pathname === '/api/worktrees/owen/shells' && request.method() === 'POST') { shells.push(request.postDataJSON()); return route.fulfill({ status: 201, json: { paneId: '%9' } }); }
+    if (editor && url.pathname === '/api/worktrees/owen/panes') return route.fulfill({ json: { panes: [{ paneId: '%9', role: 'shell', agent: false, name: 'nvim' }] } });
     // serve the review console fixture
-    if (await fulfillReviewConsole(route, url.pathname)) return;
+    if (await fulfillReviewConsole(route, url.pathname, editor)) return;
     if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') return route.fulfill({ status: 202, json: { status: 'pending', job: { id: 'job-comment', expiresAt: '2099-08-24T23:00:00.000Z', retryAfterMs: 10 } } });
     if (url.pathname === '/api/review-tour/jobs/job-comment' && request.method() === 'GET') return route.fulfill({ json: { status: 'ready', tour } });
     if (url.pathname === '/api/review-tour/jobs/job-comment' && request.method() === 'DELETE') return route.fulfill({ status: 204 });
@@ -365,7 +369,7 @@ async function openCommentTour(page: Page): Promise<{ dialog: ReturnType<Page['g
   await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
   const dialog = page.getByRole('dialog', { name: 'Comment tour' });
   await expect(dialog).toBeVisible();
-  return { dialog, prompts };
+  return { dialog, prompts, shells };
 }
 
 // verify reviewers can comment on diff lines and the comments reach the change request
@@ -453,6 +457,31 @@ test('records inline comments on diff lines and sends them located and quoted', 
   await dialog.getByRole('button', { name: 'Finish' }).focus();
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+});
+
+// verify the jump from a diff to its line in the configured editor
+test('opens a diff line in the configured editor from the file header', async ({ page }) => {
+  const { dialog, shells } = await openCommentTour(page, { editor: true });
+  const diffPane = dialog.getByLabel('Relevant changes');
+  await expect(diffPane.getByText('const c = 4;')).toBeVisible();
+  // with nothing selected the header opens the diff's first change
+  const open = diffPane.getByRole('button', { name: /^Open src\/route\.ts at line \d+ in the editor$/u });
+  await expect(open).toHaveAccessibleName('Open src/route.ts at line 11 in the editor');
+  // a selected line number moves the jump to that line
+  await diffPane.locator('[data-column-number="13"]').first().click();
+  await expect(open).toHaveAccessibleName('Open src/route.ts at line 13 in the editor');
+  await open.click();
+  await expect.poll(() => shells).toEqual([{ editor: true, file: 'src/route.ts', line: 13 }]);
+  // the review gets out of the way of the editor's Terminal panel
+  await expect(dialog).toBeHidden();
+});
+
+// verify the editor jump is offered only with an editor configured
+test('hides the editor jump when no editor is configured', async ({ page }) => {
+  const { dialog } = await openCommentTour(page);
+  const diffPane = dialog.getByLabel('Relevant changes');
+  await expect(diffPane.getByText('const c = 4;')).toBeVisible();
+  await expect(diffPane.getByRole('button', { name: /in the editor$/u })).toHaveCount(0);
 });
 
 // verify the touch path: tapping a line number reveals the gutter "+" without any hover

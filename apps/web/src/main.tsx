@@ -32,7 +32,7 @@ import { applyReducedMotion, setReducedMotion, useReducedMotion } from './reduce
 import { applyFlyoutMarkers, setFlyoutMarkers, useFlyoutMarkers } from './flyout-markers.js';
 import { UpstreamRebaseNotification, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
-import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
+import { isReviewTour, ReviewTourDialog, type EditorTarget, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
 import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
 import { AdaptersContext, AgentLaunchSettingsContext, CodexAccountsMenuContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, defaultSandboxed, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, originCopy, sandboxCopy, type AdapterCapabilities, type AgentKind, type AgentUpdateStatus, type LaunchMenuEntry, type LaunchResolution, type LaunchChoice } from './launch-profile.js';
 import { ScheduleEditor, defaultScheduleCron, lastRunNeedsAttention, scheduleInvalid, type Schedule, type ScheduleAdapterOption, type ScheduleSetBody, type ScheduleTarget, type ScheduleTargetOption } from './schedule-editor.js';
@@ -5056,11 +5056,11 @@ const listPlacePanes = async (placeId: string): Promise<WorktreePane[] | undefin
 };
 // a Console shell the console opened, as against the Agent's own pane or a hand-made one
 const isConsoleShell = (pane: WorktreePane): boolean => pane.role === 'shell' && !pane.agent;
-// open a new Console shell at a Place, running the configured editor when `editor`: its pane id,
-// or the reason it could not
-const createPlaceShell = async (placeId: string, editor = false): Promise<{ paneId: string } | { error: string }> => {
+// open a new Console shell at a Place, running the configured editor when `editor` (at a file and
+// line, relative to the Place folder, when given one): its pane id, or the reason it could not
+const createPlaceShell = async (placeId: string, editor: boolean | EditorTarget = false): Promise<{ paneId: string } | { error: string }> => {
   try {
-    const response = await request(`/api/worktrees/${encodeURIComponent(placeId)}/shells`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(editor ? { editor: true } : {}) });
+    const response = await request(`/api/worktrees/${encodeURIComponent(placeId)}/shells`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(editor === false ? {} : editor === true ? { editor: true } : { editor: true, ...editor }) });
     const body = await response.json().catch(() => ({})) as { paneId?: unknown; error?: unknown };
     if (response.ok && typeof body.paneId === 'string') return { paneId: body.paneId };
     return { error: typeof body.error === 'string' ? body.error : 'The console could not open a shell there.' };
@@ -8509,6 +8509,17 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       void refresh();
     } finally { terminalOpening.current.delete(placeId); }
   };
+  // the guided review's jump to a line: minimize the review, then open the configured editor at
+  // that file and line in a new Console shell, shown as a focused Terminal panel of the Place
+  const openEditorAt = async (placeId: string, target: EditorTarget) => {
+    minimizeReview();
+    openPlace(placeId);
+    const created = await createPlaceShell(placeId, target);
+    if (!('paneId' in created)) return showOperationFeedback({ tone: 'error', message: 'The editor did not open', detail: created.error, worktreeId: placeId });
+    const shell = (await listPlacePanes(placeId))?.find(pane => pane.paneId === created.paneId);
+    requestTerminalFocus(placeId, { paneId: created.paneId, name: shell === undefined ? 'editor' : terminalPaneLabel(shell) });
+    void refresh();
+  };
   // a worktree just created from the launcher: close everything, refresh, and select its
   // new tab (its agent when one launched, else the idle worktree)
   const worktreeCreated = async (result: WorktreeCreated) => {
@@ -8700,7 +8711,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const pruneProject = pruneProjectId === undefined ? undefined : data.projects.find(project => project.id === pruneProjectId);
   const pruneDialog = pruneProject === undefined ? null : <PruneWorktreesDialog project={pruneProject} request={request} onClose={() => setPruneProjectId(undefined)} onPruned={() => void worktreesPruned()} />;
   const worktreeManagementDialogs = <>{renameWorkspace !== undefined && <RenameWorkspaceDialog key={renameWorkspace.key} workspace={renameWorkspace} onClose={() => setRenameWorkspace(undefined)} />}{newWorktreeDialog}{removeWorktreeDialog}{renameWorktreeDialog}{pruneDialog}</>;
-  const reviewDialog = reviewLaunch === undefined ? null : <ReviewTourDialog key={`${reviewLaunch.worktreeId}:${reviewLaunch.scope}:${reviewInitialTour?.fingerprint ?? 'generated'}`} launch={reviewLaunch} request={request} minimized={reviewMinimized} initialTour={reviewInitialTour} onMinimize={minimizeReview} onDismiss={dismissReview} onIndicatorChange={setReviewIndicator} onReady={notifyReviewReady} />;
+  const reviewDialog = reviewLaunch === undefined ? null : <ReviewTourDialog key={`${reviewLaunch.worktreeId}:${reviewLaunch.scope}:${reviewInitialTour?.fingerprint ?? 'generated'}`} launch={reviewLaunch} request={request} minimized={reviewMinimized} initialTour={reviewInitialTour} onMinimize={minimizeReview} onDismiss={dismissReview} onIndicatorChange={setReviewIndicator} onReady={notifyReviewReady} {...(data.editor === true ? { onOpenInEditor: (target: EditorTarget) => void openEditorAt(reviewLaunch.worktreeId, target) } : {})} />;
   const storedReview = agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === agent.worktreeId);
   const localReview = agent?.worktreeId !== undefined && agent.worktreeId === reviewLaunch?.worktreeId;
   const activeReview = localReview ? { ...reviewIndicator, onOpen: openLocalReview } : agent !== undefined && storedReview !== undefined ? { generating: reviewRestoringWorktreeId === storedReview.worktreeId, stale: false, onOpen: () => void openStoredReview(agent, storedReview) } : undefined;
