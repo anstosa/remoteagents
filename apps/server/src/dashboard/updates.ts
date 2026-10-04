@@ -2,6 +2,7 @@ import type { Agent, Dashboard, DashboardPlace, DashboardProject, DashboardWorkt
 import type { LaunchResolution } from '../launch/resolution.js';
 import type { StackState } from '../worktree-commands/service.js';
 import type { ReviewTourCapability, StoredReviewTourSummary } from '../review-tour/contracts.js';
+import type { CodeReviewCapability } from '../code-review/contracts.js';
 
 // one Worktree on the wire, augmented with the per-Worktree state the loader adds:
 // its stack controls and its resolved Launch profile
@@ -22,13 +23,15 @@ export type DashboardPayload = Omit<Dashboard, 'agents' | 'projects' | 'places'>
   notesRevision?: number;
   scratchLaunch?: LaunchResolution;
   reviewTour: ReviewTourCapability;
+  // every Review preset the Code review offers, each with its agent's runnable state
+  codeReview: CodeReviewCapability;
   reviews: StoredReviewTourSummary[];
   // whether an `editor` is configured, so the web shows its Editor button (never the command)
   editor?: true;
 };
 
 // fingerprint every dashboard field that drives browser refreshes
-export const dashboardFingerprint = (dashboard: DashboardPayload): string => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.places, dashboard.cleanupPending, dashboard.notesRevision, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews]);
+export const dashboardFingerprint = (dashboard: DashboardPayload): string => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.places, dashboard.cleanupPending, dashboard.notesRevision, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.codeReview, dashboard.reviews]);
 
 export class DashboardUpdates<T = DashboardPayload> {
   private loader?: () => Promise<T>;

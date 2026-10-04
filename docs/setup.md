@@ -299,6 +299,15 @@ effort that agent does not accept, a duplicate preset id or an unknown
 `defaultPreset` fails config validation. A Review run never modifies the
 Worktree.
 
+A Code review runs only with a tour, on the same Comparison: started beside a
+new tour, or added to the current stored tour. Each Worktree has one Code
+review job at a time; a newer one, a new tour or dismissing the tour replaces
+it. A run times out after 15 minutes. Its Findings (≤100 anchored to hunk
+lines, plus general ones) are stored beside the tours in
+`<RAC_REVIEW_TOURS_FILE without .json>.code-reviews.json` (by default
+`.data/review-tours.code-reviews.json`) and shown with the tour that has the
+same branch and Comparison fingerprint.
+
 ## Projects
 
 A **Project** is a git repository the console manages. Configure each one once

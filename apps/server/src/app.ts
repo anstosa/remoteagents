@@ -50,10 +50,14 @@ import { ConfiguredReviewTourGenerator } from './review-tour/generator.js';
 import { CodexHeadlessReviewRunner } from './review-runs/codex-headless.js';
 import { ClaudeHeadlessReviewRunner } from './review-runs/claude-headless.js';
 import { ModeDispatchReviewRunner } from './review-runs/dispatch.js';
+import type { ReviewRunner } from './review-runs/runner.js';
+import { CodeReviewer } from './code-review/reviewer.js';
+import { CodeReviewJobs } from './code-review/jobs.js';
+import { parseCodeReviewAdd, parseReviewTourStart } from './code-review/contracts.js';
 import { ReviewTourService } from './review-tour/service.js';
 import { ReviewTourJobs } from './review-tour/jobs.js';
 import { ReviewTourStore } from './review-tour/store.js';
-import { parseReviewRequestId, parseReviewTourInput, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type ReviewErrorCode, type ReviewTourInput } from './review-tour/contracts.js';
+import { parseReviewRequestId, parseReviewTourInput, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type ReviewErrorCode, type ReviewTourInput, type StoredReviewTourSummary } from './review-tour/contracts.js';
 import { configuredWorktreeForWorkspace, projectIdOf, worktreeById, worktreeHostRoot, worktreeMatchesWorkspace, worktreePathOf, worktreePrBase, worktreeWireId } from './workspaces/resolver.js';
 import { previewFileBytes, WorkspaceFileService } from './workspace-files/service.js';
 import { ComparisonService } from './git/comparison-service.js';
@@ -77,7 +81,7 @@ import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, upd
 import { isFullGitSha } from './git/revision.js';
 import { AgentUpdateService, type AgentUpdateServiceLike } from './agent-updates/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; comparison?: ComparisonService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; accountSpend?: ApiKeySpendService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'>; scheduleBootAt?: Date; paneStream?: PaneStreamProvider };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; reviewRunner?: ReviewRunner; workspaceFiles?: WorkspaceFileService; comparison?: ComparisonService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; accountSpend?: ApiKeySpendService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'>; scheduleBootAt?: Date; paneStream?: PaneStreamProvider };
 // buildApp decorates the returned instance with the Schedule scheduler, so index.ts can start it and
 // the HTTP-seam tests can drive its `tick(now)` over the same fakes the Run routes use.
 declare module 'fastify' {
@@ -118,10 +122,13 @@ const promptAttachments = (value: unknown): PromptAttachment[] | undefined => {
 const noteAttachmentBodyLimit = Math.ceil(maxPromptAttachmentBytes * 1.4);
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore, undefined, config.scratchDirectory); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow(), () => paneStream.openPaneKeys(), async placeId => await placeAgentSession(placeId)); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const comparison = deps.comparison ?? new ComparisonService(async worktreeId => worktreePrBase(await discovery.dashboard(), worktreeId)); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboardFingerprint); const codexProgram = resolveCodexProgram(config); const review = reviewConfig(config); const reviewRunner = new ModeDispatchReviewRunner(review.agents, { codex: new CodexHeadlessReviewRunner(codexProgram ?? ''), claude: new ClaudeHeadlessReviewRunner(resolveClaudeProgram(config) ?? '') }); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new ConfiguredReviewTourGenerator(reviewRunner, review.tour)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore, undefined, config.scratchDirectory); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow(), () => paneStream.openPaneKeys(), async placeId => await placeAgentSession(placeId)); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const comparison = deps.comparison ?? new ComparisonService(async worktreeId => worktreePrBase(await discovery.dashboard(), worktreeId)); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboardFingerprint); const codexProgram = resolveCodexProgram(config); const review = reviewConfig(config); const reviewRunner = deps.reviewRunner ?? new ModeDispatchReviewRunner(review.agents, { codex: new CodexHeadlessReviewRunner(codexProgram ?? ''), claude: new ClaudeHeadlessReviewRunner(resolveClaudeProgram(config) ?? '') }); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new ConfiguredReviewTourGenerator(reviewRunner, review.tour)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
   const temporaryPreviews = deps.temporaryPreviews ?? new TemporaryPreviewService();
   // freeze the checkout identity serving this process
   const deployedRevision = serverAdmin.revision();
+  // a settled Code review refreshes the dashboard so its indicator follows
+  const codeReviewer = new CodeReviewer(reviewRunner, review);
+  const codeReviews = new CodeReviewJobs(codeReviewer, reviewStore, async () => { await dashboardUpdates.refresh().catch(() => undefined); });
   const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, async review => {
     const worktree = review.prepared.resolved.worktree;
     const projectName = config.projects.find(project => project.id === worktree.projectId)?.label ?? worktree.label;
@@ -130,8 +137,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       dashboardUpdates.refresh().then(() => undefined).catch(() => undefined),
       push.notify(reviewNotification(review.agentId, review.worktreeId, projectName, worktree.label)).then(() => undefined).catch(() => undefined)
     ]);
-  });
+  }, codeReviews);
   const reviewTourCapability = await reviewTours.capability();
+  const codeReviewCapability = await codeReviewer.capability();
   const accountSpend = deps.accountSpend ?? new ApiKeySpendService();
   const accounts = deps.accounts ?? new CodexAccountService({ ...(codexProgram === undefined ? {} : { codexProgram }) });
   // tolerate narrow launch doubles while deriving the production launch account home
@@ -183,7 +191,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.setErrorHandler((error, request, reply) => {
     const failure = error as { code?: unknown; statusCode?: number; message?: string };
     // normalize review parser failures
-    if (request.url.includes('/review-tour') && (failure.code === 'FST_ERR_CTP_BODY_TOO_LARGE' || failure.code === 'FST_ERR_CTP_INVALID_JSON_BODY' || error instanceof SyntaxError)) return reply.code(400).send({ status: 'error', error: { code: 'invalid_request', retryable: false } });
+    if ((request.url.includes('/review-tour') || request.url.includes('/code-review')) && (failure.code === 'FST_ERR_CTP_BODY_TOO_LARGE' || failure.code === 'FST_ERR_CTP_INVALID_JSON_BODY' || error instanceof SyntaxError)) return reply.code(400).send({ status: 'error', error: { code: 'invalid_request', retryable: false } });
     return reply.code(failure.statusCode ?? 500).send({ error: failure.message ?? 'internal error' });
   });
   app.addHook('onRequest', async (request, reply) => {
@@ -338,6 +346,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const count = await queuedPrompts.list(promptStorageKeyForAgent(agent)).then(queue => queue?.length ?? 0).catch(() => 1);
     return [agent.id, count] as const;
   })));
+  // overlay a stored tour's live Code review: running beats a stored review, which beats a failure
+  const codeReviewSummary = (summary: StoredReviewTourSummary): StoredReviewTourSummary => {
+    const live = codeReviews.status(summary.worktreeId, summary.fingerprint);
+    if (live === 'running') { const { findings: _findings, ...rest } = summary; return { ...rest, codeReview: 'running' }; }
+    return summary.codeReview === undefined && live === 'failed' ? { ...summary, codeReview: 'failed' } : summary;
+  };
   // publish current pane observations on each dashboard update
   const dashboard = async (): Promise<DashboardPayload> => {
     const discovered = await discovery.dashboard(false, true);
@@ -351,7 +365,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const controlFor = (worktreeId: string | undefined) => worktreeId === undefined ? undefined : controls.get(worktreeId);
     const worktreeViews = discovered.projects.flatMap(project => project.worktrees);
     const reviewBranches = worktreeViews.map(view => ({ worktreeId: view.id, branch: discovered.agents.find(agent => agent.worktreeId === view.id)?.branch ?? view.branch }));
-    const reviews = await reviewStore.summaries(reviewBranches);
+    const reviews = (await reviewStore.summaries(reviewBranches)).map(codeReviewSummary);
     // resolve the Launch profile for every scope the web can launch into: each idle
     // worktree, each running agent's worktree (for Restart as…), each non-git directory
     // Project (launched in place), each Scratch Place, and the Scratch group
@@ -363,7 +377,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const place = agent.placeId === undefined ? undefined : placeById.get(agent.placeId);
       return agent.worktreeId === undefined && place !== undefined ? launchResolutions.get(placeLaunchScope(place)) : launchFor(agent.worktreeId);
     };
-    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), completionId: notifications.completionId(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(agentLaunch(agent) === undefined ? {} : { launch: agentLaunch(agent) }) })), places: discovered.places.map(place => ({ ...place, ...(launchResolutions.get(placeLaunchScope(place)) === undefined ? {} : { launch: launchResolutions.get(placeLaunchScope(place)) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, notesRevision, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews, ...(config.editor === undefined ? {} : { editor: true as const }) };
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), completionId: notifications.completionId(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(agentLaunch(agent) === undefined ? {} : { launch: agentLaunch(agent) }) })), places: discovered.places.map(place => ({ ...place, ...(launchResolutions.get(placeLaunchScope(place)) === undefined ? {} : { launch: launchResolutions.get(placeLaunchScope(place)) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, notesRevision, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, codeReview: codeReviewCapability, reviews, ...(config.editor === undefined ? {} : { editor: true as const }) };
   };
   // observe only agent state needed by cross-instance attention
   const localInstanceAttention = async () => {
@@ -1526,17 +1540,49 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.post('/api/agents/:id/pane-mode/exit', async (request, reply) => { controlled(request, true); const target = await discovery.target((request.params as { id: string }).id); if (target === undefined) return reply.code(404).send({ error: 'target unavailable' }); if (!await tmux.exitPaneMode(target.socket, target.agent.paneId)) return reply.code(503).send({ error: 'Unable to leave the pane mode.' }); await dashboardUpdates.refresh().catch(() => undefined); return reply.code(204).send(); });
   app.post('/api/agents/:id/review-tour/jobs', { bodyLimit: REVIEW_REQUEST_BODY_BYTES }, async (request, reply) => {
     const owner = controlled(request, true).id;
-    const input = parseReviewTourInput(request.body);
+    const start = parseReviewTourStart(request.body);
     const requestIdHeader = request.headers['idempotency-key'];
     const requestId = requestIdHeader === undefined ? undefined : parseReviewRequestId(requestIdHeader);
     // reject malformed review requests
-    if (input === undefined || requestIdHeader !== undefined && requestId === undefined) return reply.code(400).send({ status: 'error', error: { code: 'invalid_request', retryable: false } });
+    if (start === undefined || requestIdHeader !== undefined && requestId === undefined) return reply.code(400).send({ status: 'error', error: { code: 'invalid_request', retryable: false } });
     try {
-      const started = await reviewJobs.start(owner, (request.params as { id: string }).id, input, requestId);
+      const started = await reviewJobs.start(owner, (request.params as { id: string }).id, start.input, requestId, start.codeReview);
       // return empty selections without a job
       if (started.kind === 'empty') return reply.code(200).send({ status: 'empty', comparison: started.comparison });
-      return reply.code(202).send({ status: 'pending', job: started.job });
+      return reply.code(202).send({ status: 'pending', job: started.job, ...(started.codeReview === undefined ? {} : { codeReview: started.codeReview }) });
     } catch (error) { return reviewFailure(reply, error); }
+  });
+  // add a Code review to a current stored tour: the Comparison is captured again and must match
+  app.post('/api/agents/:id/code-review/jobs', { bodyLimit: REVIEW_REQUEST_BODY_BYTES }, async (request, reply) => {
+    const owner = controlled(request, true).id;
+    const add = parseCodeReviewAdd(request.body);
+    // reject malformed review requests
+    if (add === undefined) return reply.code(400).send({ status: 'error', error: { code: 'invalid_request', retryable: false } });
+    const agentId = (request.params as { id: string }).id;
+    try {
+      // refuse an unusable preset before capturing anything
+      await codeReviews.validate(add.options);
+      const prepared = await reviewTours.prepare(agentId, add.input);
+      // refuse a review of a Comparison the tour no longer narrates
+      if (prepared.comparison.fingerprint !== add.fingerprint) throw new ReviewTourError('stale_during_generation', true);
+      return reply.code(202).send({ status: 'pending', job: await codeReviews.start(owner, agentId, prepared, add.options) });
+    } catch (error) { return reviewFailure(reply, error); }
+  });
+  app.get('/api/code-review/jobs/:jobId', async (request, reply) => {
+    const owner = controlled(request).id;
+    const job = codeReviews.get(owner, (request.params as { jobId: string }).jobId);
+    // hide missing or cross-owner jobs
+    if (job === undefined) return reply.code(404).send({ status: 'error', error: { code: 'target_unavailable', retryable: false } });
+    // map every job state
+    if (job.state.kind === 'pending') return reply.code(202).send({ status: 'pending', job: { id: job.id, expiresAt: new Date(job.expiresAt).toISOString(), retryAfterMs: 1_000 } });
+    if (job.state.kind === 'ready') return reply.code(200).send({ status: 'ready', review: job.state.review });
+    if (job.state.kind === 'gone') return reply.code(410).send({ status: 'error', jobId: job.id, error: { code: job.state.code, retryable: true } });
+    return reply.code(reviewStatus(job.state.code)).send({ status: 'error', jobId: job.id, error: { code: job.state.code, retryable: job.state.retryable } });
+  });
+  app.delete('/api/code-review/jobs/:jobId', async (request, reply) => {
+    const owner = controlled(request, true).id;
+    // cancel only owner-scoped jobs
+    return codeReviews.cancel(owner, (request.params as { jobId: string }).jobId) ? reply.code(204).send() : reply.code(404).send({ status: 'error', error: { code: 'target_unavailable', retryable: false } });
   });
   app.get('/api/agents/:id/review-tour/fingerprint', async (request, reply) => {
     controlled(request);
@@ -1566,13 +1612,17 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reviewJobs.cancel(owner, (request.params as { jobId: string }).jobId) ? reply.code(204).send() : reply.code(404).send({ status: 'error', error: { code: 'target_unavailable', retryable: false } });
   });
   app.get('/api/worktrees/:id/review-tour', async (request, reply) => {
-    controlled(request);
+    const owner = controlled(request).id;
     const id = (request.params as { id: string }).id;
     // require a configured worktree
     if (configuredWorktree(id) === undefined) return await nonWorktreeReply(id, reply, { missing: { status: 'error', error: { code: 'target_unavailable', retryable: false } }, refused: { status: 'error', error: { code: 'target_unavailable', retryable: false } } });
     const review = await reviewStore.current(id, await reviewBranch(id));
     // hide missing and branch-invalidated reviews
-    return review === undefined ? reply.code(404).send({ status: 'error', error: { code: 'target_unavailable', retryable: false } }) : reply.code(200).send({ status: 'ready', review });
+    if (review === undefined) return reply.code(404).send({ status: 'error', error: { code: 'target_unavailable', retryable: false } });
+    // join the tour's completed Code review, and a pending one the dialog can resume polling
+    const codeReview = await reviewStore.codeReview(id, review.branch, review.tour.fingerprint);
+    const codeReviewJob = codeReviews.pending(owner, id, review.tour.fingerprint);
+    return reply.code(200).send({ status: 'ready', review: { ...review, ...(codeReview === undefined ? {} : { codeReview }), ...(codeReviewJob === undefined ? {} : { codeReviewJob }) } });
   });
   app.delete('/api/worktrees/:id/review-tour', async (request, reply) => {
     controlled(request, true);
@@ -1580,6 +1630,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require a configured worktree
     if (configuredWorktree(id) === undefined) return await nonWorktreeReply(id, reply, { missing: { status: 'error', error: { code: 'target_unavailable', retryable: false } }, refused: { status: 'error', error: { code: 'target_unavailable', retryable: false } } });
     await reviewStore.dismiss(id);
+    // the dismissed tour's Code review goes with it
+    codeReviews.supersedeWorktree(id);
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(204).send();
   });
@@ -2567,11 +2619,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return undefined;
   };
   // delete every record a Worktree leaves behind, keyed by its wire id: the pin and last-used
-  // kind, the queued prompts, prompt history and the saved review tour — so
+  // kind, the queued prompts, prompt history and the saved review tour with its Code review — so
   // a removed (then possibly recreated-at-the-same-path) Worktree leaves no stale trace.
   // Project-scoped notes and console-named conversations are shared and deliberately retained.
   // Shared by Remove (one Worktree) and Prune (each orphaned record).
   const deleteWorktreeRecords = async (worktreeId: string): Promise<void> => {
+    codeReviews.supersedeWorktree(worktreeId);
     await Promise.all([
       worktreeStore.delete(worktreeId).catch(() => {}),
       queuedPrompts.clearScope(worktreeId).catch(() => {}),
@@ -3032,7 +3085,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       if (derives) void runDerive(true);
     } catch { socket.close(1008); }
   });
-  app.addHook('onClose', async () => { scheduler.stop(); reviewJobs.close(); await accounts.close(); await paneViewports.restoreAll(); paneStream.closeAll(); dashboardUpdates.close(); });
+  app.addHook('onClose', async () => { scheduler.stop(); reviewJobs.close(); codeReviews.close(); await accounts.close(); await paneViewports.restoreAll(); paneStream.closeAll(); dashboardUpdates.close(); });
   // expose the scheduler on the instance (index.ts starts it; the HTTP-seam tests tick it)
   app.decorate('scheduler', scheduler);
   return app;

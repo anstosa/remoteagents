@@ -3,7 +3,8 @@ import type { ReviewCategory } from '../git/change-classification.js';
 import type { ReviewAgentKind } from '../review-runs/efforts.js';
 import type { ReviewRunCapability } from '../review-runs/runner.js';
 
-export const REVIEW_REQUEST_BODY_BYTES = 1_024;
+// room for a Code review's 2000-character focus note in any script
+export const REVIEW_REQUEST_BODY_BYTES = 8_192;
 export const MAX_REVIEW_FILES = 100;
 export const MAX_REVIEW_CHANGES = 500;
 export const MAX_REVIEW_DIFF_BYTES = 900_000;

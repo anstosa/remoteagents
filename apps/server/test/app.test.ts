@@ -1358,7 +1358,7 @@ describe('guided review API boundary', () => {
       const login = await reviewApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
       const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken, 'content-type': 'application/json' };
       const malformed = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: '{"scope":' });
-      const oversized = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false, padding: 'x'.repeat(1_100) }) });
+      const oversized = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false, padding: 'x'.repeat(9_000) }) });
       const unexpected = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false, unexpected: true }) });
       const idempotentHeaders = { ...headers, 'idempotency-key': 'review-start_1234567890' };
       const invalidRequestId = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers: { ...headers, 'idempotency-key': 'short' }, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false }) });
@@ -1443,6 +1443,97 @@ describe('review tour capability', () => {
       const dashboard = await capabilityApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0] } });
       expect(dashboard.json().reviewTour).toEqual({ available: false, reason: 'configuration_invalid', agent: 'codex', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] });
     } finally { await capabilityApp.close(); if (saved !== undefined) process.env.RAC_CODEX_BIN = saved; }
+  }, 15_000);
+});
+
+describe('code review API', () => {
+  it('starts a review with a tour, polls it, joins it to the stored tour and adds another', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-code-review-api-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false };
+    const change = { id: 'chg_route0001', file: 'src/route.ts', category: 'implementation' as const, kind: 'hunk' as const, oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, patch: '@@ -1 +1,2 @@\n-old\n+new\n+more' };
+    const comparison = { agentId: 'agent-1', worktreeId: 'cora', workspace: '/worktrees/cora', branch: 'feature/review', scope: 'pr' as const, base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'review-fingerprint-1234', changes: [change] };
+    const tour: ReviewTour = { title: 'Route tour', overview: 'Follow the route.', steps: [{ id: 'route', title: 'Route', explanation: 'The route changes.', changeIds: [change.id] }], scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: comparison.fingerprint, changes: [change] };
+    let prepares = 0;
+    let finishTour!: (tour: ReviewTour) => void;
+    const reviewTours = {
+      capability: async () => ({ available: true, agent: 'codex', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] }),
+      prepare: async () => { prepares += 1; return { comparison, resolved: { worktree } }; },
+      generate: async () => await new Promise<ReviewTour>(resolve => { finishTour = resolve; })
+    };
+    const runs: Array<{ request: { label: string; effort?: string; prompt: string }; signal: AbortSignal; resolve: (value: unknown) => void }> = [];
+    const reviewRunner = { capability: async () => ({ available: true }), run: async (request: { label: string; prompt: string }, signal: AbortSignal) => await new Promise(resolve => { runs.push({ request, signal, resolve }); }) };
+    const review = resolveReviewConfig({ presets: [{ id: 'correctness', label: 'Correctness', agent: 'codex', effort: 'high', prompt: 'Review for correctness.' }, { id: 'security', label: 'Security', agent: 'codex', prompt: 'Review for security.' }] }, { codex: {} });
+    const reviewStore = new ReviewTourStore(join(directory, 'reviews.json'));
+    const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [{ id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: false, main: true, detached: false, locked: false, order: 0, branch: 'feature/review' }] }] }) };
+    const reviewApp = await buildApp({ ...config, review }, { auth: new AuthService(hash, Buffer.alloc(32, 23).toString('base64url')), discovery: discovery as never, reviewStore, reviewTours: reviewTours as never, reviewRunner: reviewRunner as never, push: { notify: async () => undefined } as never });
+    // wait until a condition holds
+    const until = async (check: () => Promise<boolean>) => { for (let index = 0; index < 100 && !await check(); index += 1) await new Promise(resolve => setTimeout(resolve, 10)); };
+    try {
+      const boot = await reviewApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await reviewApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0] };
+      const deleteHeaders = { ...headers, origin: 'https://agents.example.com', 'x-csrf-token': login.json().csrfToken };
+      const mutationHeaders = { ...deleteHeaders, 'content-type': 'application/json' };
+      const scope = { scope: 'pr', includeTests: false, includeDocs: false };
+
+      const unknownPreset = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers: mutationHeaders, payload: JSON.stringify({ ...scope, codeReview: { preset: 'missing' } }) });
+      const badEffort = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers: mutationHeaders, payload: JSON.stringify({ ...scope, codeReview: { preset: 'correctness', effort: 'max' } }) });
+      const longFocus = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers: mutationHeaders, payload: JSON.stringify({ ...scope, codeReview: { preset: 'correctness', focus: 'x'.repeat(2_001) } }) });
+      expect([unknownPreset.statusCode, badEffort.statusCode, longFocus.statusCode]).toEqual([400, 400, 400]);
+      expect(unknownPreset.json()).toEqual({ status: 'error', error: { code: 'invalid_request', retryable: false } });
+      expect(prepares).toBe(0);
+
+      const started = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers: mutationHeaders, payload: JSON.stringify({ ...scope, effort: 'low', codeReview: { preset: 'correctness', focus: 'ナ'.repeat(2_000) } }) });
+      expect(started.statusCode).toBe(202);
+      expect(started.json()).toMatchObject({ status: 'pending', job: { id: expect.any(String) }, codeReview: { job: { id: expect.any(String), expiresAt: expect.any(String), retryAfterMs: 1_000 } } });
+      expect(prepares).toBe(1);
+      expect(runs[0]!.request).toMatchObject({ label: 'Review · Correctness', effort: 'high' });
+      const reviewJob = started.json().codeReview.job.id as string;
+      const pending = await reviewApp.inject({ method: 'GET', url: `/api/code-review/jobs/${reviewJob}`, headers });
+      expect(pending.statusCode).toBe(202);
+      expect(pending.json()).toMatchObject({ status: 'pending', job: { id: reviewJob } });
+      expect((await reviewApp.inject({ method: 'GET', url: '/api/worktrees/cora/review-tour', headers })).statusCode).toBe(404);
+
+      // the review finishes before the tour
+      runs[0]!.resolve({ findings: [{ changeId: change.id, side: 'additions', startLine: 2, endLine: 2, severity: 'high', title: 'Unchecked value', body: 'The new line skips validation.' }], general: [] });
+      await until(async () => (await reviewApp.inject({ method: 'GET', url: `/api/code-review/jobs/${reviewJob}`, headers })).statusCode === 200);
+      const ready = await reviewApp.inject({ method: 'GET', url: `/api/code-review/jobs/${reviewJob}`, headers });
+      expect(ready.json()).toMatchObject({ status: 'ready', review: { fingerprint: comparison.fingerprint, preset: { id: 'correctness', label: 'Correctness', agent: 'codex' }, effort: 'high', findings: [{ changeId: change.id, side: 'additions', startLine: 2, endLine: 2, severity: 'high' }], general: [] } });
+      finishTour(tour);
+      await until(async () => (await reviewApp.inject({ method: 'GET', url: '/api/worktrees/cora/review-tour', headers })).statusCode === 200);
+      const stored = await reviewApp.inject({ method: 'GET', url: '/api/worktrees/cora/review-tour', headers });
+      expect(stored.json()).toMatchObject({ status: 'ready', review: { tour: { fingerprint: comparison.fingerprint }, codeReview: ready.json().review } });
+      expect(stored.json().review).not.toHaveProperty('codeReviewJob');
+      const dashboard = await reviewApp.inject({ method: 'GET', url: '/api/dashboard', headers });
+      expect(dashboard.json().codeReview).toEqual({ defaultPreset: 'correctness', presets: [{ id: 'correctness', label: 'Correctness', agent: 'codex', effort: 'high', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], available: true }, { id: 'security', label: 'Security', agent: 'codex', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], available: true }] });
+      expect(dashboard.json().reviews).toEqual([expect.objectContaining({ worktreeId: 'cora', codeReview: 'ready', findings: 1 })]);
+
+      // "Add AI review" to the stored tour
+      const stale = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/code-review/jobs', headers: mutationHeaders, payload: JSON.stringify({ ...scope, fingerprint: 'other-fingerprint-1234', preset: 'security' }) });
+      expect(stale.statusCode).toBe(409);
+      expect(stale.json()).toEqual({ status: 'error', error: { code: 'stale_during_generation', retryable: true } });
+      const invalidAdd = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/code-review/jobs', headers: mutationHeaders, payload: JSON.stringify({ ...scope, fingerprint: comparison.fingerprint, preset: 'missing' }) });
+      expect(invalidAdd.statusCode).toBe(400);
+      const added = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/code-review/jobs', headers: mutationHeaders, payload: JSON.stringify({ ...scope, fingerprint: comparison.fingerprint, preset: 'security', effort: 'xhigh' }) });
+      expect(added.statusCode).toBe(202);
+      expect(added.json()).toMatchObject({ status: 'pending', job: { id: expect.any(String), retryAfterMs: 1_000 } });
+      expect(runs[1]!.request).toMatchObject({ label: 'Review · Security', effort: 'xhigh' });
+      const resumed = await reviewApp.inject({ method: 'GET', url: '/api/worktrees/cora/review-tour', headers });
+      expect(resumed.json().review.codeReviewJob).toEqual(added.json().job);
+      expect((await reviewApp.inject({ method: 'GET', url: '/api/dashboard', headers })).json().reviews).toEqual([expect.objectContaining({ codeReview: 'running' })]);
+      const cancelled = await reviewApp.inject({ method: 'DELETE', url: `/api/code-review/jobs/${added.json().job.id as string}`, headers: deleteHeaders });
+      expect(cancelled.statusCode).toBe(204);
+      expect(runs[1]!.signal.aborted).toBe(true);
+      const gone = await reviewApp.inject({ method: 'GET', url: `/api/code-review/jobs/${added.json().job.id as string}`, headers });
+      expect(gone.statusCode).toBe(410);
+      expect(gone.json()).toMatchObject({ status: 'error', error: { code: 'job_cancelled' } });
+      expect((await reviewApp.inject({ method: 'DELETE', url: '/api/code-review/jobs/unknown', headers: deleteHeaders })).statusCode).toBe(404);
+
+      // dismissing the tour clears its review
+      expect((await reviewApp.inject({ method: 'DELETE', url: '/api/worktrees/cora/review-tour', headers: deleteHeaders })).statusCode).toBe(204);
+      expect(await reviewStore.codeReview('cora', 'feature/review', comparison.fingerprint)).toBeUndefined();
+    } finally { await reviewApp.close(); await rm(directory, { recursive: true, force: true }); }
   }, 15_000);
 });
 
