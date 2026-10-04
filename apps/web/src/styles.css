@@ -766,7 +766,10 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .note-markdown th:last-child, .note-markdown td:last-child { border-right: 0; }
 .browser-pane { position: relative; z-index: 1; display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); padding-top: var(--panel-header-clearance); border-top: 1px solid color-mix(in srgb, var(--blue) 58%, var(--surface-1)); background: var(--browser-chrome-color, var(--crust)); box-shadow: inset 0 1px color-mix(in srgb, var(--text) 4%, transparent); animation: note-pane-appear .15s ease-out; }
 .browser-pane.expanded { width: 100%; height: 100%; border: 0; }
-.browser-pane:has(> .browser-permission-consent) { grid-template-rows: auto minmax(0, 1fr); }
+/* reserve space for consent and persistence errors without shrinking the frame to content */
+.browser-pane:has(> .browser-permission-consent), .browser-pane:has(> .browser-permission-error) { grid-template-rows: auto minmax(0, 1fr); }
+.browser-pane:has(> .browser-permission-consent):has(> .browser-permission-error) { grid-template-rows: auto auto minmax(0, 1fr); }
+.browser-permission-error { margin: 0; padding: .5rem .75rem; background: var(--mantle); color: var(--red); font-size: .7rem; overflow-wrap: anywhere; }
 /* the address input is the complete left pill, not a framed field inside it */
 .panel-header .browser-address { flex: 1 1 0; width: 0; align-self: stretch; padding: .2rem .65rem; outline: 0; font-family: inherit; -webkit-touch-callout: none; }
 .panel-header .browser-address:focus { border-color: var(--blue); color: var(--text); }

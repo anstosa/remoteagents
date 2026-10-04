@@ -156,6 +156,16 @@ describe('project browser permission shim', () => {
     }
   });
 
+  // restore only a validated parent-owned notification grant after connecting
+  it('restores remembered notification permission from a successful handshake', () => {
+    const bridge = executePermissions();
+    bridge.respond(bridge.request('connect'), { permission: 'granted' });
+    expect(bridge.window.Notification.permission).toBe('granted');
+    const invalid = executePermissions();
+    invalid.respond(invalid.request('connect'), { permission: 'always' });
+    expect(invalid.window.Notification.permission).toBe('default');
+  });
+
   // validate authority and serialize location traffic
   it('forwards bounded current positions and rejects forged or malformed replies', () => {
     const bridge = executePermissions();

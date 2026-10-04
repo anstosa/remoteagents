@@ -514,6 +514,8 @@ export const projectBrowserPermissions = (parentOrigin: string) => `(() => {
         removePending(id);
         // disconnect rejected sessions
         if (response.status !== 'ok') disconnect(locationError(2, 'permission broker rejected the session'));
+        // restore only notification permission explicitly returned by the trusted parent
+        else if (response.permission === 'granted' || response.permission === 'denied' || response.permission === 'default') notificationPermission = response.permission;
       }
     });
   };

@@ -1,8 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactElement, type RefObject } from 'react';
+import { beginBrowserPermissionApproval, forgetBrowserPermission, forgetBrowserPermissions, hasSavedBrowserPermission, isCurrentBrowserPermissionApproval, saveBrowserPermission, type BrowserPermissionCapability } from './browser-permission-grants.js';
 
 type BrowserPermissionOperation = 'connect' | 'geolocation-get' | 'geolocation-watch' | 'geolocation-clear' | 'notification-permission' | 'notification-show' | 'notification-close';
-type BrowserPermissionCapability = 'geolocation' | 'notifications';
-type BrowserPermissionDecision = 'session' | 'denied';
 type BrowserPermissionStatus = 'ok' | 'denied' | 'error';
 type BrowserPermissionError = { code: 1 | 2 | 3; message: string };
 type BrowserPermissionRequest = {
@@ -40,6 +39,7 @@ type BrowserPermissionResponse = {
   notificationId?: string;
 };
 type GeolocationRequestOptions = { enableHighAccuracy: boolean; timeout: number; maximumAge: number };
+type NativeNotificationOutcome = { status: 'ok'; permission: NotificationPermission } | { status: 'error'; error: unknown };
 type PreviewNotificationOptions = { body?: string; tag?: string; silent?: boolean; requireInteraction?: boolean };
 type ParsedRequest = BrowserPermissionRequest & { geoOptions?: GeolocationRequestOptions; notificationOptions?: PreviewNotificationOptions };
 type ActiveDocument = {
@@ -48,7 +48,8 @@ type ActiveDocument = {
   generation: number;
   source: Window;
   origin: string;
-  decisions: Map<BrowserPermissionCapability, BrowserPermissionDecision>;
+  deniedCapabilities: Set<BrowserPermissionCapability>;
+  notificationConsentRevision: number;
   requests: Map<string, BrowserPermissionOperation>;
 };
 type QueuedPermission = { capability: BrowserPermissionCapability; request: ParsedRequest; document: ActiveDocument };
@@ -62,6 +63,8 @@ type BrowserPermissionBrokerOptions = {
 };
 type BrowserPermissionBroker = {
   consent: ReactElement | null;
+  error: string | undefined;
+  forgetGrants: () => boolean;
   revoke: () => void;
   frameLoaded: () => void;
 };
@@ -254,6 +257,7 @@ export function useBrowserPermissionBroker({ frameRef, homeOrigin, isManaged }: 
   const handledLoadConnectSerialRef = useRef(0);
   const consentRef = useRef<HTMLElement | null>(null);
   const [prompt, setPrompt] = useState<QueuedPermission>();
+  const [error, setError] = useState<string>();
   const previewOrigin = homeOrigin;
 
   // confirm that the current frame still owns the managed preview authority
@@ -312,6 +316,21 @@ export function useBrowserPermissionBroker({ frameRef, homeOrigin, isManaged }: 
     handledLoadConnectSerialRef.current = connectSerialRef.current;
     resetDocument();
   }, [resetDocument]);
+
+  // clear durable approval before allowing a refreshed preview to reconnect
+  const forgetGrants = useCallback((): boolean => {
+    const removed = forgetBrowserPermissions(homeOrigin);
+    revoke();
+    setError(removed ? undefined : 'Saved approvals could not be cleared. Clear RAC site data to revoke them.');
+    return removed;
+  }, [homeOrigin, revoke]);
+
+  // report storage failures without silently creating a document-wide grant
+  const rememberGrant = useCallback((document: ActiveDocument, capability: BrowserPermissionCapability, token: string): boolean => {
+    const saved = saveBrowserPermission(document.origin, capability, token);
+    setError(saved ? undefined : 'Approval could not be saved. Only the current request was allowed.');
+    return saved;
+  }, []);
 
   // revoke unknown navigations while preserving a new document that connected before load
   const frameLoaded = useCallback((): void => {
@@ -561,13 +580,13 @@ export function useBrowserPermissionBroker({ frameRef, homeOrigin, isManaged }: 
     respond(document, request, { status: 'error', error: bridgeError('Invalid permission operation') });
   }, [executeGeolocation, isLiveDocument, respond, showNotification]);
 
-  // request explicit custom consent or run a document-scoped grant
+  // request explicit consent or reuse a durable origin-scoped approval
   const requestCapability = useCallback((document: ActiveDocument, request: ParsedRequest, capability: BrowserPermissionCapability): void => {
-    const decision = document.decisions.get(capability);
     // deny every later request after an explicit document-scoped denial
-    if (decision === 'denied') { respond(document, request, { status: 'denied', error: bridgeError(`${capability === 'geolocation' ? 'Location' : 'Notifications'} denied for this preview`, 1), ...(capability === 'notifications' ? { permission: 'denied' } : {}) }); return; }
-    // reuse only an explicit preview-session grant
-    if (decision === 'session') { executeGranted(document, request); return; }
+    if (document.deniedCapabilities.has(capability)) { respond(document, request, { status: 'denied', error: bridgeError(`${capability === 'geolocation' ? 'Location' : 'Notifications'} denied for this preview`, 1), ...(capability === 'notifications' ? { permission: 'denied' } : {}) }); return; }
+    const hasSavedApproval = hasSavedBrowserPermission(document.origin, capability);
+    // native notification access still requires a real click when its grant is missing
+    if (hasSavedApproval && (capability !== 'notifications' || currentNotificationPermission() === 'granted')) { executeGranted(document, request); return; }
     // bound queued consent requests per document
     if (queueRef.current.length >= maxPendingRequests) { respond(document, request, { status: 'error', error: bridgeError('Too many pending permission requests') }); return; }
     queueRef.current.push({ capability, request, document });
@@ -575,12 +594,12 @@ export function useBrowserPermissionBroker({ frameRef, homeOrigin, isManaged }: 
   }, [advancePrompt, executeGranted, respond]);
 
   // resolve a notification consent click without losing native user activation
-  const resolveNotificationConsent = useCallback((mode: 'once' | 'session', current: QueuedPermission): void => {
+  const resolveNotificationConsent = useCallback((mode: 'once' | 'always', current: QueuedPermission, consentRevision: number, approvalToken: string | undefined): void => {
     const { document, capability } = current;
     // reject a stale prompt before opening a browser permission surface
     if (!isLiveDocument(document) || capability !== 'notifications') { advancePrompt(); return; }
     const matching = queueRef.current.filter(item => item.document === document && item.capability === capability);
-    const selected = mode === 'session' ? matching : [current];
+    const selected = mode === 'always' && approvalToken !== undefined ? matching : [current];
     queueRef.current = queueRef.current.filter(item => !selected.includes(item));
     // reject the whole native prompt batch before exceeding bounded provider work
     if (inFlightRequestsRef.current.size + selected.length > maxInFlightRequests) {
@@ -612,66 +631,113 @@ export function useBrowserPermissionBroker({ frameRef, homeOrigin, isManaged }: 
       }
       return;
     }
-    void nativePermission.then(permission => {
+    // normalize only native rejection without replaying failures from request completion
+    const nativeOutcome = nativePermission.then<NativeNotificationOutcome, NativeNotificationOutcome>(
+      // preserve the native permission result
+      permission => ({ status: 'ok', permission }),
+      // retain opaque native failures for bounded reporting
+      (error: unknown) => ({ status: 'error', error })
+    );
+    // settle native success and failure through the same ownership and consent boundary
+    void nativeOutcome.then(outcome => {
       // release parent capacity before checking document ownership
       releaseParentCapabilityOwners(parentOwners);
-      // ignore the native answer after the requesting document leaves
+      // ignore native completion after the requesting document leaves
       if (!isLiveDocument(document)) return;
-      // retain custom consent only when native permission also succeeded
-      if (mode === 'session' && permission === 'granted') document.decisions.set(capability, 'session');
-      // retain a native denial without converting a dismissed default prompt into denial
-      if (mode === 'session' && permission === 'denied') document.decisions.set(capability, 'denied');
-      // complete every selected request with the native result
+      const hasUncancelledRequest = selected.some(item => !cancelledRequestsRef.current.has(item.request.id));
+      // require current consent before attempting any durable write
+      const choiceBeforeSave = document.notificationConsentRevision === consentRevision && isCurrentBrowserPermissionApproval(document.origin, capability, approvalToken);
+      // bind durable approval to this exact choice rather than a newer tab's pointer
+      const saved = mode === 'always' && approvalToken !== undefined && outcome.status === 'ok' && outcome.permission === 'granted' && choiceBeforeSave && !document.deniedCapabilities.has(capability) && hasUncancelledRequest && rememberGrant(document, capability, approvalToken);
+      // revalidate after storage writes that may have observed an interleaved newer choice
+      const currentChoice = choiceBeforeSave && document.notificationConsentRevision === consentRevision && isCurrentBrowserPermissionApproval(document.origin, capability, approvalToken);
+      // explain failed verification without overriding denial or abandoned work
+      if (!currentChoice && !document.deniedCapabilities.has(capability) && hasUncancelledRequest) setError('Approval changed or could not be verified. Please request again.');
+      // retain native denial only for current uncancelled durable consent
+      if (mode === 'always' && approvalToken !== undefined && outcome.status === 'ok' && outcome.permission === 'denied' && currentChoice && hasUncancelledRequest) document.deniedCapabilities.add(capability);
+      // complete every selected request once through the same policy ordering
       for (const item of selected) {
         inFlightRequestsRef.current.delete(item.request.id);
         // consume transport cancellation without completing the abandoned operation
         if (cancelledRequestsRef.current.delete(item.request.id)) continue;
-        // preserve native requestPermission results after the explicit custom allow
+        // honour explicit denial before any older native outcome
+        if (document.deniedCapabilities.has(capability)) { respond(document, item.request, { status: 'denied', permission: 'denied', error: bridgeError('Notifications denied for this preview', 1) }); continue; }
+        // settle superseded work without granting permission or displaying a notification
+        if (!currentChoice) {
+          // keep a stale permission response conservative without persisting denial
+          if (item.request.operation === 'notification-permission') respond(document, item.request, { status: 'ok', permission: 'default' });
+          else respond(document, item.request, { status: 'denied', permission: 'default', error: bridgeError('Notification approval changed', 1), notificationId: item.request.id });
+          continue;
+        }
+        // report genuine native rejection only after consent remains current
+        if (outcome.status === 'error') { respond(document, item.request, { status: 'error', permission: currentNotificationPermission(), error: bridgeError(outcome.error instanceof Error ? outcome.error.message : 'Notification permission failed') }); continue; }
+        const permission = outcome.permission;
+        // leave siblings awaiting consent when current durable persistence failed
+        if (mode === 'always' && permission === 'granted' && !saved && item !== current) { queueRef.current.push(item); continue; }
+        // preserve native requestPermission results after current explicit custom consent
         if (item.request.operation === 'notification-permission') respond(document, item.request, { status: 'ok', permission });
-        // execute display only after both custom and native grants
+        // execute display only after both current custom and native grants
         else if (permission === 'granted') executeGranted(document, item.request);
         else respond(document, item.request, { status: 'denied', permission, error: bridgeError('Notifications are not permitted', 1) });
       }
       advancePrompt();
-    }).catch(error => {
-      // release parent capacity before checking document ownership
-      releaseParentCapabilityOwners(parentOwners);
-      // leave replacement-document ownership untouched after an old native prompt
-      if (!isLiveDocument(document)) return;
-      // fail every request covered by this browser prompt
-      for (const item of selected) {
-        inFlightRequestsRef.current.delete(item.request.id);
-        // consume transport cancellation without completing the abandoned operation
-        if (cancelledRequestsRef.current.delete(item.request.id)) continue;
-        respond(document, item.request, { status: 'error', permission: currentNotificationPermission(), error: bridgeError(error instanceof Error ? error.message : 'Notification permission failed') });
-      }
-      advancePrompt();
     });
-  }, [advancePrompt, executeGranted, isLiveDocument, respond]);
+  }, [advancePrompt, executeGranted, isLiveDocument, rememberGrant, respond]);
 
   // grant one or every queued capability request from the click activation
-  const allow = useCallback((mode: 'once' | 'session'): void => {
+  const allow = useCallback((mode: 'once' | 'always'): void => {
     const current = queueRef.current[0];
     // ignore a click after navigation cleared the queue
     if (current === undefined || !isLiveDocument(current.document)) { advancePrompt(); return; }
+    // supersede an earlier local native answer before storage or capacity can fail
+    const consentRevision = current.capability === 'notifications' ? ++current.document.notificationConsentRevision : 0;
+    // bind both one-time and durable consent to one verified cross-tab choice
+    const choice = beginBrowserPermissionApproval(current.document.origin, current.capability);
+    // stop when captured grant cleanup failed despite a successful pointer rotation
+    if (choice.status === 'ready' && !choice.cleared) {
+      setError('Approval could not be saved or cleared. Clear RAC site data to revoke it.');
+      return;
+    }
+    // never let a superseded click remove the newer choice or reopen native permission
+    if (choice.status === 'superseded') {
+      setError('Approval changed in another preview. Please choose again.');
+      return;
+    }
+    // allow a one-time fallback only when storage verifies no prior approval or pending choice
+    if (choice.status === 'unavailable') {
+      // unreadable or existing authority cannot safely be converted into one-time access
+      if (!choice.empty) {
+        setError('Approval could not be saved or cleared. Clear RAC site data to revoke it.');
+        return;
+      }
+      setError('Approval could not be saved. Only the current request was allowed.');
+    }
+    // clear obsolete storage errors only after verified one-time revocation succeeds
+    if (mode === 'once' && choice.status === 'ready') setError(undefined);
+    const approvalToken = choice.status === 'ready' ? choice.token : undefined;
     // notifications must open the native permission surface in this click handler
-    if (current.capability === 'notifications') { resolveNotificationConsent(mode, current); return; }
+    if (current.capability === 'notifications') { resolveNotificationConsent(mode, current, consentRevision, approvalToken); return; }
     const matching = queueRef.current.filter(item => item.document === current.document && item.capability === current.capability);
-    const selected = mode === 'session' ? matching : [current];
+    // failed persistence allows only the current request rather than the whole queue
+    const saved = mode === 'always' && approvalToken !== undefined && rememberGrant(current.document, current.capability, approvalToken);
+    const selected = saved ? matching : [current];
     queueRef.current = queueRef.current.filter(item => !selected.includes(item));
-    // retain only the explicit session choice
-    if (mode === 'session') current.document.decisions.set(current.capability, 'session');
     // invoke geolocation directly inside this activation
     for (const item of selected) executeGranted(current.document, item.request);
     advancePrompt();
-  }, [advancePrompt, executeGranted, isLiveDocument, resolveNotificationConsent]);
+  }, [advancePrompt, executeGranted, isLiveDocument, rememberGrant, resolveNotificationConsent]);
 
   // deny this capability for the rest of the current preview document
   const deny = useCallback((): void => {
     const current = queueRef.current[0];
     // ignore a click after navigation cleared the queue
     if (current === undefined || !isLiveDocument(current.document)) { advancePrompt(); return; }
-    current.document.decisions.set(current.capability, 'denied');
+    current.document.deniedCapabilities.add(current.capability);
+    // supersede native notification answers still waiting on an earlier choice
+    if (current.capability === 'notifications') current.document.notificationConsentRevision += 1;
+    // remove any older always approval when this capability is explicitly denied
+    const removed = forgetBrowserPermission(current.document.origin, current.capability);
+    setError(removed ? undefined : 'Saved approval could not be cleared. Clear RAC site data to revoke it.');
     const denied = queueRef.current.filter(item => item.document === current.document && item.capability === current.capability);
     queueRef.current = queueRef.current.filter(item => !denied.includes(item));
     // deny every pending request for this document capability
@@ -708,9 +774,11 @@ export function useBrowserPermissionBroker({ frameRef, homeOrigin, isManaged }: 
       if (request.operation === 'connect') {
         resetDocument();
         connectSerialRef.current += 1;
-        const document: ActiveDocument = { clientId: request.clientId, ownerId: crypto.randomUUID(), generation: generationRef.current, source: frameWindow, origin: event.origin, decisions: new Map(), requests: new Map([[request.id, 'connect']]) };
+        const document: ActiveDocument = { clientId: request.clientId, ownerId: crypto.randomUUID(), generation: generationRef.current, source: frameWindow, origin: event.origin, deniedCapabilities: new Set(), notificationConsentRevision: 0, requests: new Map([[request.id, 'connect']]) };
         activeDocumentRef.current = document;
-        respond(document, request, { status: 'ok' });
+        // restore the child facade only when both custom and native notification grants exist
+        const permission = hasSavedBrowserPermission(document.origin, 'notifications') && currentNotificationPermission() === 'granted' ? 'granted' : 'default';
+        respond(document, request, { status: 'ok', permission });
         return;
       }
       const document = activeDocumentRef.current;
@@ -814,14 +882,14 @@ export function useBrowserPermissionBroker({ frameRef, homeOrigin, isManaged }: 
     <div className="browser-permission-copy">
       <strong id="browser-permission-title">Allow {capabilityName}?</strong>
       <p id="browser-permission-description">{prompt.capability === 'geolocation'
-        ? <><b>{previewOrigin}</b> wants to use your location in this preview. Session access ends when the preview reloads or navigates to a new document.</>
-        : <><b>{previewOrigin}</b> wants Remote Agent Console to show notifications for this preview. Notifications identify this preview and are displayed by Remote Agent Console. Session access ends when the preview reloads or navigates to a new document.</>}</p>
+        ? <><b>{previewOrigin}</b> wants to use your location in this preview. Allow once covers this request. Always approval is remembered for this origin in this browser until you reset preview permissions.</>
+        : <><b>{previewOrigin}</b> wants Remote Agent Console to show notifications for this preview. Notifications identify this preview and are displayed by Remote Agent Console. Always approval is remembered for this origin in this browser until you reset preview permissions.</>}</p>
     </div>
     <div className="browser-permission-actions">
       <button type="button" onClick={() => { /* grant only the current request */ allow('once'); }}>Allow once</button>
-      <button type="button" onClick={() => { /* grant this capability until document replacement */ allow('session'); }}>Allow for this preview session</button>
-      <button className="browser-permission-deny" type="button" onClick={deny}>Deny</button>
+      <button type="button" onClick={() => { /* remember this capability for future visits */ allow('always'); }}>allow always</button>
+      <button className="browser-permission-deny" type="button" onClick={deny}>deny</button>
     </div>
   </section>;
-  return { consent, revoke, frameLoaded };
+  return { consent, error, forgetGrants, revoke, frameLoaded };
 }

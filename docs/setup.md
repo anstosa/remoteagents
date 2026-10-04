@@ -666,13 +666,30 @@ location and foreground notifications through RAC. The preview must ask through
 its usual `navigator.geolocation` or `Notification` APIs; RAC displays a consent
 request identifying the preview origin before using the console's browser
 permission. An existing browser grant to RAC does not automatically approve a
-preview. Allow or deny each capability explicitly.
+preview. The choices are **Allow once**, **allow always**, and **deny**.
+Allow once covers only the current request. Allow always remembers approval for
+that exact project origin and capability across reloads and future visits in
+this RAC browser profile. Location and notification approvals are separate;
+other origins do not inherit them. An ungranted choice may leave an inert
+ordering token in browser storage; that token alone is neither approval nor
+persistent denial. Browser storage must be available to save approval; a failed
+save allows only the current request and displays an error.
+If older approval cannot be cleared or verified, RAC stops the operation and
+asks you to clear RAC site data instead.
 
 Locations are returned only to the requesting preview. Notifications belong to
-RAC's origin and identify the preview that requested them. Grants last only for
-the current preview document; loading another document, reloading, closing the
-Browser panel, or leaving the managed origin revokes them and stops active
-location watches.
+RAC's origin and identify the preview that requested them. Loading another
+document, reloading, closing the Browser panel, or leaving the managed origin
+stops active watches and attempts to close owned notifications, but remembered
+approvals remain. **Reset preview permissions** in the Browser panel clears both
+saved capabilities for that project origin, stops that panel's active resources,
+and reloads its preview after confirmation because unsaved preview changes may
+be lost. Choosing Allow once also clears any older remembered
+approval for that capability. Deny blocks the capability for the current document
+and clears older remembered approval. Later choices and resets supersede pending
+native notification permission answers, including answers in other RAC tabs.
+Superseded notification requests cannot gain permission or display a notification.
+Reset and deny do not change RAC's native browser permissions.
 The parent accepts requests only from that Browser panel's frame and configured
 project origin. Only the direct managed frame opts into the permission shim;
 nested project frames and ordinary non-RAC embeddings keep their native APIs.
@@ -699,7 +716,12 @@ API failures can leave a notification visible until it is dismissed.
 The injected APIs provide compatibility forwarding, not a sandbox for a
 project's own browser permissions. Project-controlled CSP or immutable browser
 APIs can prevent forwarding; native permissions previously granted directly to
-the project remain separate from RAC's grants.
+the project remain separate from RAC's grants. A saved notification approval
+cannot override a revoked native notification permission: RAC asks for consent again
+and requests native permission only from an explicit click. The child facade's
+`Notification.permission` is restored asynchronously during its handshake and
+may initially be `default` in the first project script task. Remembered approval
+follows the origin if different project content later uses the same origin.
 
 ### Console alerts
 

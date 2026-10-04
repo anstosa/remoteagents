@@ -4618,6 +4618,14 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     setFrameAwayFromKnownUrl(false);
     loadFrame(loadedFrameSource.current);
   }, [loadFrame]);
+  // revoke this project's saved approval and reload only after storage confirms removal
+  const resetPreviewPermissions = () => {
+    // preserve unsaved preview state when permission reset is cancelled
+    if (!window.confirm('Reset preview permissions and reload this page? Unsaved preview changes may be lost.')) return;
+    // keep the current frame revoked when its saved approvals could not be cleared
+    if (!permissionBroker.forgetGrants()) return;
+    refreshFrame();
+  };
   // apply parent-directed navigation
   useEffect(() => {
     const explicitlyRequested = navigationRequest !== undefined && appliedNavigationSequence.current !== navigationRequest.sequence;
@@ -4853,6 +4861,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   const actions = <>
     {addressCopyStatus && <span className={`browser-copy-status${addressCopyStatus === 'failed' ? ' error' : ''}`} role={addressCopyStatus === 'failed' ? 'alert' : 'status'}>{addressCopyStatus === 'copied' ? 'URL copied' : 'Copy failed'}</span>}
     {deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}
+    {proxied && <button className="panel-header-action browser-permission-reset" type="button" aria-label="Reset preview permissions" title="Reset preview permissions" onClick={resetPreviewPermissions}><PanelIcon path="M12 3 3 7v6c0 5 9 8 9 8s9-3 9-8V7l-9-4M9 10l6 6M15 10l-6 6" /></button>}
     {managed
       ? <button className={`panel-header-action browser-refresh${loading ? ' loading' : ''}`} type="button" aria-label={loading ? 'Stop loading browser' : 'Refresh browser'} aria-busy={loading} title={loading ? 'Stop' : 'Refresh'} onClick={toggleFrameLoad}><PanelIcon path={loading ? 'm6 6 12 12M18 6 6 18' : 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'} /></button>
       : <button className={`panel-header-action browser-refresh${loading ? ' loading' : ''}`} type="button" disabled={loading} aria-label="Refresh browser" aria-busy={loading} title={loading ? 'Loading external preview' : 'Refresh external preview'} onClick={refreshFrame}><PanelIcon path="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" /></button>}
@@ -4863,7 +4872,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     { key: 'device', label: deviceLabel, title: deviceTitle, className: 'browser-device-toggle', pressed: mobile, icon: <svg className="panel-header-icon" data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg>, onSelect: toggleDevice }
   ];
   const titleControl = <input className="panel-header-pill panel-header-title browser-address" type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onKeyDown={submitAddress} onBlur={blurAddress} onTouchStart={startAddressHold} onTouchMove={moveAddressHold} onTouchEnd={cancelAddressHold} onTouchCancel={cancelAddressHold} onContextMenu={addressContextMenu} />;
-  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} style={{ '--browser-chrome-color': chromeColor } as React.CSSProperties} role="dialog" aria-label="Browser" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={browserContextMenu} onKeyDown={handleEscape}><PanelHeader panelKey="browser" label="browser" titleControl={titleControl} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close browser', title: 'Close', className: 'browser-close', icon: <PanelIcon path={panelIcons.close} />, onSelect: () => { /* revoke before hiding the frame */ revokeFramePermissions(); onClose(); } }} />{permissionBroker.consent}<div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} name={permissionFrameName} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
+  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} style={{ '--browser-chrome-color': chromeColor } as React.CSSProperties} role="dialog" aria-label="Browser" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={browserContextMenu} onKeyDown={handleEscape}><PanelHeader panelKey="browser" label="browser" titleControl={titleControl} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close browser', title: 'Close', className: 'browser-close', icon: <PanelIcon path={panelIcons.close} />, onSelect: () => { /* revoke before hiding the frame */ revokeFramePermissions(); onClose(); } }} />{permissionBroker.consent}{permissionBroker.error && <p className="browser-permission-error" role="alert">{permissionBroker.error}</p>}<div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} name={permissionFrameName} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
 }
 
 // reuse the owning view's note persistence and prompt draft

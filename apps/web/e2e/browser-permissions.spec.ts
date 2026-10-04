@@ -5,6 +5,7 @@ import { installPaneMock, seedPaneSize } from './pane-stream-mock.js';
 
 const consoleOrigin = 'http://127.0.0.1:4173';
 const managedOrigin = 'https://project.example.com';
+const otherManagedOrigin = 'https://other-project.example.com';
 const directOrigin = 'https://external-preview.example';
 const managedFrameName = 'rac-managed-preview-v1';
 
@@ -258,6 +259,26 @@ const installReconcilingWorkerProvider = async (context: BrowserContext) => {
 // read parent-only provider calls
 const providerState = (page: Page) => page.evaluate(() => (window as typeof window & { __permissionProviderState: ProviderState }).__permissionProviderState);
 
+// snapshot RAC-owned browser storage without assuming one key layout
+const localStorageSnapshot = (page: Page) => page.evaluate(() => Object.fromEntries(Object.entries(localStorage).sort(([left], [right]) => left.localeCompare(right))));
+
+// address one versioned persistent approval by exact origin and capability
+const storedApprovalKey = (origin: string, capability: 'geolocation' | 'notifications') => `rac.browser-permission:v1:${encodeURIComponent(origin)}:${capability}`;
+
+// read the canonical pointer and its token-scoped approval record
+const storedApproval = (page: Page, origin: string, capability: 'geolocation' | 'notifications') => page.evaluate(baseKey => {
+  const token = localStorage.getItem(baseKey);
+  return { token, grant: token === null ? null : localStorage.getItem(`${baseKey}:${token}`) };
+}, storedApprovalKey(origin, capability));
+
+// compare unrelated RAC preferences without treating inert ordering metadata as a grant
+const storageWithoutApproval = (snapshot: Record<string, string>, origin: string, capability: 'geolocation' | 'notifications') => {
+  const baseKey = storedApprovalKey(origin, capability);
+  return Object.fromEntries(Object.entries(snapshot).filter(([key]) => key !== baseKey && !key.startsWith(`${baseKey}:`)));
+};
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
 // render standard-api controls inside one managed preview document
 const managedPreview = (path: string) => `<!doctype html><html><head><script src="/__rac/browser-bridge.js"></script></head><body>
   <main>Managed permission preview <span id="path">${path}</span></main>
@@ -293,6 +314,8 @@ const managedPreview = (path: string) => `<!doctype html><html><head><script src
         document.querySelector('#notification-result').textContent = 'created';
         notice.addEventListener('show', () => { document.querySelector('#notification-result').textContent += ':show'; });
         notice.addEventListener('close', () => { document.querySelector('#notification-result').textContent += ':close'; });
+        // expose broker-denied displays to the fixture
+        notice.addEventListener('error', () => { document.querySelector('#notification-result').textContent += ':error'; });
       } catch (error) { document.querySelector('#notification-result').textContent = 'error:' + error.name; }
     };
     document.querySelector('#close').onclick = () => { notice?.close(); };
@@ -327,8 +350,8 @@ const directPreview = `<!doctype html><html><body>
 </body></html>`;
 
 // route one dashboard and its preview document
-const setupDashboard = async (page: Page, options: { bridge: string; direct?: boolean }) => {
-  const previewOrigin = options.direct === true ? directOrigin : managedOrigin;
+const setupDashboard = async (page: Page, options: { bridge: string; direct?: boolean; previewOrigin?: string }) => {
+  const previewOrigin = options.previewOrigin ?? (options.direct === true ? directOrigin : managedOrigin);
   await installPaneMock(page);
   await page.context().route(`${previewOrigin}/**`, async route => {
     const requestUrl = new URL(route.request().url());
@@ -365,17 +388,45 @@ const openBrowser = async (page: Page) => {
   await page.setViewportSize({ width: 1400, height: 850 });
   await page.goto('/');
   await seedPaneSize(page, 'agent-permissions', 80, 24);
+  const browser = page.getByRole('dialog', { name: 'Browser' });
+  // preserve BrowserPane state shared through RAC storage
+  if (await browser.isVisible()) return;
   await page.getByRole('group', { name: 'Project controls' }).getByRole('button', { name: 'Stack controls: healthy' }).click();
   await page.getByRole('button', { name: 'Split', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: 'Browser' })).toBeVisible();
+  await expect(browser).toBeVisible();
+};
+
+// reopen the BrowserPane without replacing RAC storage
+const reopenBrowser = async (page: Page) => {
+  const browser = page.getByRole('dialog', { name: 'Browser' });
+  // preserve BrowserPane state restored by a full RAC reload
+  if (await browser.isVisible()) return;
+  await page.getByRole('group', { name: 'Project controls' }).getByRole('button', { name: 'Stack controls: healthy' }).click();
+  await page.getByRole('button', { name: 'Split', exact: true }).click();
+  await expect(browser).toBeVisible();
 };
 
 // select one visible permission decision
-const decide = async (page: Page, name: string, decision: 'Allow once' | 'Allow for this preview session' | 'Deny') => {
+const decide = async (page: Page, name: string, decision: 'Allow once' | 'allow always' | 'deny') => {
   const consent = page.getByRole('dialog', { name });
   await expect(consent).toBeVisible();
   await consent.getByRole('button', { name: decision, exact: true }).click();
   await expect(consent).toBeHidden();
+};
+
+// resolve one native reset confirmation before its click can finish
+const resetPreviewPermissions = async (page: Page, accept: boolean): Promise<string> => {
+  const reset = page.getByRole('dialog', { name: 'Browser' }).getByRole('button', { name: 'Reset preview permissions' });
+  const dialogPromise = page.waitForEvent('dialog');
+  const clickPromise = reset.click();
+  const dialog = await dialogPromise;
+  expect(dialog.type()).toBe('confirm');
+  const message = dialog.message();
+  // follow the scenario's explicit confirmation choice
+  if (accept) await dialog.accept();
+  else await dialog.dismiss();
+  await clickPromise;
+  return message;
 };
 
 type PermissionProtocolResponse = { clientId?: string; id: string; status: string; error?: { code?: number; message?: string }; position?: unknown };
@@ -425,7 +476,7 @@ test('brokers geolocation only after consent and revokes watches across preview 
   await preview.getByRole('button', { name: 'Get location' }).click();
   await expect(page.getByRole('dialog', { name: consentName })).toContainText(managedOrigin);
   expect((await providerState(page)).geolocationGets).toBe(0);
-  await decide(page, consentName, 'Deny');
+  await decide(page, consentName, 'deny');
   await expect(preview.locator('#get-result')).toHaveText(/^error:1:/u);
   expect((await providerState(page)).geolocationGets).toBe(0);
   await preview.getByRole('button', { name: 'Navigate preview' }).click();
@@ -438,7 +489,7 @@ test('brokers geolocation only after consent and revokes watches across preview 
   expect((await providerState(page)).geolocationGets).toBe(1);
 
   await preview.getByRole('button', { name: 'Get location' }).click();
-  await decide(page, consentName, 'Allow for this preview session');
+  await decide(page, consentName, 'allow always');
   await expect(preview.locator('#get-result')).toHaveText('ok:47.6062,-122.3321:12');
   await preview.getByRole('button', { name: 'Get location' }).click();
   await expect(preview.locator('#get-result')).toHaveText('ok:47.6062,-122.3321:12');
@@ -462,20 +513,795 @@ test('brokers geolocation only after consent and revokes watches across preview 
   await expect(preview.locator('#path')).toHaveText('/third');
   await expect.poll(async () => (await providerState(page)).geolocationClears.length).toBe(2);
   await preview.getByRole('button', { name: 'Get location' }).click();
-  await expect(page.getByRole('dialog', { name: consentName })).toBeVisible();
-  expect((await providerState(page)).geolocationGets).toBe(3);
+  await expect(page.getByRole('dialog', { name: consentName })).toBeHidden();
+  await expect.poll(async () => (await providerState(page)).geolocationGets).toBe(4);
 
   await preview.getByRole('button', { name: 'Navigate preview' }).click();
   await expect(preview.locator('#path')).toHaveText('/next');
   await expect(page.getByRole('dialog', { name: consentName })).toBeHidden();
-  expect((await providerState(page)).geolocationGets).toBe(3);
+  expect((await providerState(page)).geolocationGets).toBe(4);
 
   await preview.getByRole('button', { name: 'Watch location' }).click();
-  await decide(page, consentName, 'Allow for this preview session');
   await expect.poll(async () => (await providerState(page)).geolocationWatches).toBe(3);
   const clearCount = (await providerState(page)).geolocationClears.length;
   await page.getByRole('dialog', { name: 'Browser' }).getByRole('button', { name: 'Close browser' }).click();
   await expect.poll(async () => (await providerState(page)).geolocationClears.length).toBe(clearCount + 1);
+});
+
+// preserve only explicit origin-scoped approval across preview visits
+test('persists allow always by exact origin and capability across future visits', async ({ context, page }) => {
+  test.setTimeout(90_000);
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const browser = page.getByRole('dialog', { name: 'Browser' });
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  const consent = page.getByRole('dialog', { name: 'Allow location?' });
+
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await expect(consent.getByRole('button')).toHaveText(['Allow once', 'allow always', 'deny']);
+  const beforeOnce = await localStorageSnapshot(page);
+  await decide(page, 'Allow location?', 'Allow once');
+  await expect(preview.locator('#get-result')).toHaveText('ok:47.6062,-122.3321:12');
+  const afterOnce = await localStorageSnapshot(page);
+  expect(storageWithoutApproval(afterOnce, managedOrigin, 'geolocation')).toEqual(storageWithoutApproval(beforeOnce, managedOrigin, 'geolocation'));
+  const onceGeolocation = await storedApproval(page, managedOrigin, 'geolocation');
+  expect(onceGeolocation.token).toMatch(uuidPattern);
+  expect(onceGeolocation.grant).toBeNull();
+
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await expect(consent).toBeVisible();
+  expect((await providerState(page)).geolocationGets).toBe(1);
+  await decide(page, 'Allow location?', 'deny');
+  await preview.getByRole('button', { name: 'Navigate preview' }).click();
+  await expect(preview.locator('#path')).toHaveText('/next');
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await expect(consent).toBeVisible();
+  expect((await providerState(page)).geolocationGets).toBe(1);
+
+  const beforeAlways = await localStorageSnapshot(page);
+  await decide(page, 'Allow location?', 'allow always');
+  await expect(preview.locator('#get-result')).toHaveText('ok:47.6062,-122.3321:12');
+  const savedAlways = await localStorageSnapshot(page);
+  expect(savedAlways).not.toEqual(beforeAlways);
+  const savedGeolocation = await storedApproval(page, managedOrigin, 'geolocation');
+  expect(savedGeolocation.token).toMatch(uuidPattern);
+  expect(savedGeolocation.grant).toBe('allow');
+  expect(await storedApproval(page, managedOrigin, 'notifications')).toEqual({ token: null, grant: null });
+  expect(await storedApproval(page, otherManagedOrigin, 'geolocation')).toEqual({ token: null, grant: null });
+
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await expect(consent).toBeHidden();
+  await expect.poll(async () => (await providerState(page)).geolocationGets).toBe(3);
+  await preview.getByRole('button', { name: 'Navigate preview' }).click();
+  await expect(preview.locator('#path')).toHaveText('/third');
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await expect(consent).toBeHidden();
+  await expect.poll(async () => (await providerState(page)).geolocationGets).toBe(4);
+
+  await preview.getByRole('button', { name: 'Watch location' }).click();
+  await expect.poll(async () => (await providerState(page)).geolocationWatches).toBe(1);
+  const clearCount = (await providerState(page)).geolocationClears.length;
+  await browser.getByRole('button', { name: 'Close browser' }).click();
+  await expect.poll(async () => (await providerState(page)).geolocationClears.length).toBe(clearCount + 1);
+  await reopenBrowser(page);
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await expect(page.getByRole('dialog', { name: 'Allow location?' })).toBeHidden();
+  await expect.poll(async () => (await providerState(page)).geolocationGets).toBe(5);
+
+  await page.reload();
+  await seedPaneSize(page, 'agent-permissions', 80, 24);
+  await reopenBrowser(page);
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await expect(page.getByRole('dialog', { name: 'Allow location?' })).toBeHidden();
+  await expect.poll(async () => (await providerState(page)).geolocationGets).toBe(1);
+
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(page.getByRole('dialog', { name: 'Allow notifications?' })).toBeVisible();
+  expect((await providerState(page)).notificationRequests).toEqual([]);
+  await decide(page, 'Allow notifications?', 'deny');
+
+  const otherPage = await context.newPage();
+  await setupDashboard(otherPage, { bridge, previewOrigin: otherManagedOrigin });
+  await openBrowser(otherPage);
+  const otherBrowser = otherPage.getByRole('dialog', { name: 'Browser' });
+  await otherBrowser.getByRole('button', { name: 'Go to project home' }).click();
+  await expect(otherBrowser.getByRole('textbox', { name: 'Browser address' })).toHaveValue(`${otherManagedOrigin}/`);
+  const otherPreview = otherPage.frameLocator('iframe[title="Project browser"]');
+  await otherPreview.getByRole('button', { name: 'Get location' }).click();
+  await expect(otherPage.getByRole('dialog', { name: 'Allow location?' })).toContainText(otherManagedOrigin);
+  expect((await providerState(otherPage)).geolocationGets).toBe(0);
+  await otherPage.close();
+});
+
+// clear saved approval and stop resources before a confirmed reload
+test('reset preview permissions clears saved approval and revokes active resources', async ({ context, page }) => {
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await decide(page, 'Allow location?', 'allow always');
+  await expect(preview.locator('#get-result')).toHaveText('ok:47.6062,-122.3321:12');
+  const savedApproval = await localStorageSnapshot(page);
+  const savedGeolocation = await storedApproval(page, managedOrigin, 'geolocation');
+  expect(savedGeolocation.token).toMatch(uuidPattern);
+  expect(savedGeolocation.grant).toBe('allow');
+  await preview.getByRole('button', { name: 'Watch location' }).click();
+  await expect(preview.locator('#watch-result')).toContainText('47.6062,-122.3321');
+  const clearCount = (await providerState(page)).geolocationClears.length;
+
+  await resetPreviewPermissions(page, true);
+  await expect.poll(async () => (await providerState(page)).geolocationClears.length).toBe(clearCount + 1);
+  await expect(preview.locator('#get-result')).toHaveText('idle');
+  const resetStorage = await localStorageSnapshot(page);
+  expect(resetStorage).not.toEqual(savedApproval);
+  const resetGeolocation = await storedApproval(page, managedOrigin, 'geolocation');
+  expect(resetGeolocation.token).toMatch(uuidPattern);
+  expect(resetGeolocation.token).not.toBe(savedGeolocation.token);
+  expect(resetGeolocation.grant).toBeNull();
+  expect(resetStorage[`${storedApprovalKey(managedOrigin, 'geolocation')}:${savedGeolocation.token}`]).toBeUndefined();
+
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await expect(page.getByRole('dialog', { name: 'Allow location?' })).toBeVisible();
+  expect((await providerState(page)).geolocationGets).toBe(1);
+});
+
+// preserve approval and live preview state when reset is cancelled
+test('cancels reset before clearing approval or reloading the preview', async ({ context, page }) => {
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await decide(page, 'Allow location?', 'allow always');
+  await expect(preview.locator('#get-result')).toHaveText(/^ok:/u);
+  await preview.getByRole('button', { name: 'Watch location' }).click();
+  await expect(preview.locator('#watch-result')).toContainText('47.6062,-122.3321');
+  const savedApproval = await storedApproval(page, managedOrigin, 'geolocation');
+  expect(savedApproval.token).toMatch(uuidPattern);
+  expect(savedApproval.grant).toBe('allow');
+  const clearCount = (await providerState(page)).geolocationClears.length;
+  const confirmation = await resetPreviewPermissions(page, false);
+  await expect(preview.getByRole('button', { name: 'Get location' })).toBeVisible();
+
+  expect.soft(confirmation).toMatch(/reset.+permission/iu);
+  expect.soft(confirmation).toMatch(/reload|unsaved|lose/iu);
+  expect.soft(await storedApproval(page, managedOrigin, 'geolocation')).toEqual(savedApproval);
+  expect.soft((await providerState(page)).geolocationClears).toHaveLength(clearCount);
+  await expect.soft(preview.locator('#watch-result')).toContainText('47.6062,-122.3321');
+});
+
+// require native permission before remembering notification approval
+test('saves notification approval only after native permission is granted', async ({ context, page }) => {
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  const consent = page.getByRole('dialog', { name: 'Allow notifications?' });
+  await page.evaluate(() => {
+    const state = (window as typeof window & { __permissionProviderState: ProviderState }).__permissionProviderState;
+    // emulate dismissing the native permission surface
+    Notification.requestPermission = async () => { state.notificationRequests.push({ active: navigator.userActivation.isActive }); return 'default'; };
+  });
+
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  const beforeDefault = await localStorageSnapshot(page);
+  await decide(page, 'Allow notifications?', 'allow always');
+  await expect(preview.locator('#permission-result')).toHaveText('default');
+  expect(await localStorageSnapshot(page)).not.toEqual(beforeDefault);
+  const defaultApproval = await storedApproval(page, managedOrigin, 'notifications');
+  expect(defaultApproval.token).toMatch(uuidPattern);
+  expect(defaultApproval.grant).toBeNull();
+  expect((await providerState(page)).notificationRequests).toEqual([{ active: true }]);
+
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(consent).toBeVisible();
+  expect((await providerState(page)).notificationRequests).toHaveLength(1);
+  await page.evaluate(() => {
+    const state = (window as typeof window & { __permissionProviderState: ProviderState }).__permissionProviderState;
+    // grant only from the next explicit RAC click
+    Notification.requestPermission = async () => { state.notificationRequests.push({ active: navigator.userActivation.isActive }); (Notification as unknown as { permission: NotificationPermission }).permission = 'granted'; return 'granted'; };
+  });
+  await decide(page, 'Allow notifications?', 'allow always');
+  await expect(preview.locator('#permission-result')).toHaveText('granted');
+  expect((await providerState(page)).notificationRequests).toEqual([{ active: true }, { active: true }]);
+  const savedApproval = await localStorageSnapshot(page);
+  expect(savedApproval).not.toEqual(beforeDefault);
+  const savedNotification = await storedApproval(page, managedOrigin, 'notifications');
+  expect(savedNotification.token).toMatch(uuidPattern);
+  expect(savedNotification.grant).toBe('allow');
+
+  await preview.getByRole('button', { name: 'Navigate preview' }).click();
+  await expect(preview.locator('#path')).toHaveText('/next');
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(preview.locator('#permission-result')).toHaveText('granted');
+  await expect(consent).toBeHidden();
+  expect((await providerState(page)).notificationRequests).toHaveLength(2);
+
+  await page.evaluate(() => { (Notification as unknown as { permission: NotificationPermission }).permission = 'denied'; });
+  await preview.getByRole('button', { name: 'Navigate preview' }).click();
+  await expect(preview.locator('#path')).toHaveText('/third');
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect.poll(async () => await consent.isVisible() || /^(?:denied|error:)/u.test(await preview.locator('#permission-result').textContent() ?? '')).toBe(true);
+  expect((await providerState(page)).notificationRequests).toHaveLength(2);
+
+  await preview.getByRole('button', { name: 'Navigate preview' }).click();
+  await expect(preview.locator('#path')).toHaveText('/next');
+  await page.evaluate(() => { (Notification as unknown as { permission: NotificationPermission }).permission = 'default'; });
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(consent).toBeVisible();
+  expect((await providerState(page)).notificationRequests).toHaveLength(2);
+  await decide(page, 'Allow notifications?', 'Allow once');
+  await expect(preview.locator('#permission-result')).toHaveText('granted');
+  expect((await providerState(page)).notificationRequests).toHaveLength(3);
+  const onceNotification = await storedApproval(page, managedOrigin, 'notifications');
+  expect(onceNotification.token).toMatch(uuidPattern);
+  expect(onceNotification.token).not.toBe(savedNotification.token);
+  expect(onceNotification.grant).toBeNull();
+  expect((await localStorageSnapshot(page))[`${storedApprovalKey(managedOrigin, 'notifications')}:${savedNotification.token}`]).toBeUndefined();
+
+  await preview.getByRole('button', { name: 'Navigate preview' }).click();
+  await expect(preview.locator('#path')).toHaveText('/third');
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(consent).toBeVisible();
+  expect((await providerState(page)).notificationRequests).toHaveLength(3);
+});
+
+// discard native permission answers owned by an abandoned document
+test('does not save a late native notification grant after preview navigation', async ({ context, page }) => {
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  await page.evaluate(() => {
+    const state = (window as typeof window & { __permissionProviderState: ProviderState }).__permissionProviderState;
+    const scope = window as typeof window & { __nativeNotificationPermissionSettled: boolean };
+    let release!: (permission: NotificationPermission) => void;
+    scope.__nativeNotificationPermissionSettled = false;
+    Object.defineProperty(window, '__releaseNativeNotificationPermission', { configurable: true, value: (permission: NotificationPermission) => {
+      release(permission);
+      // mark the next task after native completion microtasks settle
+      window.setTimeout(() => { scope.__nativeNotificationPermissionSettled = true; }, 0);
+    } });
+    // defer the native result beyond the requesting preview document
+    Notification.requestPermission = () => {
+      state.notificationRequests.push({ active: navigator.userActivation.isActive });
+      return new Promise<NotificationPermission>(resolve => { release = resolve; });
+    };
+  });
+
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await decide(page, 'Allow notifications?', 'allow always');
+  expect((await providerState(page)).notificationRequests).toEqual([{ active: true }]);
+  await preview.getByRole('button', { name: 'Navigate preview' }).click();
+  await expect(preview.locator('#path')).toHaveText('/next');
+  await page.evaluate(() => (window as typeof window & { __releaseNativeNotificationPermission: (permission: NotificationPermission) => void }).__releaseNativeNotificationPermission('granted'));
+  // observe the abandoned native settlement before reading storage
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __nativeNotificationPermissionSettled: boolean }).__nativeNotificationPermissionSettled)).toBe(true);
+
+  const abandonedApproval = await storedApproval(page, managedOrigin, 'notifications');
+  expect(abandonedApproval.token).toMatch(uuidPattern);
+  expect(abandonedApproval.grant).toBeNull();
+  await expect(preview.locator('#permission-result')).toHaveText('idle');
+  await expect.poll(async () => await preview.locator('body').evaluate(() => Notification.permission)).toBe('default');
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(page.getByRole('dialog', { name: 'Allow notifications?' })).toBeVisible();
+  expect((await providerState(page)).notificationRequests).toHaveLength(1);
+});
+
+// preserve newer once and deny choices against older native answers
+test('keeps newer notification choices ahead of an older native Always result', async ({ context, page }) => {
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  const consent = page.getByRole('dialog', { name: 'Allow notifications?' });
+  await page.evaluate(() => {
+    const state = (window as typeof window & { __permissionProviderState: ProviderState }).__permissionProviderState;
+    const releases: Array<(permission: NotificationPermission) => void> = [];
+    const settlements: boolean[] = [];
+    Object.defineProperty(window, '__orderedNotificationSettlements', { configurable: true, value: settlements });
+    Object.defineProperty(window, '__releaseOrderedNotificationPermission', { configurable: true, value: (index: number, permission: NotificationPermission) => {
+      (Notification as unknown as { permission: NotificationPermission }).permission = permission;
+      releases[index]?.(permission);
+      // mark the next task after the selected native completion settles
+      window.setTimeout(() => { settlements[index] = true; }, 0);
+    } });
+    // retain each native answer until a newer RAC choice is complete
+    Notification.requestPermission = () => {
+      state.notificationRequests.push({ active: navigator.userActivation.isActive });
+      settlements.push(false);
+      return new Promise<NotificationPermission>(resolve => { releases.push(resolve); });
+    };
+  });
+
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await decide(page, 'Allow notifications?', 'allow always');
+  const olderAlways = await storedApproval(page, managedOrigin, 'notifications');
+  expect(olderAlways.token).toMatch(uuidPattern);
+  expect(olderAlways.grant).toBeNull();
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await decide(page, 'Allow notifications?', 'Allow once');
+  expect((await providerState(page)).notificationRequests).toHaveLength(2);
+  await page.evaluate(() => (window as typeof window & { __releaseOrderedNotificationPermission: (index: number, permission: NotificationPermission) => void }).__releaseOrderedNotificationPermission(1, 'granted'));
+  await expect(preview.locator('#permission-result')).toHaveText('granted');
+  const newerOnce = await storedApproval(page, managedOrigin, 'notifications');
+  expect(newerOnce.token).toMatch(uuidPattern);
+  expect(newerOnce.token).not.toBe(olderAlways.token);
+  expect(newerOnce.grant).toBeNull();
+  await page.evaluate(() => (window as typeof window & { __releaseOrderedNotificationPermission: (index: number, permission: NotificationPermission) => void }).__releaseOrderedNotificationPermission(0, 'granted'));
+  // observe the older native settlement before reading its removed record
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __orderedNotificationSettlements: boolean[] }).__orderedNotificationSettlements[0])).toBe(true);
+  expect(await storedApproval(page, managedOrigin, 'notifications')).toEqual(newerOnce);
+  expect((await localStorageSnapshot(page))[`${storedApprovalKey(managedOrigin, 'notifications')}:${olderAlways.token}`]).toBeUndefined();
+
+  await preview.getByRole('button', { name: 'Navigate preview' }).click();
+  await expect(preview.locator('#path')).toHaveText('/next');
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(consent).toBeVisible();
+  expect((await providerState(page)).notificationRequests).toHaveLength(2);
+  await page.evaluate(() => { (Notification as unknown as { permission: NotificationPermission }).permission = 'default'; });
+  await decide(page, 'Allow notifications?', 'allow always');
+  const olderDeniedAlways = await storedApproval(page, managedOrigin, 'notifications');
+  expect(olderDeniedAlways.token).toMatch(uuidPattern);
+  expect(olderDeniedAlways.grant).toBeNull();
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await decide(page, 'Allow notifications?', 'deny');
+  await expect(preview.locator('#permission-result')).toHaveText('denied');
+  expect((await providerState(page)).notificationRequests).toHaveLength(3);
+  const newerDeny = await storedApproval(page, managedOrigin, 'notifications');
+  expect(newerDeny.token).toMatch(uuidPattern);
+  expect(newerDeny.token).not.toBe(olderDeniedAlways.token);
+  expect(newerDeny.grant).toBeNull();
+  await page.evaluate(() => (window as typeof window & { __releaseOrderedNotificationPermission: (index: number, permission: NotificationPermission) => void }).__releaseOrderedNotificationPermission(2, 'granted'));
+  // observe the denied older settlement before reading its removed record
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __orderedNotificationSettlements: boolean[] }).__orderedNotificationSettlements[2])).toBe(true);
+  expect(await storedApproval(page, managedOrigin, 'notifications')).toEqual(newerDeny);
+  expect((await localStorageSnapshot(page))[`${storedApprovalKey(managedOrigin, 'notifications')}:${olderDeniedAlways.token}`]).toBeUndefined();
+  await expect(preview.locator('#permission-result')).toHaveText('denied');
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(consent).toBeHidden();
+  await expect(preview.locator('#permission-result')).toHaveText('denied');
+  expect((await providerState(page)).notificationRequests).toHaveLength(3);
+});
+
+// keep a shared reset authoritative across pending native approval
+test('does not save an older native Always result after reset in another pane', async ({ context, page }) => {
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  await page.evaluate(() => {
+    const state = (window as typeof window & { __permissionProviderState: ProviderState }).__permissionProviderState;
+    let release!: (permission: NotificationPermission) => void;
+    Object.defineProperty(window, '__releaseCrossPaneNotificationPermission', { configurable: true, value: (permission: NotificationPermission) => release(permission) });
+    // defer the old pane until another pane resets shared approval
+    Notification.requestPermission = () => {
+      state.notificationRequests.push({ active: navigator.userActivation.isActive });
+      return new Promise<NotificationPermission>(resolve => { release = resolve; });
+    };
+  });
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await decide(page, 'Allow notifications?', 'allow always');
+  const pendingApproval = await storedApproval(page, managedOrigin, 'notifications');
+  expect(pendingApproval.token).toMatch(uuidPattern);
+  expect(pendingApproval.grant).toBeNull();
+
+  const resetPage = await context.newPage();
+  await setupDashboard(resetPage, { bridge });
+  await openBrowser(resetPage);
+  await resetPreviewPermissions(resetPage, true);
+  await expect(resetPage.frameLocator('iframe[title="Project browser"]').getByRole('button', { name: 'Get location' })).toBeVisible();
+  await page.evaluate(() => (window as typeof window & { __releaseCrossPaneNotificationPermission: (permission: NotificationPermission) => void }).__releaseCrossPaneNotificationPermission('granted'));
+  await expect(preview.locator('#permission-result')).toHaveText('default');
+  expect((await providerState(page)).notifications).toEqual([]);
+
+  const resetApproval = await storedApproval(page, managedOrigin, 'notifications');
+  expect(resetApproval.token).toMatch(uuidPattern);
+  expect(resetApproval.token).not.toBe(pendingApproval.token);
+  expect(resetApproval.grant).toBeNull();
+  expect((await localStorageSnapshot(page))[`${storedApprovalKey(managedOrigin, 'notifications')}:${pendingApproval.token}`]).toBeUndefined();
+  const resetPreview = resetPage.frameLocator('iframe[title="Project browser"]');
+  await resetPreview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(resetPage.getByRole('dialog', { name: 'Allow notifications?' })).toBeVisible();
+  expect((await providerState(resetPage)).notificationRequests).toHaveLength(0);
+  await resetPage.close();
+});
+
+// cover remaining native grants invalidated by another pane's reset
+const deferredCrossPanePermissionCases = [
+  { label: 'Once', decision: 'Allow once', failStorage: false },
+  { label: 'tokenless Always fallback', decision: 'allow always', failStorage: true }
+] as const;
+
+// verify every non-durable pending choice observes the shared reset tombstone
+for (const { label, decision, failStorage } of deferredCrossPanePermissionCases) {
+  // settle one stale native permission request conservatively
+  test(`settles a stale native ${label} grant as default after reset in another pane`, async ({ context, page }) => {
+    await installParentProviders(context);
+    const bridge = await projectBrowserBridge();
+    await setupDashboard(page, { bridge });
+    await openBrowser(page);
+    const preview = page.frameLocator('iframe[title="Project browser"]');
+    const consent = page.getByRole('dialog', { name: 'Allow notifications?' });
+
+    // defer the native result beyond the cross-pane reset
+    await page.evaluate(() => {
+      const state = (window as typeof window & { __permissionProviderState: ProviderState }).__permissionProviderState;
+      let release!: (permission: NotificationPermission) => void;
+      Object.defineProperty(window, '__releaseDeferredCrossPanePermission', { configurable: true, value: (permission: NotificationPermission) => release(permission) });
+      // retain the pending native grant for explicit release
+      Notification.requestPermission = () => {
+        state.notificationRequests.push({ active: navigator.userActivation.isActive });
+        return new Promise<NotificationPermission>(resolve => { release = resolve; });
+      };
+    });
+    // force an empty verified fallback without affecting the reset page
+    if (failStorage) await page.evaluate(() => {
+      const scope = window as typeof window & { __deferredPermissionStorageSetItem: typeof Storage.prototype.setItem };
+      scope.__deferredPermissionStorageSetItem = Storage.prototype.setItem;
+      // intercept storage while retaining unrelated receivers
+      Storage.prototype.setItem = function (key, value) {
+        // reject only RAC local persistence
+        if (this === localStorage) throw new DOMException('storage full', 'QuotaExceededError');
+        return scope.__deferredPermissionStorageSetItem.call(this, key, value);
+      };
+    });
+
+    await preview.getByRole('button', { name: 'Request notifications' }).click();
+    await expect(consent).toBeVisible();
+    await decide(page, 'Allow notifications?', decision);
+    expect((await providerState(page)).notificationRequests).toHaveLength(1);
+    // restore the original page after the tokenless fallback is captured
+    if (failStorage) await page.evaluate(() => {
+      const scope = window as typeof window & { __deferredPermissionStorageSetItem: typeof Storage.prototype.setItem };
+      Storage.prototype.setItem = scope.__deferredPermissionStorageSetItem;
+    });
+    const pendingApproval = await storedApproval(page, managedOrigin, 'notifications');
+    expect(pendingApproval.grant).toBeNull();
+    // distinguish the verified-empty fallback from the ordinary Once tombstone
+    if (failStorage) expect(pendingApproval.token).toBeNull();
+    else expect(pendingApproval.token).toMatch(uuidPattern);
+
+    const resetPage = await context.newPage();
+    await setupDashboard(resetPage, { bridge });
+    await openBrowser(resetPage);
+    await resetPreviewPermissions(resetPage, true);
+    await expect(resetPage.frameLocator('iframe[title="Project browser"]').getByRole('button', { name: 'Get location' })).toBeVisible();
+    const resetApproval = await storedApproval(page, managedOrigin, 'notifications');
+    expect(resetApproval.token).toMatch(uuidPattern);
+    expect(resetApproval.token).not.toBe(pendingApproval.token);
+    expect(resetApproval.grant).toBeNull();
+
+    // release only after the replacement tombstone is observable
+    await page.evaluate(() => (window as typeof window & { __releaseDeferredCrossPanePermission: (permission: NotificationPermission) => void }).__releaseDeferredCrossPanePermission('granted'));
+    await expect(preview.locator('#permission-result')).toHaveText('default');
+    expect((await providerState(page)).notifications).toEqual([]);
+    expect(await storedApproval(page, managedOrigin, 'notifications')).toEqual(resetApproval);
+    await resetPage.close();
+  });
+}
+
+// reject native completion superseded inside its durable grant write
+test('settles default when durable notification save is superseded during its write', async ({ context, page }) => {
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  const consent = page.getByRole('dialog', { name: 'Allow notifications?' });
+
+  // defer the native answer until the durable write interleaving is installed
+  await page.evaluate(() => {
+    const state = (window as typeof window & { __permissionProviderState: ProviderState }).__permissionProviderState;
+    let release!: (permission: NotificationPermission) => void;
+    Object.defineProperty(window, '__releaseInterleavedNotificationPermission', { configurable: true, value: (permission: NotificationPermission) => release(permission) });
+    // retain the native result for explicit release
+    Notification.requestPermission = () => {
+      state.notificationRequests.push({ active: navigator.userActivation.isActive });
+      return new Promise<NotificationPermission>(resolve => { release = resolve; });
+    };
+  });
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(consent).toBeVisible();
+  await decide(page, 'Allow notifications?', 'allow always');
+  expect((await providerState(page)).notificationRequests).toHaveLength(1);
+  const pendingApproval = await storedApproval(page, managedOrigin, 'notifications');
+  expect(pendingApproval.token).toMatch(uuidPattern);
+  expect(pendingApproval.grant).toBeNull();
+
+  const baseKey = storedApprovalKey(managedOrigin, 'notifications');
+  const pendingGrantKey = `${baseKey}:${pendingApproval.token}`;
+  // replace the pointer synchronously inside the token-scoped grant write
+  await page.evaluate(({ pointer, grant }) => {
+    const scope = window as typeof window & { __permissionSaveSetItem: typeof Storage.prototype.setItem; __permissionSaveInterleavings: number };
+    scope.__permissionSaveSetItem = Storage.prototype.setItem;
+    scope.__permissionSaveInterleavings = 0;
+    // interleave one newer tombstone before the old grant lands
+    Storage.prototype.setItem = function (key, value) {
+      // rotate only the pending choice's grant write
+      if (this === localStorage && key === grant) {
+        scope.__permissionSaveInterleavings += 1;
+        scope.__permissionSaveSetItem.call(this, pointer, crypto.randomUUID());
+      }
+      return scope.__permissionSaveSetItem.call(this, key, value);
+    };
+  }, { pointer: baseKey, grant: pendingGrantKey });
+
+  // release after the storage boundary can supersede the cached choice
+  await page.evaluate(() => (window as typeof window & { __releaseInterleavedNotificationPermission: (permission: NotificationPermission) => void }).__releaseInterleavedNotificationPermission('granted'));
+  await expect.soft(preview.locator('#permission-result')).toHaveText('default');
+  await expect.soft(page.getByRole('alert')).toContainText('changed or could not be verified');
+  expect((await providerState(page)).notifications).toEqual([]);
+  expect(await page.evaluate(() => (window as typeof window & { __permissionSaveInterleavings: number }).__permissionSaveInterleavings)).toBe(1);
+  const replacementApproval = await storedApproval(page, managedOrigin, 'notifications');
+  expect(replacementApproval.token).toMatch(uuidPattern);
+  expect(replacementApproval.token).not.toBe(pendingApproval.token);
+  expect(replacementApproval.grant).toBeNull();
+  expect((await localStorageSnapshot(page))[pendingGrantKey]).toBeUndefined();
+  // restore the native storage setter after settlement
+  await page.evaluate(() => {
+    const scope = window as typeof window & { __permissionSaveSetItem: typeof Storage.prototype.setItem };
+    Storage.prototype.setItem = scope.__permissionSaveSetItem;
+  });
+});
+
+// keep document denial ahead of older native failure
+test('retains an explicit same-document denial after an older native rejection', async ({ context, page }) => {
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  const consent = page.getByRole('dialog', { name: 'Allow notifications?' });
+  // defer one native rejection beyond a newer explicit denial
+  await page.evaluate(() => {
+    const state = (window as typeof window & { __permissionProviderState: ProviderState }).__permissionProviderState;
+    const scope = window as typeof window & { __olderNotificationRejectionSettled: boolean };
+    let reject!: (reason?: unknown) => void;
+    scope.__olderNotificationRejectionSettled = false;
+    Object.defineProperty(window, '__rejectOlderNotificationPermission', { configurable: true, value: () => {
+      reject(new DOMException('native prompt failed', 'NotAllowedError'));
+      // mark the next task after every rejection microtask settles
+      window.setTimeout(() => { scope.__olderNotificationRejectionSettled = true; }, 0);
+    } });
+    // retain the native rejection for explicit release
+    Notification.requestPermission = () => {
+      state.notificationRequests.push({ active: navigator.userActivation.isActive });
+      return new Promise<NotificationPermission>((_resolve, rejectPermission) => { reject = rejectPermission; });
+    };
+  });
+
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await decide(page, 'Allow notifications?', 'Allow once');
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(consent).toBeVisible();
+  await decide(page, 'Allow notifications?', 'deny');
+  await expect(preview.locator('#permission-result')).toHaveText('denied');
+  expect((await providerState(page)).notificationRequests).toHaveLength(1);
+
+  // reject the older prompt only after denial is established
+  await page.evaluate(() => (window as typeof window & { __rejectOlderNotificationPermission: () => void }).__rejectOlderNotificationPermission());
+  // observe the provider settlement instead of sleeping
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __olderNotificationRejectionSettled: boolean }).__olderNotificationRejectionSettled)).toBe(true);
+  await expect(preview.locator('#permission-result')).toHaveText('denied');
+  const deniedApproval = await storedApproval(page, managedOrigin, 'notifications');
+  expect(deniedApproval.token).toMatch(uuidPattern);
+  expect(deniedApproval.grant).toBeNull();
+  expect((await providerState(page)).notifications).toEqual([]);
+});
+
+// reject notification display after another pane supersedes consent
+test('does not display a notification after reset supersedes its pending native grant', async ({ context, page }) => {
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  const consent = page.getByRole('dialog', { name: 'Allow notifications?' });
+
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await decide(page, 'Allow notifications?', 'Allow once');
+  await expect(preview.locator('#permission-result')).toHaveText('granted');
+  expect((await providerState(page)).notificationRequests).toHaveLength(1);
+
+  // defer the display's native grant until another pane resets approval
+  await page.evaluate(() => {
+    const state = (window as typeof window & { __permissionProviderState: ProviderState }).__permissionProviderState;
+    let release!: (permission: NotificationPermission) => void;
+    Object.defineProperty(window, '__releaseCrossPaneNotificationShowPermission', { configurable: true, value: (permission: NotificationPermission) => release(permission) });
+    // retain the second native result across the reset
+    Notification.requestPermission = () => {
+      state.notificationRequests.push({ active: navigator.userActivation.isActive });
+      return new Promise<NotificationPermission>(resolve => { release = resolve; });
+    };
+  });
+  await preview.getByRole('button', { name: 'Show notification' }).click();
+  await expect(consent).toBeVisible();
+  await decide(page, 'Allow notifications?', 'Allow once');
+  expect((await providerState(page)).notificationRequests).toHaveLength(2);
+  const pendingDisplayApproval = await storedApproval(page, managedOrigin, 'notifications');
+  expect(pendingDisplayApproval.token).toMatch(uuidPattern);
+  expect(pendingDisplayApproval.grant).toBeNull();
+
+  const resetPage = await context.newPage();
+  await setupDashboard(resetPage, { bridge });
+  await openBrowser(resetPage);
+  await resetPreviewPermissions(resetPage, true);
+  await expect(resetPage.frameLocator('iframe[title="Project browser"]').getByRole('button', { name: 'Get location' })).toBeVisible();
+  const resetApproval = await storedApproval(page, managedOrigin, 'notifications');
+  expect(resetApproval.token).toMatch(uuidPattern);
+  expect(resetApproval.token).not.toBe(pendingDisplayApproval.token);
+  expect(resetApproval.grant).toBeNull();
+
+  // release the stale native grant after the reset tombstone is visible
+  await page.evaluate(() => (window as typeof window & { __releaseCrossPaneNotificationShowPermission: (permission: NotificationPermission) => void }).__releaseCrossPaneNotificationShowPermission('granted'));
+  await expect.soft(preview.locator('#notification-result')).toHaveText('created:error');
+  expect.soft((await providerState(page)).notifications).toEqual([]);
+  expect(await storedApproval(page, managedOrigin, 'notifications')).toEqual(resetApproval);
+  expect((await localStorageSnapshot(page))[`${storedApprovalKey(managedOrigin, 'notifications')}:${pendingDisplayApproval.token}`]).toBeUndefined();
+
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(consent).toBeVisible();
+  expect((await providerState(page)).notificationRequests).toHaveLength(2);
+  await resetPage.close();
+});
+
+// limit verified-empty storage fallback to the current request
+test('falls back to one request when persistent approval cannot be stored', async ({ context, page }) => {
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  const consent = page.getByRole('dialog', { name: 'Allow location?' });
+
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await expect(consent).toBeVisible();
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  const beforeApproval = await localStorageSnapshot(page);
+  await page.evaluate(() => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      // reject only RAC local persistence
+      if (this === localStorage) throw new DOMException('storage full', 'QuotaExceededError');
+      return setItem.call(this, key, value);
+    };
+  });
+  await consent.getByRole('button', { name: 'allow always', exact: true }).click();
+  await expect(preview.locator('#get-result')).toHaveText('ok:47.6062,-122.3321:12');
+  await expect(page.getByRole('alert')).toContainText('Approval could not be saved');
+  expect(await localStorageSnapshot(page)).toEqual(beforeApproval);
+  expect(await storedApproval(page, managedOrigin, 'geolocation')).toEqual({ token: null, grant: null });
+  await expect(consent).toBeVisible();
+  await page.screenshot({ path: '/tmp/remoteagents-browser-permission-storage-error-desktop.png', fullPage: true });
+  expect((await providerState(page)).geolocationGets).toBe(1);
+});
+
+// define recovered results without branching inside each scenario
+const transientStorageRecoveryCases = [
+  { decision: 'Allow once', expectedGets: 2, expectedResult: /^ok:/u },
+  { decision: 'deny', expectedGets: 1, expectedResult: /^error:1:/u }
+] as const;
+
+// cover both explicit nonpersistent recovery decisions
+for (const { decision, expectedGets, expectedResult } of transientStorageRecoveryCases) {
+  // verify one successful decision clears a prior transient warning
+  test(`clears a transient storage warning after ${decision}`, async ({ context, page }) => {
+    await installParentProviders(context);
+    const bridge = await projectBrowserBridge();
+    await setupDashboard(page, { bridge });
+    await openBrowser(page);
+    const preview = page.frameLocator('iframe[title="Project browser"]');
+    const consent = page.getByRole('dialog', { name: 'Allow location?' });
+
+    await preview.getByRole('button', { name: 'Get location' }).click();
+    await expect(consent).toBeVisible();
+    await preview.getByRole('button', { name: 'Get location' }).click();
+    // retain the native setter while forcing one persistent write failure
+    await page.evaluate(() => {
+      const scope = window as typeof window & { __permissionStorageSetItem: typeof Storage.prototype.setItem };
+      scope.__permissionStorageSetItem = Storage.prototype.setItem;
+      // intercept storage while retaining unrelated receivers
+      Storage.prototype.setItem = function (key, value) {
+        // reject only RAC local persistence
+        if (this === localStorage) throw new DOMException('storage full', 'QuotaExceededError');
+        return scope.__permissionStorageSetItem.call(this, key, value);
+      };
+    });
+    await consent.getByRole('button', { name: 'allow always', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('Approval could not be saved');
+    await expect(preview.locator('#get-result')).toHaveText(/^ok:/u);
+    expect((await providerState(page)).geolocationGets).toBe(1);
+
+    // restore successful storage access before the recovery decision
+    await page.evaluate(() => {
+      const scope = window as typeof window & { __permissionStorageSetItem: typeof Storage.prototype.setItem };
+      Storage.prototype.setItem = scope.__permissionStorageSetItem;
+    });
+    await decide(page, 'Allow location?', decision);
+
+    await expect(preview.locator('#get-result')).toHaveText(expectedResult);
+    expect((await providerState(page)).geolocationGets).toBe(expectedGets);
+    const recoveryApproval = await storedApproval(page, managedOrigin, 'geolocation');
+    expect(recoveryApproval.token).toMatch(uuidPattern);
+    expect(recoveryApproval.grant).toBeNull();
+    await expect(page.getByRole('alert')).toBeHidden();
+  });
+}
+
+// retain sibling requests for fresh consent after persistence failure
+test('requeues a notification batch when durable approval cannot be stored', async ({ context, page }) => {
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  const consent = page.getByRole('dialog', { name: 'Allow notifications?' });
+
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await expect(consent).toBeVisible();
+  await preview.getByRole('button', { name: 'Request notifications' }).click();
+  await page.evaluate(() => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      // reject only RAC local persistence
+      if (this === localStorage) throw new DOMException('storage full', 'QuotaExceededError');
+      return setItem.call(this, key, value);
+    };
+  });
+  await consent.getByRole('button', { name: 'allow always', exact: true }).click();
+
+  await expect(page.getByRole('alert')).toContainText('Approval could not be saved');
+  await expect(consent).toBeVisible();
+  expect((await providerState(page)).notificationRequests).toEqual([{ active: true }]);
+  expect(await storedApproval(page, managedOrigin, 'notifications')).toEqual({ token: null, grant: null });
+});
+
+// block native work when an older approval cannot be removed
+test('blocks Always when an older captured grant record cannot be cleared', async ({ context, page }) => {
+  const previousToken = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const baseKey = storedApprovalKey(managedOrigin, 'geolocation');
+  const previousGrantKey = `${baseKey}:${previousToken}`;
+  await installParentProviders(context);
+  const bridge = await projectBrowserBridge();
+  await setupDashboard(page, { bridge });
+  await openBrowser(page);
+  const preview = page.frameLocator('iframe[title="Project browser"]');
+  const consent = page.getByRole('dialog', { name: 'Allow location?' });
+
+  await preview.getByRole('button', { name: 'Get location' }).click();
+  await expect(consent).toBeVisible();
+  await page.evaluate(({ pointer, token, grant }) => {
+    localStorage.setItem(pointer, token);
+    localStorage.setItem(grant, 'allow');
+    const removeItem = Storage.prototype.removeItem;
+    Storage.prototype.removeItem = function (key) {
+      // retain only the captured prior grant record
+      if (this === localStorage && key === grant) return;
+      removeItem.call(this, key);
+    };
+  }, { pointer: baseKey, token: previousToken, grant: previousGrantKey });
+  await consent.getByRole('button', { name: 'allow always', exact: true }).click();
+
+  await expect(page.getByRole('alert')).toContainText('Approval could not be saved or cleared');
+  await expect(consent).toBeVisible();
+  expect((await providerState(page)).geolocationGets).toBe(0);
+  const blockedApproval = await storedApproval(page, managedOrigin, 'geolocation');
+  expect(blockedApproval.token).toMatch(uuidPattern);
+  expect(blockedApproval.token).not.toBe(previousToken);
+  expect(blockedApproval.grant).toBeNull();
+  expect((await localStorageSnapshot(page))[previousGrantKey]).toBe('allow');
 });
 
 test('restores managed permission forwarding after external navigation returns Home', async ({ context, page }) => {
@@ -534,7 +1360,7 @@ test('releases denied native watches so later preview watches keep their capacit
   });
 
   await preview.getByRole('button', { name: 'Watch location' }).click();
-  await decide(page, 'Allow location?', 'Allow for this preview session');
+  await decide(page, 'Allow location?', 'allow always');
   await expect(preview.locator('#watch-result')).toHaveText(/^error:1:/u);
   // exceed the eight-watch cap through sequential native denials
   for (let index = 2; index <= 9; index += 1) {
@@ -657,7 +1483,7 @@ test('bounds native location work while preserving clear through saturated repla
   const preview = page.frameLocator('iframe[title="Project browser"]');
 
   await preview.getByRole('button', { name: 'Get location' }).click();
-  await decide(page, 'Allow location?', 'Allow for this preview session');
+  await decide(page, 'Allow location?', 'allow always');
   await expect(preview.locator('#get-result')).toHaveText('ok:47.6062,-122.3321:12');
   await page.evaluate(() => {
     const callbacks: PositionCallback[] = [];
@@ -702,7 +1528,7 @@ test('bounds native notification prompts while preserving close through saturate
   const requestIds = Array.from({ length: 140 }, (_, index) => protocolId('31000000', index + 1));
   const notificationRequest = (id: string) => ({ type: 'rac-browser-permission-request', clientId, id, operation: 'notification-permission' });
   await postPermissionRequests(preview, requestIds.slice(0, 16).map(notificationRequest));
-  await decide(page, 'Allow notifications?', 'Allow for this preview session');
+  await decide(page, 'Allow notifications?', 'allow always');
   expect((await providerState(page)).notificationRequests).toEqual([{ active: true }]);
 
   await postPermissionRequest(preview, notificationRequest(requestIds[16]));
@@ -758,7 +1584,7 @@ test('attributes preview notifications and preserves native click activation', a
   await page.screenshot({ path: '/tmp/remoteagents-browser-permission-consent-mobile.png', fullPage: true });
   await page.setViewportSize({ width: 1400, height: 850 });
   expect((await providerState(page)).notificationRequests).toEqual([]);
-  await decide(page, consentName, 'Allow for this preview session');
+  await decide(page, consentName, 'allow always');
   await expect(preview.locator('#permission-result')).toHaveText('granted');
   expect((await providerState(page)).notificationRequests).toEqual([{ active: true }]);
 
@@ -794,7 +1620,7 @@ test('preserves a dismissed native notification prompt as default until explicit
   expect((await providerState(page)).notificationRequests).toEqual([{ active: true }]);
 
   await preview.getByRole('button', { name: 'Request notifications' }).click();
-  await decide(page, 'Allow notifications?', 'Deny');
+  await decide(page, 'Allow notifications?', 'deny');
   await expect(preview.locator('#permission-result')).toHaveText('denied');
   await expect.poll(async () => await preview.locator('body').evaluate(() => Notification.permission)).toBe('denied');
   expect((await providerState(page)).notificationRequests).toHaveLength(1);
@@ -935,7 +1761,7 @@ test('cancels notification display while the service-worker fallback is pending'
   const preview = page.frameLocator('iframe[title="Project browser"]');
 
   await preview.getByRole('button', { name: 'Request notifications' }).click();
-  await decide(page, 'Allow notifications?', 'Allow for this preview session');
+  await decide(page, 'Allow notifications?', 'allow always');
   await expect(preview.locator('#permission-result')).toHaveText('granted');
   await preview.getByRole('button', { name: 'Show notification' }).click();
   await expect(preview.locator('#notification-result')).toHaveText('created');
@@ -955,7 +1781,7 @@ test('reconciles dismissed and replaced worker notifications beyond the live own
   const preview = page.frameLocator('iframe[title="Project browser"]');
 
   await preview.getByRole('button', { name: 'Request notifications' }).click();
-  await decide(page, 'Allow notifications?', 'Allow for this preview session');
+  await decide(page, 'Allow notifications?', 'allow always');
   await expect(preview.locator('#permission-result')).toHaveText('granted');
   const show = (index: number, tag: string) => preview.locator('body').evaluate((_, input) => new Promise<'show' | 'error'>(resolve => {
     const record = window as typeof window & { __capacityNotifications?: Notification[] };
