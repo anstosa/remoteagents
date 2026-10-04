@@ -1154,9 +1154,16 @@ test('counts untriaged Findings per step and sends kept general Findings under G
   await summaryGeneral.getByRole('group', { name: 'Suggested comment: No tests' }).getByRole('button', { name: 'Keep' }).click();
   await summaryGeneral.getByLabel('General note: No tests').fill('Cover the route with a test.');
   await expect(draft).toHaveValue(/## General\n\n### src\/route\.ts\nCover the route with a test\.$/u);
+  // a hand edit is never rebuilt behind the operator's back; Rebuild from feedback brings the built one back
+  await draft.fill('Please add the route test.');
+  await summaryGeneral.getByLabel('General note: No tests').fill('Cover the route with tests.');
+  await expect(draft).toHaveValue('Please add the route test.');
+  await dialog.getByRole('button', { name: 'Rebuild from feedback' }).click();
+  await expect(draft).toHaveValue(/## General\n\n### src\/route\.ts\nCover the route with tests\.$/u);
+  await expect(dialog.getByRole('button', { name: 'Rebuild from feedback' })).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Send change request' }).click();
   await expect.poll(() => prompts).toHaveLength(1);
-  expect(prompts[0]).toContain('## General\n\n### src/route.ts\nCover the route with a test.');
+  expect(prompts[0]).toContain('## General\n\n### src/route.ts\nCover the route with tests.');
   expect(prompts[0]).not.toMatch(/Unchecked constant|Lost value|Service naming/u);
 });
 
@@ -1236,4 +1243,26 @@ test('links a tour run waiting on the operator to its pane', async ({ page }) =>
   await loading.getByRole('button', { name: 'Open pane' }).click();
   await expect(loading).toBeHidden();
   await expect(page).toHaveURL(/#agent=agent-tour$/u);
+});
+
+test('binds a guided review started from a Review run\'s pane to the Worktree\'s own agent', async ({ page }) => {
+  const jobPaths: string[] = [];
+  const reviewer = { ...startSheetAgent, id: 'agent-review', sessionId: 'socket:$2', title: 'Review · Correctness', reviewRun: 'run_abcdefgh1234' };
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, ...claudeReviewCapabilities, agents: [reviewer, startSheetAgent], projects: [] } });
+    if (await fulfillAgentSupport(route, url.pathname)) return;
+    if (url.pathname.endsWith('/review-tour/jobs') && request.method() === 'POST') { jobPaths.push(url.pathname); return route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob('job-1') } }); }
+    if (url.pathname === '/api/review-tour/jobs/job-1') return route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob('job-1') } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  // the Review run's own pane is the one shown
+  await page.goto('/#agent=agent-review');
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await startReview(page);
+  // the read-only reviewer, which closes with its run, never becomes the review's agent
+  await expect.poll(() => jobPaths).toEqual(['/api/agents/agent-1/review-tour/jobs']);
 });

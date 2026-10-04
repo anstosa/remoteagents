@@ -6589,6 +6589,14 @@ function PlaceMenu({ agentId, worktreeId, git = false, pinned, onTogglePin, onRe
 // render the Workspace of a Place where Agents run: the Place's panels and toolbar, with the agent
 // panel showing the Agent chosen in its switcher. Only the agent panel follows the switcher; the
 // Terminals, notes, browser and code belong to the Place and stay open across a switch.
+// The Agent a guided review binds to (its start, its stored tour and where its change request is
+// sent): the shown Agent, unless that is a Review run's own, which is read-only and closes with its
+// run; then another Agent of the same Worktree, if one runs there.
+function reviewBindingAgent(agent: Agent | undefined, agents: readonly Agent[]): Agent | undefined {
+  if (agent === undefined || agent.reviewRun === undefined) return agent;
+  return agents.find(candidate => candidate.reviewRun === undefined && candidate.worktreeId !== undefined && candidate.worktreeId === agent.worktreeId);
+}
+
 function AgentPlaceCard({ agent, agents, onSelectAgent, active, tabBar, renderNotifications, cleanupControl, reviewCapability, review, onReview, onDeleted, onSelectTarget, onNavigateWorktree, onOpenWorktreeStack, onPromptFocus, onOperationFeedback, launch, pinned, onTogglePin, onRemoveWorktree, removeDisabledReason, worktreeLabel, schedulePrefill }: { agent: Agent; agents: readonly Agent[]; onSelectAgent: (agentId: string) => void; active: boolean; tabBar: ReactNode; renderNotifications: (content: ReactNode) => ReactNode; cleanupControl?: ReactNode; reviewCapability?: ReviewTourCapability; review?: ReviewButtonState; onReview: (target: ReviewTarget) => void; onDeleted: () => Promise<void>; onSelectTarget: (target: DashboardTarget) => void; onNavigateWorktree: (worktreeId: string) => void; onOpenWorktreeStack: (worktreeId: string) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; launch?: ToolbarLaunch; pinned?: boolean; onTogglePin?: () => void; onRemoveWorktree?: () => void; removeDisabledReason?: string; worktreeLabel?: string; schedulePrefill?: SchedulePrefill }) {
   // an Agent's Worktree label drives its feedback and power-menu copy; the server carries it on
   // the Worktree now, so it is resolved at the top level and passed in
@@ -6619,9 +6627,10 @@ function AgentPlaceCard({ agent, agents, onSelectAgent, active, tabBar, renderNo
   const pushPendingKey = `prompt:${agent.id}`;
   const pushPending = usePendingOperation(pushPendingKey);
   // explain review availability
+  const reviewAgent = reviewBindingAgent(agent, agents);
   const reviewUnavailable = agent.worktreeId === undefined
     ? 'Guided review requires a configured worktree'
-    : reviewTourUnavailableText(reviewCapability);
+    : reviewAgent === undefined ? 'Guided review needs an agent here that is not running a review' : reviewTourUnavailableText(reviewCapability);
   const rebaseUpstream = agent.gitUpstream?.upstream;
   const queueRebase = rebaseUpstream === undefined ? undefined : async () => {
     const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: `$rebase ${rebaseUpstream}`, attachments: [] }) });
@@ -6673,7 +6682,7 @@ function AgentPlaceCard({ agent, agents, onSelectAgent, active, tabBar, renderNo
     }
   };
   // the Agent's push, fixup and guided-review actions on the git status
-  const gitActions: WorkspaceGitActions = { id: agent.id, worktreeId: agent.worktreeId, onFixup: queueFixup, onReview: agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen(), review, reviewUnavailable: review === undefined ? reviewUnavailable : undefined, pushAction, pushPending, onPush: queuePush, onSelectTarget, onOperationFeedback };
+  const gitActions: WorkspaceGitActions = { id: agent.id, worktreeId: agent.worktreeId, onFixup: queueFixup, onReview: agent.worktreeId === undefined || reviewAgent === undefined ? undefined : review === undefined ? scope => onReview({ agentId: reviewAgent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen(), review, reviewUnavailable: review === undefined || reviewAgent === undefined ? reviewUnavailable : undefined, pushAction, pushPending, onPush: queuePush, onSelectTarget, onOperationFeedback };
   // selected output and Terminal text append to the current Agent's draft without queueing it
   const addToPrompt = (text: string) => setPromptDraft(agent.id, current => appendTextBlock(current, text));
   // the panel is keyed by Agent, so a switch swaps its output, draft, queue and pending actions
@@ -8847,7 +8856,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const reviewStartSheet = reviewStart === undefined ? null : <ReviewStartSheet target={reviewStart} prBase={data.agents.find(candidate => candidate.id === reviewStart.agentId)?.gitPrStatus?.base} tour={data.reviewTour} codeReview={codeReviewCapability(data.codeReview)} onStart={launchReview} onCancel={cancelReviewStart} />;
   const storedReview = agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === agent.worktreeId);
   const localReview = agent?.worktreeId !== undefined && agent.worktreeId === reviewLaunch?.worktreeId;
-  const activeReview = localReview ? { ...reviewIndicator, onOpen: openLocalReview } : agent !== undefined && storedReview !== undefined ? { generating: reviewRestoringWorktreeId === storedReview.worktreeId, stale: false, onOpen: () => void openStoredReview(agent, storedReview) } : undefined;
+  const reviewAgent = reviewBindingAgent(agent, item?.agents ?? []);
+  const activeReview = localReview ? { ...reviewIndicator, onOpen: openLocalReview } : reviewAgent !== undefined && storedReview !== undefined ? { generating: reviewRestoringWorktreeId === storedReview.worktreeId, stale: false, onOpen: () => void openStoredReview(reviewAgent, storedReview) } : undefined;
   // append workspace actions after each place's agent choices
   const placeEntries = (place: { id: string; label: string; consoleShells?: number } | undefined): LaunchMenuEntry[] => place === undefined ? [] : [
     { key: 'terminal', label: 'Terminal', detail: (place.consoleShells ?? 0) > 0 ? 'Focus its shell' : 'Open the Workspace with a new shell', icon: <LauncherRowIcon name="terminal" />, onSelect: () => void openTerminalAt(place.id, place.label) },

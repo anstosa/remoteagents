@@ -2023,6 +2023,8 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .review-tour-untriaged > span { min-width: 0; flex: 1 1 auto; }
 .review-tour-untriaged strong { margin-right: .35rem; color: var(--mauve); font-family: var(--font-mono); }
 .review-tour-untriaged button { flex: none; padding: .3rem .65rem; font-size: .68rem; box-shadow: none; }
+.review-tour-rebuild { display: flex; align-items: center; justify-content: flex-end; gap: .65rem; margin-top: .4rem; color: var(--overlay-1); font-size: .7rem; }
+.review-tour-rebuild button { flex: none; padding: .3rem .65rem; font-size: .68rem; box-shadow: none; }
 .review-tour-summary li > .review-tour-finding-count { margin-left: 0; }
 
 /* the phone step bar: the step's title and the start of its explanation, opening the notes drawer */
