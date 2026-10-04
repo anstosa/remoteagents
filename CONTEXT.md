@@ -189,3 +189,19 @@ _Avoid_: Diff view, file viewer, review panel
 **Review tour**:
 The existing guided review of a Comparison's Changes; the user-facing name is kept.
 _Avoid_: Snapshot, walkthrough
+
+**Code review**:
+An opt-in AI critique of a Review tour's Comparison, run alongside the tour by a Review preset; it produces Findings.
+_Avoid_: AI review (as a domain term — fine as a UI label), critique, audit
+
+**Finding**:
+One concern a Code review raises, anchored to a Change's line range (or general, when it cannot be anchored). It is a suggestion until the operator Keeps it as an inline comment or Dismisses it.
+_Avoid_: Issue, warning, suggestion
+
+**Review preset**:
+A configured agent, model, effort and prompt for a Code review, picked when the tour starts.
+_Avoid_: Review profile, reviewer
+
+**Review run**:
+One prompt sent to one agent in a Worktree that must answer with validated JSON — the tour's narration or a Code review. Headless or interactive, by the agent kind's configured mode.
+_Avoid_: Review job (a job is the server's tracking of one run's result)
