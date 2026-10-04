@@ -13,7 +13,7 @@ const schema = { type: 'object', properties: { answer: { type: 'string' } } };
 
 // one Review run request in a fixture workspace
 function request(workspace: string, extra: Partial<ReviewRunRequest> = {}): ReviewRunRequest {
-  return { kind: 'codex', workspace, prompt: 'Explain the change.', schema, timeoutMs: 10_000, label: 'Tour · feature', ...extra };
+  return { kind: 'codex', workspace, worktreeId: 'proj:/w', prompt: 'Explain the change.', schema, timeoutMs: 10_000, label: '🗺 Tour · feature', ...extra };
 }
 
 // write one executable fake CLI into a fresh root

@@ -1,22 +1,38 @@
 import { randomBytes } from 'node:crypto';
 import { sameCodeReviewOptions, type CodeReviewOptions } from '../code-review/contracts.js';
 import type { CodeReviewJobs } from '../code-review/jobs.js';
+import type { ReviewRunInfo, ReviewRunProgress } from '../review-runs/runner.js';
 import { publicReviewComparison, REVIEW_JOB_POLL_MS, REVIEW_JOB_TTL_MS, ReviewTourError, type PublicReviewComparison, type ReviewErrorCode, type ReviewTour, type ReviewTourInput } from './contracts.js';
 import type { PreparedReviewTour, ReviewTourService } from './service.js';
 import type { ReviewTourStore } from './store.js';
 
-type PendingJob = { kind: 'pending'; controller: AbortController };
+// `run` is an interactive run's visible Agent, once it has launched
+type PendingJob = { kind: 'pending'; controller: AbortController; run?: ReviewRunInfo };
 type ReadyJob = { kind: 'ready'; tour: ReviewTour };
 type EmptyJob = { kind: 'empty'; comparison: PublicReviewComparison };
 type FailedJob = { kind: 'error'; code: ReviewErrorCode; retryable: boolean };
 type GoneJob = { kind: 'gone'; code: 'job_cancelled' | 'job_superseded' | 'job_expired' };
 export type ReviewJobState = PendingJob | ReadyJob | EmptyJob | FailedJob | GoneJob;
-export type StoredReviewJob = { id: string; owner: string; agentId: string; worktreeId: string; persistenceVersion: number; expiresAt: number; state: ReviewJobState; expiry: NodeJS.Timeout; removal?: NodeJS.Timeout };
-export type StartedReviewJob = { id: string; expiresAt: string; retryAfterMs: number };
+export type StoredReviewJob = { id: string; owner: string; agentId: string; worktreeId: string; persistenceVersion: number; startedAt: number; expiresAt: number; state: ReviewJobState; expiry: NodeJS.Timeout; removal?: NodeJS.Timeout };
+// a pending job's descriptor; `startedAt` lets a reloaded client keep counting the run's time
+export type StartedReviewJob = { id: string; expiresAt: string; retryAfterMs: number; startedAt: string };
 // a pending start carries the Code review job started beside the tour, when one was requested
 type ReviewJobStart = { kind: 'empty'; comparison: PublicReviewComparison } | { kind: 'pending'; job: StartedReviewJob; codeReview?: { job: StartedReviewJob } };
 type IdempotentStart = { agentId: string; input: ReviewTourInput; codeReview?: CodeReviewOptions; promise: Promise<ReviewJobStart>; expiry?: NodeJS.Timeout };
 export type CompletedReviewJob = { agentId: string; worktreeId: string; prepared: PreparedReviewTour; tour: ReviewTour };
+
+// the descriptor of a stored tour or Code review job
+export function startedReviewJob(job: { id: string; startedAt: number; expiresAt: number }): StartedReviewJob {
+  return { id: job.id, expiresAt: new Date(job.expiresAt).toISOString(), retryAfterMs: REVIEW_JOB_POLL_MS, startedAt: new Date(job.startedAt).toISOString() };
+}
+
+// record an interactive run's Agent and question state on its job while the job is still pending
+export function pendingRunProgress(state: () => { kind: string; run?: ReviewRunInfo }): ReviewRunProgress {
+  return {
+    onStarted: ({ agentId }) => { const current = state(); if (current.kind === 'pending') current.run = { agentId, needsInput: false }; },
+    onAttention: needsInput => { const current = state(); if (current.kind === 'pending' && current.run !== undefined) current.run = { ...current.run, needsInput }; }
+  };
+}
 
 export class ReviewTourJobs {
   private readonly jobs = new Map<string, StoredReviewJob>();
@@ -74,22 +90,23 @@ export class ReviewTourJobs {
     // skip model generation for empty selections
     if (prepared.comparison.changes.length === 0) return { kind: 'empty', comparison: publicReviewComparison(prepared.comparison) };
     const id = randomBytes(18).toString('base64url');
-    const expiresAt = Date.now() + REVIEW_JOB_TTL_MS;
+    const startedAt = Date.now();
+    const expiresAt = startedAt + REVIEW_JOB_TTL_MS;
     const controller = new AbortController();
-    const job: StoredReviewJob = { id, owner, agentId, worktreeId: prepared.comparison.worktreeId, persistenceVersion, expiresAt, state: { kind: 'pending', controller }, expiry: setTimeout(() => this.expire(id), REVIEW_JOB_TTL_MS) };
+    const job: StoredReviewJob = { id, owner, agentId, worktreeId: prepared.comparison.worktreeId, persistenceVersion, startedAt, expiresAt, state: { kind: 'pending', controller }, expiry: setTimeout(() => this.expire(id), REVIEW_JOB_TTL_MS) };
     job.expiry.unref?.();
     this.jobs.set(id, job);
     this.latestByWorktree.set(this.latestKey(owner, job.worktreeId), id);
     void this.run(job, prepared);
     // review the very Comparison the tour narrates
     const review = codeReview === undefined || this.codeReviews === undefined ? undefined : await this.codeReviews.start(owner, agentId, prepared, codeReview);
-    return { kind: 'pending', job: { id, expiresAt: new Date(expiresAt).toISOString(), retryAfterMs: REVIEW_JOB_POLL_MS }, ...(review === undefined ? {} : { codeReview: { job: review } }) };
+    return { kind: 'pending', job: startedReviewJob(job), ...(review === undefined ? {} : { codeReview: { job: review } }) };
   }
 
   // publish a terminal generation result
   private async run(job: StoredReviewJob, prepared: PreparedReviewTour): Promise<void> {
     try {
-      const tour = await this.service.generate(prepared, (job.state as PendingJob).controller.signal);
+      const tour = await this.service.generate(prepared, (job.state as PendingJob).controller.signal, pendingRunProgress(() => job.state));
       const current = this.jobs.get(job.id);
       // ignore superseded completions
       if (current !== job || current.state.kind !== 'pending') return;

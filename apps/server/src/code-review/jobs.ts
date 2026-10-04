@@ -1,17 +1,19 @@
 import { randomBytes } from 'node:crypto';
-import { REVIEW_JOB_POLL_MS, ReviewTourError, type ReviewErrorCode } from '../review-tour/contracts.js';
-import type { StartedReviewJob } from '../review-tour/jobs.js';
+import { ReviewTourError, type ReviewErrorCode } from '../review-tour/contracts.js';
+import { pendingRunProgress, startedReviewJob, type StartedReviewJob } from '../review-tour/jobs.js';
+import type { ReviewRunInfo } from '../review-runs/runner.js';
 import type { PreparedReviewTour } from '../review-tour/service.js';
 import type { ReviewTourStore } from '../review-tour/store.js';
 import { CODE_REVIEW_JOB_TTL_MS, type CodeReview, type CodeReviewOptions } from './contracts.js';
 import type { CodeReviewer } from './reviewer.js';
 
-type PendingJob = { kind: 'pending'; controller: AbortController };
+// `run` is an interactive run's visible Agent, once it has launched
+type PendingJob = { kind: 'pending'; controller: AbortController; run?: ReviewRunInfo };
 type ReadyJob = { kind: 'ready'; review: CodeReview };
 type FailedJob = { kind: 'error'; code: ReviewErrorCode; retryable: boolean };
 type GoneJob = { kind: 'gone'; code: 'job_cancelled' | 'job_superseded' | 'job_expired' };
 export type CodeReviewJobState = PendingJob | ReadyJob | FailedJob | GoneJob;
-export type StoredCodeReviewJob = { id: string; owner: string; agentId: string; worktreeId: string; fingerprint: string; generation?: number; expiresAt: number; state: CodeReviewJobState; expiry: NodeJS.Timeout; removal?: NodeJS.Timeout };
+export type StoredCodeReviewJob = { id: string; owner: string; agentId: string; worktreeId: string; fingerprint: string; generation?: number; startedAt: number; expiresAt: number; state: CodeReviewJobState; expiry: NodeJS.Timeout; removal?: NodeJS.Timeout };
 export type SettledCodeReviewJob = Pick<StoredCodeReviewJob, 'agentId' | 'worktreeId' | 'fingerprint' | 'state'>;
 type CodeReviewStore = Pick<ReviewTourStore, 'beginCodeReview' | 'saveCodeReviewIfCurrent'>;
 
@@ -36,21 +38,22 @@ export class CodeReviewJobs {
     // retain an owner-scoped superseded tombstone
     if (previous !== undefined) this.markGone(previous, 'job_superseded');
     const id = randomBytes(18).toString('base64url');
-    const expiresAt = Date.now() + CODE_REVIEW_JOB_TTL_MS;
+    const startedAt = Date.now();
+    const expiresAt = startedAt + CODE_REVIEW_JOB_TTL_MS;
     const controller = new AbortController();
     const generation = this.store?.beginCodeReview(worktreeId);
-    const job: StoredCodeReviewJob = { id, owner, agentId, worktreeId, fingerprint: prepared.comparison.fingerprint, ...(generation === undefined ? {} : { generation }), expiresAt, state: { kind: 'pending', controller }, expiry: setTimeout(() => this.expire(id), CODE_REVIEW_JOB_TTL_MS) };
+    const job: StoredCodeReviewJob = { id, owner, agentId, worktreeId, fingerprint: prepared.comparison.fingerprint, ...(generation === undefined ? {} : { generation }), startedAt, expiresAt, state: { kind: 'pending', controller }, expiry: setTimeout(() => this.expire(id), CODE_REVIEW_JOB_TTL_MS) };
     job.expiry.unref?.();
     this.jobs.set(id, job);
     this.latestByWorktree.set(this.latestKey(owner, worktreeId), id);
     void this.run(job, prepared, resolved);
-    return { id, expiresAt: new Date(expiresAt).toISOString(), retryAfterMs: REVIEW_JOB_POLL_MS };
+    return startedReviewJob(job);
   }
 
   // publish a terminal review result
   private async run(job: StoredCodeReviewJob, prepared: PreparedReviewTour, resolved: Awaited<ReturnType<CodeReviewer['resolve']>>): Promise<void> {
     try {
-      const review = await this.reviewer.run(prepared.comparison, resolved, (job.state as PendingJob).controller.signal);
+      const review = await this.reviewer.run(prepared.comparison, resolved, (job.state as PendingJob).controller.signal, pendingRunProgress(() => job.state));
       // ignore superseded completions
       if (this.jobs.get(job.id) !== job || job.state.kind !== 'pending') return;
       const branch = prepared.comparison.branch;
@@ -101,7 +104,7 @@ export class CodeReviewJobs {
   // the owner's pending review of one Comparison, so a reopened tour resumes polling
   pending(owner: string, worktreeId: string, fingerprint: string): StartedReviewJob | undefined {
     const job = this.jobs.get(this.latestByWorktree.get(this.latestKey(owner, worktreeId)) ?? '');
-    return job?.state.kind === 'pending' && job.fingerprint === fingerprint ? { id: job.id, expiresAt: new Date(job.expiresAt).toISOString(), retryAfterMs: REVIEW_JOB_POLL_MS } : undefined;
+    return job?.state.kind === 'pending' && job.fingerprint === fingerprint ? startedReviewJob(job) : undefined;
   }
 
   // the latest review of one Comparison across owners: running, or failed

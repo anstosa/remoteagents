@@ -1,8 +1,8 @@
 import type { ReviewPreset, ResolvedReviewConfig } from '../review-runs/config.js';
 import { acceptsReviewEffort, reviewEfforts } from '../review-runs/efforts.js';
-import type { ReviewRunner } from '../review-runs/runner.js';
+import type { ReviewRunner, ReviewRunProgress } from '../review-runs/runner.js';
 import { ReviewTourError, type ReviewComparison } from '../review-tour/contracts.js';
-import { CODE_REVIEW_TIMEOUT_MS, generatedCodeReviewJsonSchema, MAX_CODE_REVIEW_OUTPUT_BYTES, parseGeneratedCodeReview, presetCapability, type CodeReview, type CodeReviewCapability, type CodeReviewOptions } from './contracts.js';
+import { CODE_REVIEW_TIMEOUT_MS, codeReviewReplyError, generatedCodeReviewJsonSchema, MAX_CODE_REVIEW_OUTPUT_BYTES, parseGeneratedCodeReview, presetCapability, type CodeReview, type CodeReviewCapability, type CodeReviewOptions } from './contracts.js';
 
 // a requested Code review checked against its preset: the effort defaults to the preset's
 export type ResolvedCodeReview = { preset: ReviewPreset; effort?: string; focus?: string };
@@ -49,10 +49,11 @@ export class CodeReviewer {
     return { preset, ...(effort === undefined ? {} : { effort }), ...(options.focus === undefined ? {} : { focus: options.focus }) };
   }
 
-  // run one structured review of a Comparison and anchor its findings
-  async run(comparison: ReviewComparison, resolved: ResolvedCodeReview, signal: AbortSignal): Promise<CodeReview> {
+  // run one structured review of a Comparison and anchor its findings; an interactive run is
+  // checked against the output shape and gets one correction
+  async run(comparison: ReviewComparison, resolved: ResolvedCodeReview, signal: AbortSignal, progress: ReviewRunProgress = {}): Promise<CodeReview> {
     const { preset, effort, focus } = resolved;
-    const output = await this.runner.run({ kind: preset.agent, workspace: comparison.workspace, prompt: codeReviewPrompt(preset.prompt, focus, comparison), schema: generatedCodeReviewJsonSchema, timeoutMs: CODE_REVIEW_TIMEOUT_MS, maxOutputBytes: MAX_CODE_REVIEW_OUTPUT_BYTES, label: `Review · ${preset.label}`, ...(preset.model === undefined ? {} : { model: preset.model }), ...(effort === undefined ? {} : { effort }) }, signal);
+    const output = await this.runner.run({ kind: preset.agent, workspace: comparison.workspace, worktreeId: comparison.worktreeId, prompt: codeReviewPrompt(preset.prompt, focus, comparison), schema: generatedCodeReviewJsonSchema, timeoutMs: CODE_REVIEW_TIMEOUT_MS, maxOutputBytes: MAX_CODE_REVIEW_OUTPUT_BYTES, label: `🔍 Review · ${preset.label}`, validate: codeReviewReplyError, ...progress, ...(preset.model === undefined ? {} : { model: preset.model }), ...(effort === undefined ? {} : { effort }) }, signal);
     // preserve caller cancellation
     if (signal.aborted) throw new ReviewTourError('cancelled', true);
     const parsed = parseGeneratedCodeReview(output, comparison.changes);

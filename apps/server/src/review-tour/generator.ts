@@ -1,12 +1,12 @@
 import { basename } from 'node:path';
 import type { ResolvedReviewTour } from '../review-runs/config.js';
 import { reviewEfforts } from '../review-runs/efforts.js';
-import type { ReviewRunner } from '../review-runs/runner.js';
+import type { ReviewRunner, ReviewRunProgress } from '../review-runs/runner.js';
 import { generatedReviewTourJsonSchema, parseGeneratedReviewTourResult, REVIEW_GENERATION_TIMEOUT_MS, ReviewTourError, type GeneratedReviewTour, type ReviewComparison, type ReviewTourCapability } from './contracts.js';
 
 export interface ReviewTourGenerator {
   capability(): Promise<ReviewTourCapability>;
-  generate(comparison: ReviewComparison, signal: AbortSignal, effort?: string): Promise<GeneratedReviewTour>;
+  generate(comparison: ReviewComparison, signal: AbortSignal, effort?: string, progress?: ReviewRunProgress): Promise<GeneratedReviewTour>;
 }
 
 // the operator's narration guidance followed by the server-owned contract the parser enforces,
@@ -25,7 +25,7 @@ export function reviewTourPrompt(guidance: string, comparison: ReviewComparison)
 
 // narrates tours as a Review run on the configured tour agent (ADR 0010)
 export class ConfiguredReviewTourGenerator implements ReviewTourGenerator {
-  constructor(private readonly runner: ReviewRunner, private readonly tour: ResolvedReviewTour) {}
+  constructor(private readonly runner: ReviewRunner, private readonly tour: ResolvedReviewTour, private readonly timeoutMs = REVIEW_GENERATION_TIMEOUT_MS) {}
 
   // describe the tour agent's runnable state and effort levels
   async capability(): Promise<ReviewTourCapability> {
@@ -33,9 +33,11 @@ export class ConfiguredReviewTourGenerator implements ReviewTourGenerator {
     return { ...capability, agent: this.tour.agent, ...(this.tour.effort === undefined ? {} : { effort: this.tour.effort }), efforts: [...reviewEfforts[this.tour.agent]] };
   }
 
-  // run one structured generation at the requested effort, else the configured one
-  async generate(comparison: ReviewComparison, signal: AbortSignal, effort = this.tour.effort): Promise<GeneratedReviewTour> {
-    const parsed = await this.runner.run({ kind: this.tour.agent, workspace: comparison.workspace, prompt: reviewTourPrompt(this.tour.prompt, comparison), schema: generatedReviewTourJsonSchema, timeoutMs: REVIEW_GENERATION_TIMEOUT_MS, label: `Tour · ${comparison.branch ?? basename(comparison.workspace)}`, ...(this.tour.model === undefined ? {} : { model: this.tour.model }), ...(effort === undefined ? {} : { effort }) }, signal);
+  // run one structured generation at the requested effort, else the configured one; an
+  // interactive run is checked against the same parse and gets one correction
+  async generate(comparison: ReviewComparison, signal: AbortSignal, effort = this.tour.effort, progress: ReviewRunProgress = {}): Promise<GeneratedReviewTour> {
+    const validate = (value: unknown) => { const result = parseGeneratedReviewTourResult(value, comparison.changes); return result.ok ? undefined : result.error; };
+    const parsed = await this.runner.run({ kind: this.tour.agent, workspace: comparison.workspace, worktreeId: comparison.worktreeId, prompt: reviewTourPrompt(this.tour.prompt, comparison), schema: generatedReviewTourJsonSchema, timeoutMs: this.timeoutMs, label: `🗺 Tour · ${comparison.branch ?? basename(comparison.workspace)}`, validate, ...progress, ...(this.tour.model === undefined ? {} : { model: this.tour.model }), ...(effort === undefined ? {} : { effort }) }, signal);
     const result = parseGeneratedReviewTourResult(parsed, comparison.changes);
     // reject invalid assignments or narration
     if (!result.ok) throw new ReviewTourError(result.code, true);

@@ -1,6 +1,7 @@
 import type { DiscoveryService } from '../discovery/service.js';
 import { resolveConfiguredWorkspace, sameConfiguredWorkspace, type ResolvedWorkspace } from '../workspaces/resolver.js';
 import { captureReviewComparison } from './diff.js';
+import type { ReviewRunProgress } from '../review-runs/runner.js';
 import type { ReviewTourGenerator } from './generator.js';
 import { publicReviewComparison, ReviewTourError, type PublicReviewComparison, type ReviewComparison, type ReviewTour, type ReviewTourCapability, type ReviewTourInput } from './contracts.js';
 
@@ -33,8 +34,8 @@ export class ReviewTourService {
   }
 
   // generate and revalidate one complete tour
-  async generate(prepared: PreparedReviewTour, signal: AbortSignal): Promise<ReviewTour> {
-    const generated = await this.generator.generate(prepared.comparison, signal, prepared.effort);
+  async generate(prepared: PreparedReviewTour, signal: AbortSignal, progress?: ReviewRunProgress): Promise<ReviewTour> {
+    const generated = await this.generator.generate(prepared.comparison, signal, prepared.effort, progress);
     // preserve caller cancellation
     if (signal.aborted) throw new ReviewTourError('cancelled', true);
     const current = await captureReviewComparison(prepared.resolved, { scope: prepared.comparison.scope, includeTests: prepared.comparison.includeTests, includeDocs: prepared.comparison.includeDocs });

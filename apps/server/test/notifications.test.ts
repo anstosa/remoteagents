@@ -168,6 +168,24 @@ describe('agent notifications', () => {
     coordinator.stop();
   });
 
+  it('never notifies a Review run Agent finishing, but still notifies its question', async () => {
+    vi.useFakeTimers();
+    const delivered: AgentNotification[] = [];
+    const coordinator = new AgentNotificationCoordinator(notification => delivered.push(notification), 2_000);
+    const run = (overrides: Partial<Agent> = {}) => agent({ reviewRun: 'run_abcdefgh1234', ...overrides });
+
+    coordinator.observe(run({ title: '⠋ Working' }));
+    coordinator.observe(run({ title: 'Ready' }));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(delivered).toEqual([]);
+    expect(coordinator.isUnread(run())).toBe(false);
+    expect(agentNotification('working', 'finished', run(), context)).toBeUndefined();
+
+    coordinator.observe(run({ title: '⠋ Working', question: { id: 'question-1', text: 'Read outside the worktree?', choices: ['Yes', 'No'], source: 'structured' } }));
+    expect(delivered.map(notification => notification.kind)).toEqual(['question']);
+    coordinator.stop();
+  });
+
   // sibling activity must not fabricate a new completed turn after dismissal
   it('keeps each agent completion independent across unchanged worktree polls', async () => {
     vi.useFakeTimers();

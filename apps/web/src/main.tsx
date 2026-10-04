@@ -87,7 +87,7 @@ type AttentionState = 'working' | 'finished' | 'question';
 // `worktreeLabel`/`worktreeOrder` are no longer on the wire (the server carries them on the
 // Worktree); they remain as optional read-only fallbacks the tab bar consults when an Agent's
 // Worktree is not present in the payload, absent from the real server.
-type Agent = { id: string; sessionId: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; paneMode?: string; stack?: Stack; unread?: boolean; completionId?: string; queuedPromptCount: number; launch?: LaunchResolution };
+type Agent = { id: string; sessionId: string; home: string; reviewRun?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; paneMode?: string; stack?: Stack; unread?: boolean; completionId?: string; queuedPromptCount: number; launch?: LaunchResolution };
 type Worktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; consoleShells?: number; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; order: number; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
 // `mode: 'directory'` marks a non-git Project the console launches in place (like Scratch);
 // `launch` is its resolved Launch profile for the Project-level Launch button. A git
@@ -7906,7 +7906,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       if (!retainedPromptIds.has(id)) promptAttachments.delete(id);
     }
     for (const [worktreeId, sourceAgentId] of pendingNewTaskSources) {
-      const replacement = nextPayload.agents.find(agent => agent.worktreeId === worktreeId && agent.id !== sourceAgentId);
+      const replacement = nextPayload.agents.find(agent => agent.worktreeId === worktreeId && agent.id !== sourceAgentId && agent.reviewRun === undefined);
       const sourceStillActive = nextPayload.agents.some(agent => agent.id === sourceAgentId);
       // wait through both handoff sides
       if (replacement === undefined && (sourceStillActive || activeWorktreeIds.has(worktreeId))) continue;
@@ -7917,7 +7917,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     // finish launches only after their dashboard agent appears
     for (const [worktreeId, pendingLaunch] of pendingWorktreeLaunches) {
       const replacement = pendingLaunch.agentId === undefined
-        ? nextPayload.agents.find(agent => agent.worktreeId === worktreeId && agent.id !== pendingLaunch.sourceAgentId && pendingLaunch.excludedAgentIds?.includes(agent.id) !== true)
+        ? nextPayload.agents.find(agent => agent.worktreeId === worktreeId && agent.id !== pendingLaunch.sourceAgentId && pendingLaunch.excludedAgentIds?.includes(agent.id) !== true && agent.reviewRun === undefined)
         : nextPayload.agents.find(agent => agent.id === pendingLaunch.agentId && agent.worktreeId === worktreeId);
       // wait for the matching agent identity
       if (replacement === undefined) continue;

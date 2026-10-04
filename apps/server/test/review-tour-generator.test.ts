@@ -114,8 +114,18 @@ describe('configured review tour generator', () => {
     await expect(generator.capability()).resolves.toEqual({ available: false, reason: 'interactive_unavailable', agent: 'claude', effort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] });
     await expect(generator.generate({ ...comparison('/worktrees/cora'), branch: 'feature/x' }, new AbortController().signal)).resolves.toEqual(generated);
     await generator.generate(comparison('/worktrees/cora'), new AbortController().signal, 'max');
-    expect(requests.map(request => [request.kind, request.model, request.effort, request.label])).toEqual([['claude', 'opus', 'high', 'Tour · feature/x'], ['claude', 'opus', 'max', 'Tour · cora']]);
+    expect(requests.map(request => [request.kind, request.model, request.effort, request.label])).toEqual([['claude', 'opus', 'high', '🗺 Tour · feature/x'], ['claude', 'opus', 'max', '🗺 Tour · cora']]);
     expect(requests[0]!.schema).toMatchObject({ required: ['title', 'overview', 'steps'] });
+  });
+
+  it('names the run for an interactive Agent and validates a reply with errors an agent can correct', async () => {
+    const { runner, requests } = recording();
+    await new ConfiguredReviewTourGenerator(runner, { agent: 'codex', prompt: builtInTourPrompt }).generate(comparison('/w'), new AbortController().signal);
+    const validate = requests[0]!.validate!;
+    expect(requests[0]!.worktreeId).toBe(comparison('/w').worktreeId);
+    expect(validate(generated)).toBeUndefined();
+    expect(validate({ ...generated, steps: [{ ...generated.steps[0]!, changeIds: ['chg_unknown01'] }] })).toBe('change ID "chg_unknown01" is not one of the provided change IDs');
+    expect(validate({ title: 'Tour' })).toMatch(/^overview: Required/u);
   });
 
   it('omits the effort when neither the run nor the configuration names one', async () => {

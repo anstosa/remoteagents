@@ -132,7 +132,10 @@ describe('code reviewer', () => {
     const runner = fakeRunner({ findings: [finding(hunk.id, 'additions', 20, 20), finding(hunk.id, 'additions', 99, 99, 'Outside')], general: [] });
     const reviewer = new CodeReviewer(runner, { presets: [{ ...preset, model: 'opus' }], defaultPreset: preset.id });
     const review = await reviewer.run(comparison, await reviewer.resolve({ preset: preset.id, focus: 'retries' }), new AbortController().signal);
-    expect(runner.requests[0]).toMatchObject({ kind: 'claude', workspace: '/worktrees/cora', model: 'opus', effort: 'high', timeoutMs: CODE_REVIEW_TIMEOUT_MS, maxOutputBytes: MAX_CODE_REVIEW_OUTPUT_BYTES, label: 'Review · Correctness', schema: generatedCodeReviewJsonSchema });
+    expect(runner.requests[0]).toMatchObject({ kind: 'claude', workspace: '/worktrees/cora', model: 'opus', effort: 'high', timeoutMs: CODE_REVIEW_TIMEOUT_MS, maxOutputBytes: MAX_CODE_REVIEW_OUTPUT_BYTES, label: '🔍 Review · Correctness', schema: generatedCodeReviewJsonSchema });
+    // an interactive run checks the output shape and quotes what failed in its one correction
+    expect(runner.requests[0]!.validate?.({ findings: [], general: [] })).toBeUndefined();
+    expect(runner.requests[0]!.validate?.({ findings: [] })).toBe('general: Required');
     expect(runner.requests[0]!.prompt).toContain('Additional focus for this review: retries');
     expect(review).toMatchObject({ fingerprint: comparison.fingerprint, preset: { id: 'correctness', label: 'Correctness', agent: 'claude' }, effort: 'high', focus: 'retries', findings: [{ startLine: 20 }], general: [{ title: 'Outside', file: hunk.file }] });
     expect(parseCodeReview(review)).toEqual(review);

@@ -110,7 +110,8 @@ export function agentNotification(previous: AgentAttentionState | undefined, cur
       body
     };
   }
-  if (previous === 'working' && current === 'finished') {
+  // a Review run's Agent finishing is covered by the tour's own ready state (ADR 0010); its question still notifies
+  if (previous === 'working' && current === 'finished' && agent.reviewRun === undefined) {
     return { ...shared, kind: 'finished', title: `Done working in ${projectName}`, body: `${worktreeName} is ready for a new prompt` };
   }
   return undefined;

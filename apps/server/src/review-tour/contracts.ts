@@ -11,7 +11,10 @@ export const MAX_REVIEW_DIFF_BYTES = 900_000;
 export const MAX_REVIEW_FILE_BYTES = 160_000;
 export const MAX_REVIEW_GENERATED_BYTES = 96_000;
 export const REVIEW_GENERATION_TIMEOUT_MS = 120_000;
-export const REVIEW_JOB_TTL_MS = 300_000;
+// an interactive tour waits on a TUI launch and a human-paced pane, so it gets longer
+export const INTERACTIVE_REVIEW_GENERATION_TIMEOUT_MS = 600_000;
+// outlives the longest tour run so a slow interactive narration is not expired mid-run
+export const REVIEW_JOB_TTL_MS = 900_000;
 export const REVIEW_JOB_POLL_MS = 1_000;
 
 export type ReviewScope = 'working' | 'pr';
@@ -83,32 +86,40 @@ export function prohibitedNarration(value: string): boolean {
   return prohibitedPrefix.test(value.trim().normalize('NFKC'));
 }
 
-export type GeneratedReviewTourParseResult = { ok: true; tour: GeneratedReviewTour } | { ok: false; code: 'malformed_result' | 'generation_rejected' };
+// `error` says what failed in words an agent can correct (an interactive run's correction prompt)
+export type GeneratedReviewTourParseResult = { ok: true; tour: GeneratedReviewTour } | { ok: false; code: 'malformed_result' | 'generation_rejected'; error: string };
+
+// the first few schema violations of a model reply, as one human-readable line
+export function describeSchemaIssues(error: z.ZodError): string {
+  return error.issues.slice(0, 5).map(issue => `${issue.path.length === 0 ? 'the object' : issue.path.join('.')}: ${issue.message}`).join('; ');
+}
 
 // validate model output and exact assignments
 export function parseGeneratedReviewTourResult(value: unknown, changes: ReviewChange[]): GeneratedReviewTourParseResult {
   const parsed = generatedTourSchema.safeParse(value);
   // require structural validity
-  if (!parsed.success) return { ok: false, code: 'malformed_result' };
+  if (!parsed.success) return { ok: false, code: 'malformed_result', error: describeSchemaIssues(parsed.error) };
   const tour = parsed.data;
   const narration = [tour.title, tour.overview, ...tour.steps.flatMap(step => [step.title, step.explanation])];
   // reject explicit review labels
-  if (narration.some(prohibitedNarration)) return { ok: false, code: 'generation_rejected' };
+  if (narration.some(prohibitedNarration)) return { ok: false, code: 'generation_rejected', error: 'a title or explanation starts with a review label such as "Finding:" or "Issue:"; narrate the changes instead' };
   const expected = new Set(changes.map(change => change.id));
   const assigned = new Set<string>();
   // validate every model reference
   for (const step of tour.steps) {
     // require unique step ids
-    if (tour.steps.filter(candidate => candidate.id === step.id).length !== 1) return { ok: false, code: 'malformed_result' };
+    if (tour.steps.filter(candidate => candidate.id === step.id).length !== 1) return { ok: false, code: 'malformed_result', error: `step id "${step.id}" is used more than once` };
     // validate change assignments
     for (const id of step.changeIds) {
       // reject unknown or duplicate ids
-      if (!expected.has(id) || assigned.has(id)) return { ok: false, code: 'malformed_result' };
+      if (!expected.has(id)) return { ok: false, code: 'malformed_result', error: `change ID "${id}" is not one of the provided change IDs` };
+      if (assigned.has(id)) return { ok: false, code: 'malformed_result', error: `change ID "${id}" is assigned to more than one step` };
       assigned.add(id);
     }
   }
   // require complete coverage
-  if (assigned.size !== expected.size) return { ok: false, code: 'malformed_result' };
+  const missing = [...expected].filter(id => !assigned.has(id));
+  if (missing.length > 0) return { ok: false, code: 'malformed_result', error: `every change ID must be assigned exactly once; missing: ${missing.slice(0, 10).join(', ')}${missing.length > 10 ? ` and ${missing.length - 10} more` : ''}` };
   return { ok: true, tour };
 }
 

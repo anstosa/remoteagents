@@ -63,7 +63,7 @@ describe('code review jobs', () => {
       expect(jobs.get('owner-b', started.id)).toBeUndefined();
       expect(jobs.pending('owner-a', 'cora', 'fingerprint-1234567890')).toEqual(started);
       expect(jobs.status('cora', 'fingerprint-1234567890')).toBe('running');
-      expect(runs[0]!.request).toMatchObject({ kind: 'codex', effort: 'high', label: 'Review · Correctness' });
+      expect(runs[0]!.request).toMatchObject({ kind: 'codex', effort: 'high', label: '🔍 Review · Correctness' });
       runs[0]!.resolve(output);
       await settle();
       const job = jobs.get('owner-a', started.id);

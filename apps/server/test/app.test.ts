@@ -9,6 +9,7 @@ import { stated } from './helpers/agent.js';
 import { testProject, testWorktree } from './helpers/config.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
 import { resolveReviewConfig } from '../src/review-runs/config.js';
+import type { ReviewRunProgress } from '../src/review-runs/runner.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1422,12 +1423,13 @@ describe('review tour capability', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }) };
     const review = resolveReviewConfig({ agents: { claude: { mode: 'interactive' } }, tour: { agent: 'claude', effort: 'high' } }, { claude: {} });
-    const capabilityApp = await buildApp({ ...config, review }, { auth: new AuthService(hash, Buffer.alloc(32, 21).toString('base64url')), discovery: discovery as never });
+    const capabilityApp = await buildApp({ ...config, adapters: { claude: { program: '/usr/local/bin/claude', args: [], env: {}, launchable: true } }, review }, { auth: new AuthService(hash, Buffer.alloc(32, 21).toString('base64url')), discovery: discovery as never });
     try {
       const boot = await capabilityApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
       const login = await capabilityApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
       const dashboard = await capabilityApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0] } });
-      expect(dashboard.json().reviewTour).toEqual({ available: false, reason: 'interactive_unavailable', agent: 'claude', effort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] });
+      // an interactive tour agent runs as a visible Agent once its kind is configured and executable
+      expect(dashboard.json().reviewTour).toEqual({ available: true, agent: 'claude', effort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] });
     } finally { await capabilityApp.close(); }
   }, 15_000);
 
@@ -1456,12 +1458,13 @@ describe('code review API', () => {
     const tour: ReviewTour = { title: 'Route tour', overview: 'Follow the route.', steps: [{ id: 'route', title: 'Route', explanation: 'The route changes.', changeIds: [change.id] }], scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: comparison.fingerprint, changes: [change] };
     let prepares = 0;
     let finishTour!: (tour: ReviewTour) => void;
+    let tourProgress: ReviewRunProgress | undefined;
     const reviewTours = {
       capability: async () => ({ available: true, agent: 'codex', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] }),
       prepare: async () => { prepares += 1; return { comparison, resolved: { worktree } }; },
-      generate: async () => await new Promise<ReviewTour>(resolve => { finishTour = resolve; })
+      generate: async (_prepared: unknown, _signal: AbortSignal, progress?: ReviewRunProgress) => { tourProgress = progress; return await new Promise<ReviewTour>(resolve => { finishTour = resolve; }); }
     };
-    const runs: Array<{ request: { label: string; effort?: string; prompt: string }; signal: AbortSignal; resolve: (value: unknown) => void }> = [];
+    const runs: Array<{ request: { label: string; effort?: string; prompt: string } & ReviewRunProgress; signal: AbortSignal; resolve: (value: unknown) => void }> = [];
     const reviewRunner = { capability: async () => ({ available: true }), run: async (request: { label: string; prompt: string }, signal: AbortSignal) => await new Promise(resolve => { runs.push({ request, signal, resolve }); }) };
     const review = resolveReviewConfig({ presets: [{ id: 'correctness', label: 'Correctness', agent: 'codex', effort: 'high', prompt: 'Review for correctness.' }, { id: 'security', label: 'Security', agent: 'codex', prompt: 'Review for security.' }] }, { codex: {} });
     const reviewStore = new ReviewTourStore(join(directory, 'reviews.json'));
@@ -1486,13 +1489,23 @@ describe('code review API', () => {
 
       const started = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers: mutationHeaders, payload: JSON.stringify({ ...scope, effort: 'low', codeReview: { preset: 'correctness', focus: 'ナ'.repeat(2_000) } }) });
       expect(started.statusCode).toBe(202);
-      expect(started.json()).toMatchObject({ status: 'pending', job: { id: expect.any(String) }, codeReview: { job: { id: expect.any(String), expiresAt: expect.any(String), retryAfterMs: 1_000 } } });
+      expect(started.json()).toMatchObject({ status: 'pending', job: { id: expect.any(String), startedAt: expect.any(String) }, codeReview: { job: { id: expect.any(String), expiresAt: expect.any(String), retryAfterMs: 1_000, startedAt: expect.any(String) } } });
+      // an interactive tour run names its Agent and its question state on the pending poll
+      const tourJob = started.json().job.id as string;
+      expect((await reviewApp.inject({ method: 'GET', url: `/api/review-tour/jobs/${tourJob}`, headers })).json()).not.toHaveProperty('run');
+      tourProgress?.onStarted?.({ agentId: 'agent-tour' });
+      tourProgress?.onAttention?.(true);
+      expect((await reviewApp.inject({ method: 'GET', url: `/api/review-tour/jobs/${tourJob}`, headers })).json()).toEqual({ status: 'pending', job: started.json().job, run: { agentId: 'agent-tour', needsInput: true } });
       expect(prepares).toBe(1);
-      expect(runs[0]!.request).toMatchObject({ label: 'Review · Correctness', effort: 'high' });
+      expect(runs[0]!.request).toMatchObject({ label: '🔍 Review · Correctness', effort: 'high' });
       const reviewJob = started.json().codeReview.job.id as string;
       const pending = await reviewApp.inject({ method: 'GET', url: `/api/code-review/jobs/${reviewJob}`, headers });
       expect(pending.statusCode).toBe(202);
-      expect(pending.json()).toMatchObject({ status: 'pending', job: { id: reviewJob } });
+      expect(pending.json()).toEqual({ status: 'pending', job: started.json().codeReview.job });
+      runs[0]!.request.onStarted?.({ agentId: 'agent-review' });
+      expect((await reviewApp.inject({ method: 'GET', url: `/api/code-review/jobs/${reviewJob}`, headers })).json()).toMatchObject({ status: 'pending', run: { agentId: 'agent-review', needsInput: false } });
+      runs[0]!.request.onAttention?.(true);
+      expect((await reviewApp.inject({ method: 'GET', url: `/api/code-review/jobs/${reviewJob}`, headers })).json().run).toEqual({ agentId: 'agent-review', needsInput: true });
       expect((await reviewApp.inject({ method: 'GET', url: '/api/worktrees/cora/review-tour', headers })).statusCode).toBe(404);
 
       // the review finishes before the tour
@@ -1518,7 +1531,7 @@ describe('code review API', () => {
       const added = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/code-review/jobs', headers: mutationHeaders, payload: JSON.stringify({ ...scope, fingerprint: comparison.fingerprint, preset: 'security', effort: 'xhigh' }) });
       expect(added.statusCode).toBe(202);
       expect(added.json()).toMatchObject({ status: 'pending', job: { id: expect.any(String), retryAfterMs: 1_000 } });
-      expect(runs[1]!.request).toMatchObject({ label: 'Review · Security', effort: 'xhigh' });
+      expect(runs[1]!.request).toMatchObject({ label: '🔍 Review · Security', effort: 'xhigh' });
       const resumed = await reviewApp.inject({ method: 'GET', url: '/api/worktrees/cora/review-tour', headers });
       expect(resumed.json().review.codeReviewJob).toEqual(added.json().job);
       expect((await reviewApp.inject({ method: 'GET', url: '/api/dashboard', headers })).json().reviews).toEqual([expect.objectContaining({ codeReview: 'running' })]);

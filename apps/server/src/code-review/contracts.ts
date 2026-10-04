@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { digest } from '../git/comparison.js';
 import type { ReviewAgentKind } from '../review-runs/efforts.js';
 import type { ReviewRunCapability } from '../review-runs/runner.js';
-import { parseReviewTourInput, type ReviewChange, type ReviewTourInput } from '../review-tour/contracts.js';
+import { describeSchemaIssues, parseReviewTourInput, type ReviewChange, type ReviewTourInput } from '../review-tour/contracts.js';
 
 export const CODE_REVIEW_TIMEOUT_MS = 900_000;
 export const CODE_REVIEW_JOB_TTL_MS = 1_800_000;
@@ -153,6 +153,13 @@ export function parseGeneratedCodeReview(value: unknown, changes: ReviewChange[]
   // keep every unanchored concern
   for (const item of parsed.data.general) addGeneral({ severity: item.severity, title: item.title, body: item.body, ...(item.file === undefined || item.file === null ? {} : { file: item.file }) });
   return { findings, general };
+}
+
+// what makes a model reply fail the output shape, in words an agent can correct; anchoring
+// never fails a reply (an unanchored finding becomes a general one)
+export function codeReviewReplyError(value: unknown): string | undefined {
+  const parsed = generatedSchema.safeParse(value);
+  return parsed.success ? undefined : describeSchemaIssues(parsed.error);
 }
 
 // validate a persisted Code review

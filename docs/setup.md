@@ -274,8 +274,34 @@ Every field is optional.
   run is a child process with schema-constrained output: `codex exec --sandbox
   read-only`, or `claude -p --tools Read,Grep,Glob --no-session-persistence`.
   Claude bills `-p` use separately from interactive use, which is why the mode is
-  set per kind. Interactive runs are not available yet; a kind set to
-  `interactive` reports its Review runs unavailable.
+  set per kind. An interactive run is a fresh, visible Agent of that kind in the
+  Worktree's Workspace, named `🗺 Tour · <branch>` or `🔍 Review · <preset>`:
+  - It launches in a new window of the Workspace session, never in an idle shell,
+    with the same read-only restrictions added to that launch only. Codex gets
+    `--sandbox read-only --ask-for-approval never`. Claude gets `--tools
+    Read,Grep,Glob --strict-mcp-config` and keeps the console's hooks settings.
+    The run's `model` and `effort` are added too. Operator `adapters.<kind>.args`
+    still apply, except the flags these replace or that would loosen them (for
+    example `--sandbox`, `--model` or Codex's
+    `--dangerously-bypass-approvals-and-sandbox`).
+  - The prompt ends by asking for one JSON object as the final message. A prompt
+    too long to paste is written to a private file under
+    `/tmp/remote-agent-console-<uid>/review-runs/`, and the agent is asked to read
+    it. That is why interactive runs are unavailable under the Docker host bridge.
+  - The console reads the reply from the agent's own transcript (Codex's rollout,
+    Claude's session JSONL). A reply that fails validation gets one correction
+    prompt in the same conversation.
+  - The pane closes when the run succeeds or is cancelled. It stays open when the
+    agent asks a question (the run keeps waiting, and the operator answers in the
+    pane), when the run times out, and when the reply fails validation twice. A
+    pane left open behaves as an ordinary Agent from then on.
+  - A question notifies as usual, but a finished run does not, because the
+    tour's ready state covers it. A run never takes focus. The tour and review
+    job polls name the run's Agent (`run: { agentId, needsInput }`) so the browser
+    can open its pane.
+  - The run's timeout counts from when the prompt is delivered.
+  - A kind that is not configured or whose program is not executable reports its
+    Review runs unavailable.
 - `tour` names the agent, `model`, `effort` and `prompt` that narrate the tour.
   The agent defaults to `codex` when `adapters.codex` is configured, else
   `claude`; with neither the tour reports unavailable. Without a `prompt` the

@@ -181,6 +181,12 @@ export class TmuxAdapter {
     return results.every(result => result.code === 0);
   }
 
+  // hand a Review run's pane back to the operator: drop its `@rac_review_run` mark, so its Agent
+  // is an ordinary one again (completion notifications, launch adoption)
+  async unmarkReviewRun(socket: SocketRef, pane: string): Promise<boolean> {
+    return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'set-option', '-p', '-t', pane, '-u', '@rac_review_run'])).code === 0;
+  }
+
   // Mark a session as the Workspace of a Place: `@rac_place` is a session option, so every pane
   // of the session, in any window made later too, reads it (`Pane.placeMark`). `target` is the
   // session id or one of its pane ids.
