@@ -6937,7 +6937,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, onOpenWorktreeS
   const menuPanels: PlaceMenuPanel[] = [];
   if (phone && workspace !== undefined) {
     const { browser, code, carousel } = workspace;
-    menuPanels.push({ key: 'browser', label: 'Browser', icon: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{browserGlyph}</svg>, title: browser.homeUrl === undefined ? 'No project URL is configured here' : 'Show the project in the browser panel', disabled: browser.homeUrl === undefined, onSelect: () => browser.open ? carousel?.show('browser') : browser.toggle() });
+    if (browser.homeUrl !== undefined) menuPanels.push({ key: 'browser', label: 'Browser', icon: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{browserGlyph}</svg>, title: 'Show the project in the browser panel', onSelect: () => browser.open ? carousel?.show('browser') : browser.toggle() });
     if (worktreeId !== undefined && (place?.stack?.processes?.length ?? 0) > 0) menuPanels.push({ key: 'stack', label: 'Stack', icon: <StackIcon path={stackGlyphs.panel} className="more-menu-icon" />, title: 'Show the Stack panel', onSelect: () => workspace.openStackPanel() });
     if (worktreeId !== undefined) menuPanels.push({ key: 'code', label: 'Code', icon: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{codeGlyph}</svg>, title: 'Show the working changes in the Code panel', onSelect: () => code.open ? carousel?.show('code') : code.openChanges('working') });
   }
@@ -6963,11 +6963,10 @@ const browserGlyph = <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14
 const codeGlyph = <path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" />;
 
 // The toolbar's Browser button: it opens and closes the Place's browser panel, tinted while open.
-// A Place with no project URL has nothing to browse.
+// A Place with no project URL has nothing to browse, so it shows no button at all.
 function BrowserToggle({ browser }: { browser: WorkspaceState['browser'] }) {
-  const unavailable = browser.homeUrl === undefined;
-  const title = unavailable ? 'No project URL is configured here' : browser.open ? 'Close the browser panel' : 'Open the project in the browser panel';
-  return <button type="button" className={`toolbar-button browser-toggle${browser.open ? ' panel-open' : ''}`} aria-label="Browser" aria-pressed={browser.open} disabled={unavailable} title={title} onClick={browser.toggle}><svg viewBox="0 0 24 24" aria-hidden="true">{browserGlyph}</svg><span className="toolbar-label">Browser</span></button>;
+  if (browser.homeUrl === undefined) return null;
+  return <button type="button" className={`toolbar-button browser-toggle${browser.open ? ' panel-open' : ''}`} aria-label="Browser" aria-pressed={browser.open} title={browser.open ? 'Close the browser panel' : 'Open the project in the browser panel'} onClick={browser.toggle}><svg viewBox="0 0 24 24" aria-hidden="true">{browserGlyph}</svg><span className="toolbar-label">Browser</span></button>;
 }
 
 // The toolbar's Code button: it opens the Worktree's working changes in the Code panel, or closes it.

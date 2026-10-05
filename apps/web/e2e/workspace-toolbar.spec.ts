@@ -96,7 +96,7 @@ test('renders the same toolbar for a Worktree with and without an Agent', async 
   await page.getByRole('tab', { name: /^Idle/u }).click();
   await expect(toolbar(page).locator('.launch-split:not(.quiet) .launch-primary')).toHaveText(/^\W*Launch Claude$/u);
   const idleNames = await controlNames(page);
-  expect(idleNames.filter(name => !name.startsWith('Conversations'))).toEqual(['Launch Claude', 'Choose agent', 'Open a terminal', 'Notes (0)', 'Browser', 'Code', 'Review 2 cleanup targets', 'Git status: idle; clean', 'More options']);
+  expect(idleNames.filter(name => !name.startsWith('Conversations'))).toEqual(['Launch Claude', 'Choose agent', 'Open a terminal', 'Notes (0)', 'Code', 'Review 2 cleanup targets', 'Git status: idle; clean', 'More options']);
   // the agentless view's own power and pin controls are gone
   await expect(page.getByRole('button', { name: 'Worktree power options' })).toHaveCount(0);
   await expect(page.locator('.place-pin')).toHaveCount(0);
@@ -145,9 +145,9 @@ test('a Place without git shows its path instead of Code, git and stack', async 
     await expect(toolbar(page).getByRole('button', { name: 'Code' })).toHaveCount(0);
     await expect(toolbar(page).locator('.git-status-summary')).toHaveCount(0);
     await expect(toolbar(page).locator('.project-stack-trigger')).toHaveCount(0);
-    // the panel buttons stay; with no project URL the Browser has nothing to open
+    // the panel buttons stay, but with no project URL there is no Browser button
     await expect(toolbar(page).getByRole('button', { name: 'Open a terminal' })).toBeVisible();
-    await expect(toolbar(page).getByRole('button', { name: 'Browser' })).toBeDisabled();
+    await expect(toolbar(page).getByRole('button', { name: 'Browser' })).toHaveCount(0);
     await expect(toolbar(page).getByRole('button', { name: /^Launch/u }).first()).toBeEnabled();
     // the ⋮ holds only the folder pin without a git checkout
     await toolbar(page).getByRole('button', { name: 'More options' }).click();

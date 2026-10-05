@@ -260,7 +260,8 @@ test('Empty workspace opens a panel-less Workspace that closes when left, unless
   await expect(empty).toContainText('/repo/feature');
   await expect(empty.getByRole('button', { name: 'Launch Feature' })).toBeVisible();
   await expect(empty.getByRole('button', { name: 'Open a terminal' })).toBeVisible();
-  await expect(empty.getByRole('button', { name: 'Browser' })).toBeVisible();
+  // this Worktree has no project URL, so there is no Browser button to repeat
+  await expect(empty.getByRole('button', { name: 'Browser' })).toHaveCount(0);
   await expect(empty.getByRole('button', { name: 'Code', exact: true })).toBeVisible();
   await expect(empty).toContainText('closes when you switch away');
   await expect(page.locator('.terminal-pane, .note-pane')).toHaveCount(0);
