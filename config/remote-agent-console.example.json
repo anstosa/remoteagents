@@ -37,5 +37,32 @@
       "worktreesDirectory": "../example.worktrees",
       "commands": { "setup": "pnpm install", "processes": { "dev": "pnpm dev" } }
     }
-  ]
+  ],
+  "review": {
+    "agents": {
+      "codex": { "mode": "headless" },
+      "claude": { "mode": "interactive" }
+    },
+    "tour": {
+      "agent": "codex",
+      "effort": "low"
+    },
+    "defaultPreset": "correctness",
+    "presets": [
+      {
+        "id": "correctness",
+        "label": "Correctness",
+        "agent": "codex",
+        "effort": "high",
+        "prompt": "Review these changes for bugs: logic errors, regressions, unhandled edge cases, broken error handling, and races. Report only real problems a reviewer should act on, not style preferences."
+      },
+      {
+        "id": "security",
+        "label": "Security",
+        "agent": "codex",
+        "effort": "xhigh",
+        "prompt": "Review these changes for security problems: injection, missing authorization checks, secrets or sensitive data in logs or responses, unsafe file or process handling, and trust of unvalidated input."
+      }
+    ]
+  }
 }
