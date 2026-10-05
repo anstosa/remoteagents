@@ -108,7 +108,7 @@ describe('headless Claude Review runner', () => {
     await expect(runner.capability()).resolves.toEqual({ available: true });
     await expect(runner.run(request(fixture.root, { kind: 'claude' }), new AbortController().signal)).resolves.toEqual({ answer: 'yes' });
     const args = (await readFile(join(fixture.root, 'args'), 'utf8')).trim().split('\n');
-    expect(args).toEqual(['-p', '--output-format', 'json', '--json-schema', JSON.stringify(schema), '--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence']);
+    expect(args).toEqual(['-p', '--output-format', 'json', '--json-schema', JSON.stringify(schema), '--tools', 'Read,Grep,Glob,Skill', '--strict-mcp-config', '--no-session-persistence']);
     expect((await readFile(join(fixture.root, 'cwd'), 'utf8')).trim()).toBe(fixture.root);
     expect(await readFile(join(fixture.root, 'prompt'), 'utf8')).toBe('Explain the change.');
   });

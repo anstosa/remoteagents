@@ -272,14 +272,14 @@ Every field is optional.
 
 - `agents.<kind>.mode` is `headless` (the default) or `interactive`. A headless
   run is a child process with schema-constrained output: `codex exec --sandbox
-  read-only`, or `claude -p --tools Read,Grep,Glob --no-session-persistence`.
+  read-only`, or `claude -p --tools Read,Grep,Glob,Skill --no-session-persistence`.
   Claude bills `-p` use separately from interactive use, which is why the mode is
   set per kind. An interactive run is a fresh, visible Agent of that kind in the
   Worktree's Workspace, named `🗺 Tour · <branch>` or `🔍 Review · <preset>`:
   - It launches in a new window of the Workspace session, never in an idle shell,
     with the same read-only restrictions added to that launch only. Codex gets
     `--sandbox read-only --ask-for-approval never`. Claude gets `--tools
-    Read,Grep,Glob --strict-mcp-config` and keeps the console's hooks settings.
+    Read,Grep,Glob,Skill --strict-mcp-config` and keeps the console's hooks settings.
     The run's `model` and `effort` are added too. Operator `adapters.<kind>.args`
     still apply, except the flags these replace or that would loosen them (for
     example `--sandbox`, `--model` or Codex's
@@ -318,7 +318,11 @@ Every field is optional.
   CLI's own default applies. `model` is passed as `-m` / `--model`.
 - A `prompt` (≤8000 characters) says what to look for. The console always
   appends the change list, the output shape and the rules its parser enforces,
-  so a custom prompt cannot break the result.
+  so a custom prompt cannot break the result. A Claude run may invoke the
+  operator's skills (user `~/.claude/skills` and the Worktree's project
+  `.claude/skills`), so a prompt can name one ("follow the security-review
+  skill"). Edit, Write, Bash and MCP stay off, so only a skill that reads works;
+  one that runs a command or edits fails at that step.
 
 A tour or preset naming an agent that is not configured under `adapters`, an
 effort that agent does not accept, a duplicate preset id or an unknown

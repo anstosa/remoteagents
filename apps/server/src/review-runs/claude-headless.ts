@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { run } from '../tmux/command.js';
 import { MAX_REVIEW_GENERATED_BYTES } from '../review-tour/contracts.js';
 import { runReviewProcess } from './process.js';
-import { ReviewRunError, unavailable, type KindReviewRunner, type ReviewRunCapability, type ReviewRunRequest } from './runner.js';
+import { claudeReviewTools, ReviewRunError, unavailable, type KindReviewRunner, type ReviewRunCapability, type ReviewRunRequest } from './runner.js';
 
 // the result envelope carries the text result and usage beside the structured output
 const envelopeBytes = (outputBytes: number) => 4 * outputBytes + 65_536;
@@ -17,7 +17,7 @@ type ClaudeResult = { type?: unknown; is_error?: unknown; result?: unknown; stru
 export function claudePrintArgs(request: Pick<ReviewRunRequest, 'schema' | 'model' | 'effort'>): string[] {
   const model = request.model === undefined ? [] : ['--model', request.model];
   const effort = request.effort === undefined ? [] : ['--effort', request.effort];
-  return ['-p', '--output-format', 'json', '--json-schema', JSON.stringify(request.schema), '--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', ...model, ...effort];
+  return ['-p', '--output-format', 'json', '--json-schema', JSON.stringify(request.schema), '--tools', claudeReviewTools, '--strict-mcp-config', '--no-session-persistence', ...model, ...effort];
 }
 
 // the result object from `--output-format json` (one object; an array of messages under --verbose)

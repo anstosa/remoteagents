@@ -1191,7 +1191,7 @@ describe('Review run launches', () => {
     // a variadic flag takes every following value, up to the next flag
     expect(withoutFlags(['--mcp-config', 'a.json', 'b.json', '--verbose'], reviewReplacedFlags('claude', {}))).toEqual(['--verbose']);
     expect(reviewRunArgs('codex', { model: 'gpt-5', effort: 'low' })).toEqual(['--sandbox', 'read-only', '--ask-for-approval', 'never', '-m', 'gpt-5', '-c', 'model_reasoning_effort=low']);
-    expect(reviewRunArgs('claude', { readDirectory: '/tmp/runs', effort: 'high' })).toEqual(['--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--add-dir', '/tmp/runs', '--effort', 'high']);
+    expect(reviewRunArgs('claude', { readDirectory: '/tmp/runs', effort: 'high' })).toEqual(['--tools', 'Read,Grep,Glob,Skill', '--strict-mcp-config', '--add-dir', '/tmp/runs', '--effort', 'high']);
     expect(composeLaunch('/usr/local/bin/codex', [], ['-c', 'x=1'], {}, {}, undefined, ['--sandbox', 'read-only'])).toBe('/usr/local/bin/codex -c x=1 --sandbox read-only');
   });
 
@@ -1237,7 +1237,7 @@ describe('Review run launches', () => {
     expect(window?.slice(0, 6)).toEqual(['-S', '/host-tmux/default', 'new-window', '-d', '-t', '$1']);
     const descriptor = JSON.parse(await readFile(window!.at(-1)!, 'utf8')) as { args: string[] };
     // the Adapter's hooks settings stay; the operator's --model gives way to the run's
-    expect(descriptor.args.join(' ')).toContain(`/usr/local/bin/claude --settings ${join(filesDir, 'claude', 'hooks.json')} --verbose --tools Read,Grep,Glob --strict-mcp-config --add-dir /tmp/runs --model sonnet`);
+    expect(descriptor.args.join(' ')).toContain(`/usr/local/bin/claude --settings ${join(filesDir, 'claude', 'hooks.json')} --verbose --tools Read,Grep,Glob,Skill --strict-mcp-config --add-dir /tmp/runs --model sonnet`);
     expect(descriptor.args.join(' ')).not.toContain('opus');
     expect(panes.pastePrompt).not.toHaveBeenCalled();
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%9', '@rac_review_run', runId]);

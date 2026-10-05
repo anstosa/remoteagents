@@ -1,6 +1,11 @@
 import { ReviewTourError } from '../review-tour/contracts.js';
 import type { ReviewAgentKind } from './efforts.js';
 
+// the only built-in tools a Claude Review run gets, headless or interactive: reading the
+// repository, plus Skill so a preset prompt can name an operator's skill. With Edit, Write and
+// Bash withheld, a skill can only read; one that runs a command or edits fails at that step
+export const claudeReviewTools = 'Read,Grep,Glob,Skill';
+
 export type ReviewRunUnavailableReason = 'generator_unavailable' | 'unsupported_cli' | 'configuration_invalid' | 'authentication_required' | 'interactive_unavailable';
 export type ReviewRunCapability = { available: true } | { available: false; reason: ReviewRunUnavailableReason };
 // an interactive run's visible Agent, and whether it is asking the operator a question

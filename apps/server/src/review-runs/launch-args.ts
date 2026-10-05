@@ -2,14 +2,15 @@ import { execFile } from 'node:child_process';
 import type { ReplacedFlagValue } from '../launch/service.js';
 import { safeEnv } from '../tmux/command.js';
 import type { ReviewAgentKind } from './efforts.js';
+import { claudeReviewTools } from './runner.js';
 
 // The per-launch arguments of an interactive Review run (ADR 0010): the same read-only
 // restrictions as its headless run, plus the model and effort when given. Claude gets only
-// the read tools and no MCP servers, and may read the run's prompt directory; the Adapter's
+// the read tools and Skill, and no MCP servers, and may read the run's prompt directory; the Adapter's
 // own `--settings` (the state-reporting hooks) stays in place. Codex runs read-only and never
 // asks for approval; its MCP servers are disabled by `codexMcpDisableArgs`, appended by the host.
 export function reviewRunArgs(kind: ReviewAgentKind, run: { model?: string; effort?: string; readDirectory?: string }): string[] {
-  if (kind === 'claude') return ['--tools', 'Read,Grep,Glob', '--strict-mcp-config', ...(run.readDirectory === undefined ? [] : ['--add-dir', run.readDirectory]), ...(run.model === undefined ? [] : ['--model', run.model]), ...(run.effort === undefined ? [] : ['--effort', run.effort])];
+  if (kind === 'claude') return ['--tools', claudeReviewTools, '--strict-mcp-config', ...(run.readDirectory === undefined ? [] : ['--add-dir', run.readDirectory]), ...(run.model === undefined ? [] : ['--model', run.model]), ...(run.effort === undefined ? [] : ['--effort', run.effort])];
   return ['--sandbox', 'read-only', '--ask-for-approval', 'never', ...(run.model === undefined ? [] : ['-m', run.model]), ...(run.effort === undefined ? [] : ['-c', `model_reasoning_effort=${run.effort}`])];
 }
 
