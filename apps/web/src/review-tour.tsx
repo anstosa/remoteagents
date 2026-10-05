@@ -4,6 +4,7 @@ import { prefersReducedMotion } from './reduced-motion.js';
 import { usePhoneLayout } from './panel-header.js';
 import type { ReviewDiffComment, ReviewDiffSide, ReviewDiffSuggestion } from './code-panel/review-diffs.js';
 import type { EditorTarget } from './code-panel/editor-jump.js';
+import { patchRowIndex, patchRows } from './code-panel/patch-rows.js';
 import { codeReviewCount, codeReviewErrorMessage, failureCode, isCodeReviewJob, reviewRunFrom, useCodeReviewPoll, useJobElapsed, type CodeReview, type CodeReviewCapability, type CodeReviewJob, type CodeReviewOptions, type CodeReviewOutcome, type GeneralFinding, type ReviewRunLink } from './code-review.js';
 import { CodeReviewSheet, reviewAgentLabel, type ReviewAgentKind } from './review-start.js';
 
@@ -34,10 +35,27 @@ type ReviewFailure = { code?: string; message?: string };
 type FindingTriage = { state: 'kept'; commentId: string } | { state: 'noted'; note: string } | { state: 'dismissed' };
 // a kept general Finding and its note
 type GeneralNote = { finding: GeneralFinding; note: string };
+// The reviewed branch's open or draft pull request, which an All PR tour can post its feedback to.
+export type ReviewPullRequest = { number: number; url: string };
+// What one post to the pull request did with an inline comment: a line comment, a file-level one
+// quoting its lines (`reason` says why its lines were not placed), or failed; `location` names where
+// the comment sat when posted, so the summary can list it after the comment is edited or deleted.
+type PostedComment = { result: 'line' | 'file' | 'failed'; reason?: string; location: string };
+// The draft (pending) review on the pull request so far: where to finish it, the text of each body
+// section its body took by section key, and each posted comment's outcome by comment id.
+type PullRequestPost = { url: string; number: number; sections: Record<string, string>; comments: Record<string, PostedComment> };
+// One keyed section of the review body: a kept general Finding's note (`general:<id>`), a step's note
+// under its title (`step:<id>`), or the retained feedback (`retained`). A later post sends only the
+// sections that are new or whose text changed since one was posted.
+type BodySection = { key: string; text: string; heading?: string };
+// a successful post: the review to finish on GitHub, whether its body took the notes, each comment's outcome
+type PostedResponse = { review: { url: string; pullRequest: { number: number } }; bodyPosted: boolean; comments: { id: string; result: PostedComment['result']; reason?: string }[] };
 
 const maxFeedback = 4_000;
 const maxFeedbackTotal = 20_000;
 const maxDispatch = 30_000;
+// the most inline comments the server takes in one post
+const maxPostComments = 200;
 const transitionMs = 240;
 
 // replace a cached generic title until the tour is regenerated
@@ -147,7 +165,8 @@ async function responseBody(response: Response): Promise<Record<string, unknown>
 // Mirrors commentRangeLabel in review-diffs.tsx as a `file:lines` reference; kept here because that
 // module is lazy-loaded with the diff library and this dialog is in the eager bundle.
 function commentLocation(file: string, comment: ReviewDiffComment): string {
-  if (comment.startSide !== comment.endSide) return `${file} old ${comment.startLine} – new ${comment.endLine}`;
+  const side = (candidate: ReviewDiffSide) => candidate === 'deletions' ? 'old' : 'new';
+  if (comment.startSide !== comment.endSide) return `${file} ${side(comment.startSide)} ${comment.startLine} – ${side(comment.endSide)} ${comment.endLine}`;
   const lines = comment.startLine === comment.endLine ? `${comment.startLine}` : `${comment.startLine}-${comment.endLine}`;
   return `${file}:${lines} (${comment.endSide === 'deletions' ? 'old' : 'new'})`;
 }
@@ -158,20 +177,9 @@ const maxQuotedLines = 8;
 // code itself — a removed line is not in the working tree for the agent to look up. Walks the hunks
 // counting old and new line numbers; capped, keeping the last lines (the comment sits under them).
 function quotedLines(patch: string, comment: ReviewDiffComment): string[] {
-  const rows: { old?: number; new?: number; text: string }[] = [];
-  let oldLine = 0;
-  let newLine = 0;
-  for (const text of patch.split('\n')) {
-    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(text);
-    if (header) { oldLine = Number(header[1]); newLine = Number(header[2]); continue; }
-    if (oldLine === 0 && newLine === 0) continue;
-    if (text.startsWith('-')) rows.push({ old: oldLine++, text });
-    else if (text.startsWith('+')) rows.push({ new: newLine++, text });
-    else if (text.startsWith(' ')) rows.push({ old: oldLine++, new: newLine++, text });
-  }
-  const lineOn = (side: ReviewDiffSide, row: { old?: number; new?: number }) => side === 'deletions' ? row.old : row.new;
-  const start = rows.findIndex(row => lineOn(comment.startSide, row) === comment.startLine);
-  const end = rows.findIndex(row => lineOn(comment.endSide, row) === comment.endLine);
+  const rows = patchRows(patch);
+  const start = patchRowIndex(rows, comment.startSide, comment.startLine);
+  const end = patchRowIndex(rows, comment.endSide, comment.endLine);
   if (start < 0 || end < start) return [];
   const covered = rows.slice(start, end + 1).map(row => row.text);
   return covered.length > maxQuotedLines ? ['…', ...covered.slice(-maxQuotedLines)] : covered;
@@ -208,10 +216,24 @@ function findingSource(review: CodeReview): string {
   return [review.preset.label, reviewAgentLabel(review.preset.agent), ...(review.effort === undefined ? [] : [review.effort])].join(' · ');
 }
 
+// one kept general Finding's note under the file it names, if it has one
+function generalItem({ finding, note }: GeneralNote): string[] {
+  return note.trim() === '' ? [] : [finding.file === undefined ? note.trim() : `### ${finding.file}\n${note.trim()}`];
+}
+
+// the "General" section of general Finding notes, if any
+function generalSection(items: string[]): string[] {
+  return items.length === 0 ? [] : [['## General', ...items].join('\n\n')];
+}
+
+// the section of feedback a regeneration detached from its step or comment, if any
+function retainedSection(orphanFeedback: string): string[] {
+  return orphanFeedback.trim() === '' ? [] : [`## Feedback retained from regenerated steps\n${orphanFeedback.trim()}`];
+}
+
 // format one consolidated change request
 function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, comments: ReviewDiffComment[], statuses: Record<string, StepState>, orphanFeedback: string, generalNotes: GeneralNote[]): string {
-  // kept general Findings lead, each under the file it names
-  const general = generalNotes.flatMap(({ finding, note }) => note.trim() === '' ? [] : [finding.file === undefined ? note.trim() : `### ${finding.file}\n${note.trim()}`]);
+  // each step with feedback: its note, then its inline comments located and quoted
   const notes = tour.steps.flatMap(step => {
     const note = feedback[step.id]?.trim();
     // a step's inline comments follow its changes in tour order, then top to bottom
@@ -222,7 +244,57 @@ function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, comme
     });
     return note || inline.length > 0 ? [[`## ${step.title} (${statuses[step.id] ?? 'unvisited'})`, ...(note ? [note] : []), ...inline].join('\n\n')] : [];
   });
-  return [`Please address the feedback from my guided review of ${tour.scope === 'working' ? 'Working' : 'All PR'} changes against ${tour.base}.`, `Tour: ${displayedTourTitle(tour)}`, `Comparison: ${tour.fingerprint.slice(0, 12)}`, ...(general.length === 0 ? [] : [['## General', ...general].join('\n\n')]), ...notes, ...(orphanFeedback.trim() === '' ? [] : [`## Feedback retained from regenerated steps\n${orphanFeedback.trim()}`])].join('\n\n');
+  // kept general Findings lead, and feedback retained from regenerated steps trails
+  return [`Please address the feedback from my guided review of ${tour.scope === 'working' ? 'Working' : 'All PR'} changes against ${tour.base}.`, `Tour: ${displayedTourTitle(tour)}`, `Comparison: ${tour.fingerprint.slice(0, 12)}`, ...generalSection(generalNotes.flatMap(generalItem)), ...notes, ...retainedSection(orphanFeedback)].join('\n\n');
+}
+
+// The draft review's body on the pull request as keyed sections: the change request's notes for a
+// human reader — the general notes, each step's note under its title, and the retained feedback —
+// without its agent-directed intro; the inline comments post as line comments instead.
+function pullRequestBodySections(tour: ReviewTour, feedback: Record<string, string>, orphanFeedback: string, generalNotes: GeneralNote[]): BodySection[] {
+  return [
+    ...generalNotes.flatMap(note => generalItem(note).map(text => ({ key: `general:${note.finding.id}`, text }))),
+    ...tour.steps.flatMap(step => {
+      const note = feedback[step.id]?.trim();
+      return note ? [{ key: `step:${step.id}`, heading: step.title, text: note }] : [];
+    }),
+    ...retainedSection(orphanFeedback).map(text => ({ key: 'retained', text }))
+  ];
+}
+
+// the markdown of some body sections, in the change request's shape
+function pullRequestReviewBody(sections: BodySection[]): string {
+  const general = sections.filter(section => section.key.startsWith('general:')).map(section => section.text);
+  return [...generalSection(general), ...sections.flatMap(section => section.heading === undefined ? [] : [`## ${section.heading}\n\n${section.text}`]), ...sections.filter(section => section.key === 'retained').map(section => section.text)].join('\n\n');
+}
+
+// validate a post's per-comment outcomes
+function isPostedResponse(body: Record<string, unknown>): body is Record<string, unknown> & PostedResponse {
+  const { review, bodyPosted, comments } = body as Partial<PostedResponse>;
+  return body.status === 'ok' && review !== null && typeof review === 'object' && typeof review.url === 'string' && review.pullRequest !== null && typeof review.pullRequest === 'object' && typeof review.pullRequest.number === 'number'
+    && typeof bodyPosted === 'boolean' && Array.isArray(comments) && comments.every(comment => comment !== null && typeof comment === 'object' && typeof comment.id === 'string' && ['line', 'file', 'failed'].includes(comment.result) && (comment.reason === undefined || typeof comment.reason === 'string'));
+}
+
+// Translate a refused post to the pull request. The server words its own refusals (`message`); the
+// copy here covers only a response without one: a rejected request, an unexpected failure, a failed
+// capture of the Comparison, and untyped status failures.
+function pullRequestErrorMessage(body: Record<string, unknown>, status: number): string {
+  const { code, message } = responseFailure(body);
+  if (code !== undefined && message !== undefined) return message;
+  if (code === 'invalid_request') return 'The console rejected the review request. Refresh the console and try again.';
+  if (code === 'scope_unavailable') return 'The All PR comparison is unavailable, so the review cannot be posted.';
+  if (code === 'target_unavailable') return 'The reviewed agent changed or closed. Reopen the review and try again.';
+  if (code === 'conflicted_unavailable') return 'Resolve merge conflicts before posting the review.';
+  if (code === 'too_large') return 'This change is too large to post as a review.';
+  if (code === 'configured_worktree_required') return 'Posting a review requires a configured worktree.';
+  if (code !== undefined) return 'The review could not be posted to GitHub. Try again.';
+  if (status === 401) return 'Your console session expired. Sign in again, then try again.';
+  if (status === 403) return 'This browser is no longer authorized to post reviews. Refresh the console and try again.';
+  if (status === 423 || message === 'another client is active') return 'Another browser controls this console. Take control, then try again.';
+  if (status === 429) return 'Too many requests were sent. Wait a moment, then post again.';
+  if (status >= 500) return 'The console connection was interrupted while posting the review. Check the connection, then try again.';
+  if (status >= 200 && status < 300) return 'The server returned an invalid response. Refresh the console and try again.';
+  return 'The console rejected the review request. Refresh the console and try again.';
 }
 
 // render and manage one guided review
@@ -230,8 +302,9 @@ function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, comme
 // A restored tour passes its stored Code review (`initialCodeReview`) or the job still running it
 // (`initialCodeReviewJob`); `codeReviewCapability` lists the presets "Add AI review" offers, and
 // `tourAgent` names the agent that narrates the tour in its failures. `onOpenAgent` selects an
-// interactive Review run's Agent in the console, for its "Open pane" link.
-export function ReviewTourDialog({ launch, request, minimized, initialTour, tourAgent, initialCodeReview, initialCodeReviewJob, codeReviewCapability, onMinimize, onDismiss, onIndicatorChange, onReady, onOpenInEditor, onOpenAgent }: { launch: ReviewLaunch; request: ReviewRequest; minimized: boolean; initialTour?: ReviewTour; tourAgent?: ReviewAgentKind; initialCodeReview?: CodeReview; initialCodeReviewJob?: CodeReviewJob; codeReviewCapability?: CodeReviewCapability; onMinimize: () => void; onDismiss: () => Promise<boolean>; onIndicatorChange: (indicator: ReviewTourIndicator) => void; onReady: (tour: ReviewTour) => void; onOpenInEditor?: (target: EditorTarget) => void; onOpenAgent?: (agentId: string) => void }) {
+// interactive Review run's Agent in the console, for its "Open pane" link. `pullRequest`, the reviewed
+// branch's open or draft pull request, lets an All PR tour's summary post its feedback there as a draft review.
+export function ReviewTourDialog({ launch, request, minimized, initialTour, tourAgent, initialCodeReview, initialCodeReviewJob, codeReviewCapability, pullRequest, onMinimize, onDismiss, onIndicatorChange, onReady, onOpenInEditor, onOpenAgent }: { launch: ReviewLaunch; request: ReviewRequest; minimized: boolean; initialTour?: ReviewTour; tourAgent?: ReviewAgentKind; initialCodeReview?: CodeReview; initialCodeReviewJob?: CodeReviewJob; codeReviewCapability?: CodeReviewCapability; pullRequest?: ReviewPullRequest; onMinimize: () => void; onDismiss: () => Promise<boolean>; onIndicatorChange: (indicator: ReviewTourIndicator) => void; onReady: (tour: ReviewTour) => void; onOpenInEditor?: (target: EditorTarget) => void; onOpenAgent?: (agentId: string) => void }) {
   // the Comparison is fixed for the dialog's lifetime: changing it means starting again
   const { includeTests, includeDocs } = launch;
   const [state, setState] = useState<ViewState>(initialTour === undefined ? 'loading' : 'tour');
@@ -256,6 +329,11 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
   const [dispatchEdited, setDispatchEdited] = useState(false);
   const [dispatching, setDispatching] = useState(false);
   const [sent, setSent] = useState(false);
+  // the draft review posted to the pull request so far, a post in flight, and why the last one failed:
+  // whether the server says trying again may help, and whether it was a Retry of the failed comments
+  const [pullRequestPost, setPullRequestPost] = useState<PullRequestPost>();
+  const [posting, setPosting] = useState(false);
+  const [postError, setPostError] = useState<{ message: string; retryable: boolean; retry: boolean }>();
   const [stale, setStale] = useState(false);
   const [retry, setRetry] = useState(0);
   const [closing, setClosing] = useState(false);
@@ -278,6 +356,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
   const generation = useRef(0);
   const dialog = useRef<HTMLDivElement | null>(null);
   const dispatchError = useRef<HTMLParagraphElement | null>(null);
+  const postErrorRef = useRef<HTMLDivElement | null>(null);
   const minimizeTimer = useRef<number | undefined>(undefined);
   const onReadyRef = useRef(onReady);
 
@@ -310,6 +389,13 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
     return () => window.cancelAnimationFrame(frame);
   }, [state, error]);
 
+  // focus a failed post to the pull request after render
+  useEffect(() => {
+    if (state !== 'summary' || postError === undefined) return;
+    const frame = window.requestAnimationFrame(() => postErrorRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [state, postError]);
+
   // generate for the launch's fixed Comparison
   useEffect(() => {
     const restored = initialTour !== undefined && retry === 0;
@@ -339,6 +425,9 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
     setTourRun(undefined);
     setStale(false);
     setSent(false);
+    // a regenerated tour posts all of its feedback again; the server skips what the draft already holds
+    setPullRequestPost(undefined);
+    setPostError(undefined);
     // a new start supersedes any Code review; one requested with this launch comes back with the job
     setCodeReviewJob(undefined);
     setCodeReview(undefined);
@@ -686,6 +775,50 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
     setError('');
     setSent(true);
   };
+  // The feedback a post to the pull request carries: the body sections new or changed since the last
+  // post that took them, and the non-blank inline comments not yet posted (or failed). A posted
+  // comment's later edits are not synced.
+  const postableComments = comments.filter(comment => comment.body.trim() !== '' && tour?.changes.some(change => change.id === comment.changeId) === true);
+  const unpostedComments = postableComments.filter(comment => pullRequestPost?.comments[comment.id] === undefined || pullRequestPost.comments[comment.id]!.result === 'failed');
+  const failedComments = postableComments.filter(comment => pullRequestPost?.comments[comment.id]?.result === 'failed');
+  const unpostedSections = tour === undefined ? [] : pullRequestBodySections(tour, feedback, orphanFeedback, generalNotes).filter(section => pullRequestPost?.sections[section.key] !== section.text);
+  const reviewBody = pullRequestReviewBody(unpostedSections);
+  // only the first `maxPostComments` go in one post; the rest wait for the next
+  const pendingComments = unpostedComments.filter(comment => pullRequestPost?.comments[comment.id] === undefined).length;
+  const allPosted = reviewBody.trim() === '' && unpostedComments.length === 0;
+  const canPost = launch.scope === 'pr' && pullRequest !== undefined;
+  // Post feedback to the pull request as the operator's draft review: everything not yet posted, or
+  // with `retry` only the failed comments. The server de-duplicates, so a repeat is harmless.
+  const postToPullRequest = async (retry = false) => {
+    const outgoing = (retry ? failedComments : unpostedComments).slice(0, maxPostComments);
+    const sections = retry ? [] : unpostedSections;
+    const body = retry ? '' : reviewBody.trim();
+    if (posting || !canPost || tour === undefined || (body === '' && outgoing.length === 0)) return;
+    if (body.length > maxFeedbackTotal) { setPostError({ message: 'Shorten the notes before posting.', retryable: false, retry }); return; }
+    setPosting(true);
+    setPostError(undefined);
+    try {
+      // reject changed Comparisons before posting
+      if (!await comparisonCurrent()) { setState('tour'); return; }
+      const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/pr-review`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope: 'pr', includeTests, includeDocs, fingerprint: tour.fingerprint, body, comments: outgoing.map(({ id, changeId, startSide, startLine, endSide, endLine, body: text }) => ({ id, changeId, startSide, startLine, endSide, endLine, body: text.trim() })) }) });
+      const responseJson = await responseBody(response);
+      if (response.ok && isPostedResponse(responseJson)) {
+        const locations = new Map(outgoing.map(comment => [comment.id, commentLocation(tour.changes.find(change => change.id === comment.changeId)?.file ?? '', comment)]));
+        const outcomes = Object.fromEntries(responseJson.comments.map(({ id, result, reason }) => [id, { result, ...(reason === undefined ? {} : { reason }), location: locations.get(id) ?? '' }]));
+        const posted = responseJson.bodyPosted ? Object.fromEntries(sections.map(section => [section.key, section.text])) : {};
+        setPullRequestPost(current => ({ url: responseJson.review.url, number: responseJson.review.pullRequest.number, sections: { ...current?.sections, ...posted }, comments: { ...current?.comments, ...outcomes } }));
+        return;
+      }
+      // a moved Comparison freezes the tour, as a stale send does
+      if (responseFailure(responseJson).code === 'stale') { setStale(true); setState('tour'); return; }
+      const retryable = (responseJson.error !== null && typeof responseJson.error === 'object' ? (responseJson.error as { retryable?: unknown }).retryable : undefined);
+      setPostError({ message: pullRequestErrorMessage(responseJson, response.status), retryable: typeof retryable === 'boolean' ? retryable : response.status >= 500, retry });
+    } catch {
+      setPostError({ message: 'The console connection was interrupted while posting the review. Check the connection, then try again.', retryable: true, retry });
+    } finally {
+      setPosting(false);
+    }
+  };
   // retain the current review after its exit transition
   const minimize = () => {
     // ignore repeated minimize requests
@@ -714,7 +847,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
   const dialogKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     // Escape dismisses the topmost thing: the phone notes drawer, then the step's open comment
     // editors (an empty one is discarded), and only then the review itself
-    if (event.key === 'Escape' && !dispatching) {
+    if (event.key === 'Escape' && !dispatching && !posting) {
       if (state === 'tour' && phone && notesOpen) { closeNotes(); return; }
       const stepChangeIds = new Set(step?.changeIds);
       const openInStep = state === 'tour' ? comments.filter(comment => openCommentIds.has(comment.id) && stepChangeIds.has(comment.changeId)) : [];
@@ -770,6 +903,20 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
           ? <span className="review-tour-ai add"><button type="button" onClick={() => setAddingCodeReview(true)}>Add AI review</button></span>
           : null;
   const codeReviewSheet = addingCodeReview && codeReviewCapability !== undefined ? <CodeReviewSheet codeReview={codeReviewCapability} onStart={async options => { const failure = await startCodeReview(options); if (failure === undefined) closeCodeReviewSheet(); return failure; }} onCancel={closeCodeReviewSheet} /> : null;
+  // The draft review posted so far: a link to finish it on GitHub, its line and file-level comment
+  // counts, each file-level comment's location and reason, and the failed ones with Retry.
+  const postedOutcomes = Object.entries(pullRequestPost?.comments ?? {});
+  const fileLevel = postedOutcomes.filter(([, outcome]) => outcome.result === 'file');
+  const lineCount = postedOutcomes.filter(([, outcome]) => outcome.result === 'line').length;
+  const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+  const pullRequestStatus = pullRequestPost !== undefined && <section className="review-tour-pr-post" aria-label="Draft review on GitHub">
+    <p role="status"><a href={pullRequestPost.url} target="_blank" rel="noreferrer">Draft review on PR #{pullRequestPost.number} — finish it on GitHub</a></p>
+    <p>{[plural(lineCount, 'line comment'), plural(fileLevel.length, 'file-level comment'), ...(Object.keys(pullRequestPost.sections).length > 0 ? ['notes in the review body'] : [])].join(' · ')}</p>
+    {fileLevel.length > 0 && <ul aria-label="File-level comments">{fileLevel.map(([id, outcome]) => <li key={id}><strong>{outcome.location}</strong>{outcome.reason !== undefined && <small>{outcome.reason}</small>}</li>)}</ul>}
+    {failedComments.length > 0 && <div className="review-tour-pr-failed"><strong role="status">{plural(failedComments.length, 'comment')} failed</strong><ul aria-label="Failed comments">{failedComments.map(comment => { const outcome = pullRequestPost.comments[comment.id]!; return <li key={comment.id}><strong>{outcome.location}</strong>{outcome.reason !== undefined && <small>{outcome.reason}</small>}</li>; })}</ul><button type="button" disabled={posting || stale} onClick={() => void postToPullRequest(true)}>Retry failed</button></div>}
+    {pendingComments > 0 && <p>{plural(pendingComments, 'comment')} not posted yet{unpostedComments.length > maxPostComments ? ` — one post takes ${maxPostComments}; Post again for the rest` : ''}.</p>}
+    <small>Comments and notes already posted are not updated by later edits; new comments and new or changed notes are added to the review.</small>
+  </section>;
   // keep generation and freshness polling mounted while minimized
   if (minimized) return null;
   const content = <div className={`review-tour-backdrop${closing ? ' closing' : ''}`}><div ref={dialog} className="review-tour" role="dialog" aria-modal="true" aria-labelledby="review-tour-title" tabIndex={-1} onKeyDown={dialogKey}>
@@ -783,7 +930,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
       ? <><button ref={notesBar} type="button" className="review-tour-notes-bar" aria-label="Show step notes" aria-expanded={notesOpen} onClick={() => setNotesOpen(true)}><span><strong>{step.title}</strong><span>{step.explanation}</span></span>{current === 0 && untriagedGeneral > 0 ? <small className="has-feedback">{untriagedGeneral} general</small> : <small className={stepFeedback.trim() === '' ? undefined : 'has-feedback'}>{stepFeedback.trim() === '' ? 'Notes' : 'Feedback'}</small>}</button>
         {notesOpen && <><button type="button" className="review-tour-notes-backdrop" aria-label="Close step notes" onClick={closeNotes} /><section ref={notesDrawer} className="review-tour-narration review-tour-notes-drawer" role="dialog" aria-label="Step notes" tabIndex={-1}><div className="review-tour-notes-head"><span>Step notes</span><button type="button" aria-label="Close step notes" title="Close" onClick={closeNotes}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>{narration}</section></>}</>
       : <section className="review-tour-narration">{narration}</section>}<section className="review-tour-diffs" aria-label="Relevant changes"><Suspense fallback={<p className="review-tour-diff-loading" role="status">Loading diff…</p>}><ReviewDiffs changes={changes} comments={comments} openCommentIds={openCommentIds} onCommentAdd={addComment} onCommentChange={updateComment} onCommentOpen={openComment} onCommentClose={closeComment} onCommentDelete={deleteComment} suggestions={suggestions} onSuggestionKeep={keepFinding} onSuggestionDismiss={dismissFinding} onSuggestionRestore={restoreFinding} {...(onOpenInEditor === undefined ? {} : { onOpenInEditor })} /></Suspense></section></main><footer className="review-tour-actions"><button type="button" disabled={current === 0} onClick={back}>Back</button><button type="button" onClick={skip}>Skip</button><span>{feedbackTotal >= maxFeedbackTotal || limitNotice ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{complete ? <button type="button" disabled={stale || feedbackTotal > maxFeedbackTotal} onClick={() => void summarize()}>Review summary</button> : <button type="button" onClick={next}>Next</button>}</footer></>}
-    {tour && state === 'summary' && <main className="review-tour-summary"><h3>Review complete</h3><ul>{tour.steps.map(candidate => <li key={candidate.id}><span className={statuses[candidate.id]}>{statuses[candidate.id]}</span><strong>{candidate.title}</strong>{(untriagedByStep.get(candidate.id) ?? 0) > 0 && <small className="review-tour-finding-count" title="AI review findings not yet kept or dismissed">{untriagedByStep.get(candidate.id)}</small>}</li>)}</ul>{untriagedTotal > 0 && <div className="review-tour-untriaged" role="status"><span><strong>{untriagedTotal} {untriagedTotal === 1 ? 'finding' : 'findings'} not reviewed</strong> Untriaged findings are not sent.</span><button type="button" onClick={reviewUntriaged}>Review findings</button></div>}{generalFindings}{orphanFeedback !== '' && <p>Feedback from regenerated steps is retained in the consolidated change request.</p>}{feedbackTotal === 0 ? <p>No feedback was recorded. You can finish without sending anything.</p> : <><label>Consolidated change request<textarea value={dispatch} maxLength={maxDispatch} onChange={event => { setDispatch(event.target.value); setDispatchEdited(true); }} />{dispatch.length >= maxDispatch && <span role="status">{maxDispatch.toLocaleString()} character limit reached</span>}</label>{dispatchEdited && dispatch !== builtDispatch && !sent && <div className="review-tour-rebuild"><span>Edited by hand, so feedback changes are not added.</span><button type="button" onClick={rebuildDispatch}>Rebuild from feedback</button></div>}</>}{error && <p ref={dispatchError} className="review-tour-error" role="alert" tabIndex={-1}>{error}</p>}{sent && <p className="review-tour-sent" role="status">Change request sent to the implementation agent.</p>}<footer className="review-tour-actions"><button type="button" onClick={() => setState('tour')}>Back to tour</button><span>{limitNotice ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{feedbackTotal > 0 && !sent && <button type="button" disabled={dispatching || dispatch.trim() === '' || dispatch.length > maxDispatch} onClick={() => void send()}>{dispatching ? 'Sending…' : 'Send change request'}</button>}<button type="button" onClick={minimize}>Finish</button></footer></main>}
+    {tour && state === 'summary' && <main className="review-tour-summary"><h3>Review complete</h3><ul>{tour.steps.map(candidate => <li key={candidate.id}><span className={statuses[candidate.id]}>{statuses[candidate.id]}</span><strong>{candidate.title}</strong>{(untriagedByStep.get(candidate.id) ?? 0) > 0 && <small className="review-tour-finding-count" title="AI review findings not yet kept or dismissed">{untriagedByStep.get(candidate.id)}</small>}</li>)}</ul>{untriagedTotal > 0 && <div className="review-tour-untriaged" role="status"><span><strong>{untriagedTotal} {untriagedTotal === 1 ? 'finding' : 'findings'} not reviewed</strong> Untriaged findings are not sent.</span><button type="button" onClick={reviewUntriaged}>Review findings</button></div>}{generalFindings}{orphanFeedback !== '' && <p>Feedback from regenerated steps is retained in the consolidated change request.</p>}{feedbackTotal === 0 ? <p>No feedback was recorded. You can finish without sending anything.</p> : <><label>Consolidated change request<textarea value={dispatch} maxLength={maxDispatch} onChange={event => { setDispatch(event.target.value); setDispatchEdited(true); }} />{dispatch.length >= maxDispatch && <span role="status">{maxDispatch.toLocaleString()} character limit reached</span>}</label>{dispatchEdited && dispatch !== builtDispatch && !sent && <div className="review-tour-rebuild"><span>Edited by hand, so feedback changes are not added.</span><button type="button" onClick={rebuildDispatch}>Rebuild from feedback</button></div>}</>}{error && <p ref={dispatchError} className="review-tour-error" role="alert" tabIndex={-1}>{error}</p>}{sent && <p className="review-tour-sent" role="status">Change request sent to the implementation agent.</p>}{pullRequestStatus}{postError !== undefined && <div ref={postErrorRef} className="review-tour-pr-error" role="alert" tabIndex={-1}><p className="review-tour-error">{postError.message}</p>{postError.retryable && <button type="button" disabled={posting || stale} onClick={() => void postToPullRequest(postError.retry)}>Try again</button>}</div>}<footer className="review-tour-actions"><button type="button" onClick={() => setState('tour')}>Back to tour</button><span>{limitNotice ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{feedbackTotal > 0 && !sent && <button type="button" disabled={dispatching || dispatch.trim() === '' || dispatch.length > maxDispatch} onClick={() => void send()}>{dispatching ? 'Sending…' : 'Send change request'}</button>}{canPost && (feedbackTotal > 0 || pullRequestPost !== undefined) && <button type="button" className="review-tour-pr-button" disabled={posting || stale || allPosted} title={allPosted ? 'Everything is posted' : `Post as your draft review on PR #${pullRequest.number}`} onClick={() => void postToPullRequest()}>{posting ? <><span className="spinner" aria-hidden="true" />Posting…</> : allPosted && pullRequestPost !== undefined ? `Posted to PR #${pullRequest.number}` : `Post to PR #${pullRequest.number}`}</button>}<button type="button" onClick={minimize}>Finish</button></footer></main>}
     </div>
     <p className="review-tour-comparison">{comparisonLabel}</p>
     {codeReviewSheet}

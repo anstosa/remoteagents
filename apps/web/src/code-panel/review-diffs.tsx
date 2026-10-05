@@ -16,6 +16,7 @@ import { useTerminalFontSize } from '../terminal-font-size.js';
 import { DiffLayoutSegment, SPLIT_MIN_WIDTH, useObservedWidth } from './diff-layout.js';
 import { diffJumpLine, EditorJumpButton, type EditorTarget } from './editor-jump.js';
 import { codeViewBaseOptions, codeViewStyle, contentHash, diffItemForPatch } from './items.js';
+import { patchRowIndex, patchRows } from './patch-rows.js';
 
 // an annotation is either an inline comment or a suggested comment (an untriaged or dismissed Finding)
 type CommentAnchor = { commentId: string } | { suggestionId: string };
@@ -64,19 +65,28 @@ type ReviewDiffsProps = {
   onOpenInEditor?: (target: EditorTarget) => void;
 };
 
-// A human label for a comment's line range, e.g. "Line 12", "Lines 12–14", "Lines old 9 – new 11".
+// how a label names a side: the base's old lines or the change's new ones
+const sideWord = (side: ReviewDiffSide): string => side === 'deletions' ? 'old' : 'new';
+
+// A human label for a comment's line range, e.g. "Line 12", "Lines 12–14", or across sides, top to
+// bottom, "Lines old 9 – new 11" or "Lines new 5 – old 7".
 export const commentRangeLabel = (comment: Pick<ReviewDiffComment, 'startSide' | 'startLine' | 'endSide' | 'endLine'>): string => {
-  if (comment.startSide !== comment.endSide) return `Lines old ${comment.startLine} – new ${comment.endLine}`;
+  if (comment.startSide !== comment.endSide) return `Lines ${sideWord(comment.startSide)} ${comment.startLine} – ${sideWord(comment.endSide)} ${comment.endLine}`;
   return comment.startLine === comment.endLine ? `Line ${comment.startLine}` : `Lines ${comment.startLine}–${comment.endLine}`;
 };
 
 // Order a picked range top-to-bottom. Within one side line numbers order it; across sides (unified
-// view only) removed lines sit above added ones in a hunk, so deletions start the range.
-const orderedRange = (range: SelectedLineRange): Pick<ReviewDiffComment, 'startSide' | 'startLine' | 'endSide' | 'endLine'> => {
+// view only) the two ends' rows in the rendered patch do, since an added block can sit above a later
+// removed one. An end the patch does not hold falls back to deletions first.
+const orderedRange = (range: SelectedLineRange, patch: string): Pick<ReviewDiffComment, 'startSide' | 'startLine' | 'endSide' | 'endLine'> => {
   const startSide = range.side ?? range.endSide ?? 'additions';
   const endSide = range.endSide ?? startSide;
   if (startSide === endSide) return { startSide, startLine: Math.min(range.start, range.end), endSide, endLine: Math.max(range.start, range.end) };
-  return startSide === 'deletions' ? { startSide, startLine: range.start, endSide, endLine: range.end } : { startSide: endSide, startLine: range.end, endSide: startSide, endLine: range.start };
+  const rows = patchRows(patch);
+  const startRow = patchRowIndex(rows, startSide, range.start);
+  const endRow = patchRowIndex(rows, endSide, range.end);
+  const inOrder = startRow < 0 || endRow < 0 ? startSide === 'deletions' : startRow <= endRow;
+  return inOrder ? { startSide, startLine: range.start, endSide, endLine: range.end } : { startSide: endSide, startLine: range.end, endSide: startSide, endLine: range.start };
 };
 
 // One inline comment: an editor while it is new or reopened, and the saved text otherwise.
@@ -144,6 +154,7 @@ export default function ReviewDiffs({ changes, comments, openCommentIds, onComme
   }), [baseItems, anchorKey]); // anchorKey stands in for `comments` and `suggestions`: it covers every field read here
   const changeIdByItemId = useMemo(() => new Map([...baseItems].map(([changeId, item]) => [item.id, changeId])), [baseItems]);
   const fileByChangeId = useMemo(() => new Map(changes.map(change => [change.id, change.file])), [changes]);
+  const patchByChangeId = useMemo(() => new Map(changes.map(change => [change.id, change.patch])), [changes]);
 
   // The selected line range, held here so starting a comment can clear it: while a range is selected
   // the library pins the "+" to it, so a stale selection would steal the next comment's placement.
@@ -166,11 +177,11 @@ export default function ReviewDiffs({ changes, comments, openCommentIds, onComme
     onGutterUtilityClick: (range: SelectedLineRange, context: { item: { id: string } }) => {
       const changeId = changeIdByItemId.get(context.item.id);
       if (changeId === undefined) return;
-      onCommentAdd({ id: crypto.randomUUID(), changeId, ...orderedRange(range), body: '' });
+      onCommentAdd({ id: crypto.randomUUID(), changeId, ...orderedRange(range, patchByChangeId.get(changeId) ?? ''), body: '' });
       // the library commits the picked range as the selection after this callback returns
       window.setTimeout(() => setSelection(null), 0);
     }
-  }), [changeIdByItemId, effectiveSplit, onCommentAdd, terminalFontSize, theme]);
+  }), [changeIdByItemId, patchByChangeId, effectiveSplit, onCommentAdd, terminalFontSize, theme]);
 
   const commentsById = useMemo(() => new Map(comments.map(comment => [comment.id, comment])), [comments]);
   const suggestionsById = useMemo(() => new Map(suggestions.map(suggestion => [suggestion.id, suggestion])), [suggestions]);

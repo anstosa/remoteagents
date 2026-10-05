@@ -2026,6 +2026,21 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .review-tour-rebuild { display: flex; align-items: center; justify-content: flex-end; gap: .65rem; margin-top: .4rem; color: var(--overlay-1); font-size: .7rem; }
 .review-tour-rebuild button { flex: none; padding: .3rem .65rem; font-size: .68rem; box-shadow: none; }
 .review-tour-summary li > .review-tour-finding-count { margin-left: 0; }
+/* the draft review posted to the pull request: its link, counts, file-level and failed comments */
+.review-tour-pr-post { display: grid; gap: .4rem; margin-top: .75rem; padding: .55rem .7rem; border: 1px solid color-mix(in srgb, var(--blue) 45%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--blue) 6%, var(--mantle)); color: var(--subtext-0); font-size: .74rem; }
+.review-tour-pr-post p { margin: 0; }
+.review-tour-pr-post a { color: var(--blue); font-weight: 750; overflow-wrap: anywhere; }
+.review-tour-pr-post > small { color: var(--overlay-1); font-size: .68rem; }
+.review-tour-summary .review-tour-pr-post li { display: grid; grid-template-columns: minmax(0, 1fr); gap: .1rem; padding: .3rem .45rem; font-size: .7rem; }
+.review-tour-pr-post li strong { overflow-wrap: anywhere; color: var(--subtext-1); font: 700 .66rem var(--font-mono); }
+.review-tour-pr-post li small { overflow-wrap: anywhere; color: var(--overlay-1); font-size: .68rem; }
+.review-tour-pr-failed { display: grid; gap: .35rem; }
+.review-tour-pr-failed > strong { color: var(--red); font-family: var(--font-mono); }
+.review-tour-pr-failed > button { justify-self: end; padding: .3rem .65rem; font-size: .68rem; box-shadow: none; }
+.review-tour-pr-error { display: flex; align-items: center; gap: .65rem; margin-top: .75rem; }
+.review-tour-pr-error p { min-width: 0; flex: 1 1 auto; margin: 0; overflow-wrap: anywhere; font-size: .74rem; }
+.review-tour-pr-error button { flex: none; padding: .3rem .65rem; font-size: .68rem; box-shadow: none; }
+.review-tour-actions .review-tour-pr-button { display: inline-flex; align-items: center; gap: .4rem; }
 
 /* the phone step bar: the step's title and the start of its explanation, opening the notes drawer */
 .review-tour-notes-bar { display: flex; min-width: 0; align-items: center; gap: .6rem; padding: .55rem .75rem; border: 0; border-bottom: 1px solid var(--surface-1); border-radius: 0; background: var(--mantle); box-shadow: none; color: var(--text); text-align: left; }

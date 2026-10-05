@@ -1266,3 +1266,225 @@ test('binds a guided review started from a Review run\'s pane to the Worktree\'s
   // the read-only reviewer, which closes with its run, never becomes the review's agent
   await expect.poll(() => jobPaths).toEqual(['/api/agents/agent-1/review-tour/jobs']);
 });
+
+// An All PR tour whose route hunk has an added line above a later removed one: `+const x` is new 5
+// and `-const y` old 7, two rows apart, so a range across them runs new 5 to old 7. The service hunk
+// has the usual shape, `-old service` (old 4) above `+new service` (new 4).
+const postRoutePatch = 'diff --git a/src/route.ts b/src/route.ts\nindex 1111111..2222222 100644\n--- a/src/route.ts\n+++ b/src/route.ts\n@@ -4,4 +4,4 @@\n const a = 1;\n+const x = 9;\n const b = 2;\n const c = 3;\n-const y = 8;\n';
+const postTour = { title: 'Post tour', overview: 'Review the route constants.', scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'post-fingerprint-123456', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: postRoutePatch }, { id: 'chg_service01', file: 'src/service.ts', category: 'implementation', kind: 'hunk', patch: 'diff --git a/src/service.ts b/src/service.ts\nindex 3333333..4444444 100644\n--- a/src/service.ts\n+++ b/src/service.ts\n@@ -4 +4 @@\n-old service\n+new service\n' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route renames its constants.', changeIds: ['chg_route0001'] }, { id: 'service', title: 'Apply the operation', explanation: 'The service performs the transition.', changeIds: ['chg_service01'] }] };
+const openPullRequest = { number: 123, title: 'Review tour', status: 'open', url: 'https://github.com/owner/repo/pull/123' };
+type PrReviewPost = { scope: string; includeTests: boolean; includeDocs: boolean; fingerprint: string; body: string; comments: { id: string; changeId: string; startSide: string; startLine: number; endSide: string; endLine: number; body: string }[] };
+const draftReview = { url: 'https://github.com/owner/repo/pull/123/files', pullRequest: { number: 123, url: openPullRequest.url } };
+// a post GitHub takes whole: every comment on its lines, and the body when there is one
+const postedWhole = (post: PrReviewPost, route: Route) => route.fulfill({ json: { status: 'ok', review: draftReview, bodyPosted: post.body !== '', comments: post.comments.map(comment => ({ id: comment.id, result: 'line' })) } });
+
+// Restore the post tour on a Worktree with a pull request (or, with null, none); `respond` answers
+// each post. The returned `comparison` is the Worktree's current one: moving its fingerprint makes the
+// tour stale, and Regenerate builds the tour again with it.
+async function openPostTour(page: Page, { scope = 'pr', pullRequest = openPullRequest as Record<string, unknown> | null, respond = (_post: PrReviewPost, route: Route) => route.fulfill({ status: 500, json: { status: 'error', error: { code: 'post_failed', retryable: false } } }) }: { scope?: 'pr' | 'working'; pullRequest?: Record<string, unknown> | null; respond?: (post: PrReviewPost, route: Route) => Promise<void> } = {}): Promise<{ dialog: ReturnType<Page['getByRole']>; posts: PrReviewPost[]; prompts: string[]; comparison: { fingerprint: string } }> {
+  const posts: PrReviewPost[] = [];
+  const prompts: string[] = [];
+  const tour = { ...postTour, scope, base: scope === 'pr' ? 'origin/main' : 'HEAD' };
+  const comparison = { fingerprint: tour.fingerprint };
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, ...claudeReviewCapabilities, reviews: [{ worktreeId: 'owen', branch: 'feature/review-tour', savedAt: '2026-10-04T12:00:00.000Z', title: tour.title, scope, includeTests: false, includeDocs: false, fingerprint: tour.fingerprint }], agents: [{ ...startSheetAgent, ...(pullRequest === null ? {} : { pullRequest }) }], projects: [] } });
+    if (await fulfillAgentSupport(route, url.pathname)) return;
+    if (url.pathname === '/api/worktrees/owen/review-tour') return route.fulfill({ json: { status: 'ready', review: { worktreeId: 'owen', branch: 'feature/review-tour', savedAt: '2026-10-04T12:00:00.000Z', tour } } });
+    if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') return route.fulfill({ json: { status: 'comparison', comparison: { scope, base: tour.base, includeTests: false, includeDocs: false, fingerprint: comparison.fingerprint } } });
+    if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') return route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob('job-regen') } });
+    if (url.pathname === '/api/review-tour/jobs/job-regen') return request.method() === 'DELETE' ? route.fulfill({ status: 204 }) : route.fulfill({ json: { status: 'ready', tour: { ...tour, fingerprint: comparison.fingerprint } } });
+    if (url.pathname === '/api/agents/agent-1/review-tour/pr-review' && request.method() === 'POST') { const post = request.postDataJSON() as PrReviewPost; posts.push(post); return respond(post, route); }
+    if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') { prompts.push((request.postDataJSON() as { prompt: string }).prompt); return route.fulfill({ status: 204 }); }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Open Review' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Post tour' });
+  await expect(dialog).toBeVisible();
+  return { dialog, posts, prompts, comparison };
+}
+
+// comment on one line of the visible step's diff
+async function commentOnLine(dialog: ReturnType<Page['getByRole']>, text: string, label: string, body: string): Promise<void> {
+  const diffPane = dialog.getByLabel('Relevant changes');
+  await diffPane.getByText(text, { exact: true }).hover();
+  await diffPane.locator('[data-utility-button]').click();
+  await dialog.getByLabel(`Comment on ${label}`).fill(body);
+  await dialog.getByRole('button', { name: 'Done' }).click();
+}
+
+test('offers Post to PR only for an All PR tour of a branch with an open or draft pull request', async ({ page }) => {
+  for (const [options, offered] of [[{ pullRequest: null }, false], [{ scope: 'working' as const }, false], [{ pullRequest: { ...openPullRequest, status: 'merged' } }, false], [{ pullRequest: { ...openPullRequest, status: 'draft' } }, true]] as const) {
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+    const { dialog } = await openPostTour(page, options);
+    await dialog.getByLabel('Feedback for this change').fill('Route reads well.');
+    await dialog.getByRole('button', { name: 'Next' }).click();
+    await dialog.getByRole('button', { name: 'Review summary' }).click();
+    await expect(dialog.getByRole('button', { name: 'Send change request' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Post to PR #123' })).toHaveCount(offered ? 1 : 0);
+  }
+});
+
+test('posts inline comments and notes to the pull request as a draft review and retries the failed ones', async ({ page }) => {
+  const { dialog, posts, prompts } = await openPostTour(page, { respond: (post, route) => {
+    const byBody = (body: string) => post.comments.find(comment => comment.body === body)?.id ?? '';
+    // the first post places one comment on its lines, one as a file-level comment and fails one
+    if (posts.length === 1) return route.fulfill({ json: { status: 'ok', review: draftReview, bodyPosted: true, comments: [{ id: byBody('Guard x.'), result: 'line' }, { id: byBody('Name a.'), result: 'file', reason: 'The lines are not in the pull request diff.' }, { id: byBody('Rename the service.'), result: 'failed', reason: 'GitHub rejected the thread.' }] } });
+    return postedWhole(post, route);
+  } });
+  await commentOnLine(dialog, 'const x = 9;', 'line 5', 'Guard x.');
+  await commentOnLine(dialog, 'const a = 1;', 'line 4', 'Name a.');
+  await dialog.getByLabel('Feedback for this change').fill('Route reads well.');
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await commentOnLine(dialog, 'new service', 'line 4', 'Rename the service.');
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+
+  // the post carries the notes, without the agent-directed intro, and every comment with its lines
+  await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]).toMatchObject({ scope: 'pr', includeTests: false, includeDocs: false, fingerprint: postTour.fingerprint, body: '## Accept the request\n\nRoute reads well.' });
+  expect(posts[0]!.comments.map(({ id: _id, ...comment }) => comment)).toEqual([
+    { changeId: 'chg_route0001', startSide: 'additions', startLine: 5, endSide: 'additions', endLine: 5, body: 'Guard x.' },
+    { changeId: 'chg_route0001', startSide: 'additions', startLine: 4, endSide: 'additions', endLine: 4, body: 'Name a.' },
+    { changeId: 'chg_service01', startSide: 'additions', startLine: 4, endSide: 'additions', endLine: 4, body: 'Rename the service.' }
+  ]);
+  const failedId = posts[0]!.comments[2]!.id;
+
+  // the summary links the draft review and lists the file-level and failed comments with their reasons
+  const posted = dialog.getByRole('region', { name: 'Draft review on GitHub' });
+  const link = posted.getByRole('link', { name: 'Draft review on PR #123 — finish it on GitHub' });
+  await expect(link).toHaveAttribute('href', 'https://github.com/owner/repo/pull/123/files');
+  await expect(link).toHaveAttribute('target', '_blank');
+  await expect(posted).toContainText('1 line comment · 1 file-level comment · notes in the review body');
+  await expect(posted.getByRole('list', { name: 'File-level comments' })).toContainText('src/route.ts:4 (new)The lines are not in the pull request diff.');
+  await expect(posted.getByRole('status').filter({ hasText: '1 comment failed' })).toBeVisible();
+  await expect(posted.getByRole('list', { name: 'Failed comments' })).toContainText('src/service.ts:4 (new)GitHub rejected the thread.');
+  await expect(posted).toContainText('Comments and notes already posted are not updated by later edits');
+  await page.screenshot({ path: `${process.env.TMPDIR ?? '/tmp'}/review-pr-post-desktop.png` });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(posted.getByRole('button', { name: 'Retry failed' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: `${process.env.TMPDIR ?? '/tmp'}/review-pr-post-phone.png` });
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  // with a new comment and a first-time note waiting, Retry still re-posts only the failed comment
+  await dialog.getByRole('button', { name: 'Back to tour' }).click();
+  await commentOnLine(dialog, 'old service', 'line 4', 'Why drop it?');
+  await dialog.getByLabel('Feedback for this change').fill('Service looks fine.');
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  await expect(posted).toContainText('1 comment not posted yet.');
+  await posted.getByRole('button', { name: 'Retry failed' }).click();
+  await expect.poll(() => posts.length).toBe(2);
+  expect(posts[1]!.body).toBe('');
+  expect(posts[1]!.comments.map(comment => comment.id)).toEqual([failedId]);
+  await expect(posted).toContainText('2 line comments · 1 file-level comment · notes in the review body');
+  await expect(posted.getByRole('list', { name: 'Failed comments' })).toHaveCount(0);
+
+  // the next Post sends the new comment and only the new note's section
+  await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
+  await expect.poll(() => posts.length).toBe(3);
+  expect(posts[2]!.body).toBe('## Apply the operation\n\nService looks fine.');
+  expect(posts[2]!.comments.map(comment => comment.body)).toEqual(['Why drop it?']);
+  // with everything posted the button says so, and sending to the agent still works
+  await expect(dialog.getByRole('button', { name: 'Posted to PR #123' })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Send change request' }).click();
+  await expect.poll(() => prompts.length).toBe(1);
+  expect(prompts[0]).toContain('Guard x.');
+
+  // a changed note is posted again on its own
+  await dialog.getByRole('button', { name: 'Back to tour' }).click();
+  await dialog.getByRole('button', { name: 'Back' }).click();
+  await dialog.getByLabel('Feedback for this change').fill('Route reads very well.');
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
+  await expect.poll(() => posts.length).toBe(4);
+  expect(posts[3]).toMatchObject({ body: '## Accept the request\n\nRoute reads very well.', comments: [] });
+});
+
+test('explains a refused post and offers to try again only when retrying can help', async ({ page }) => {
+  const { dialog, posts } = await openPostTour(page, { respond: (_post, route) => posts.length === 1
+    ? route.fulfill({ status: 409, json: { status: 'error', error: { code: 'head_mismatch', retryable: true, message: 'Your local commit does not match the pull request\'s head on GitHub. Push your commits (or pull), then post again.', localHead: 'abc1234def567', pullRequestHead: '9876543fedcba' } } })
+    : route.fulfill({ status: 502, json: { status: 'error', error: { code: 'github_forbidden', retryable: false, message: 'The GitHub token cannot write pull request reviews.' } } }) });
+  await commentOnLine(dialog, 'const x = 9;', 'line 5', 'Guard x.');
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  const post = dialog.getByRole('button', { name: 'Post to PR #123' });
+  await post.click();
+  // the server's message is shown, and the failure takes focus
+  const failure = dialog.getByRole('alert').filter({ has: page.locator('.review-tour-error') });
+  await expect(failure).toContainText('Your local commit does not match the pull request\'s head on GitHub. Push your commits (or pull), then post again.');
+  await expect(failure).toBeFocused();
+  await expect(dialog.getByRole('region', { name: 'Draft review on GitHub' })).toHaveCount(0);
+  await expect(post).toBeEnabled();
+  // a retryable failure offers Try again; a final one offers none
+  await failure.getByRole('button', { name: 'Try again' }).click();
+  await expect(failure).toContainText('The GitHub token cannot write pull request reviews.');
+  expect(posts).toHaveLength(2);
+  expect(posts[1]!.comments.map(comment => comment.body)).toEqual(['Guard x.']);
+  await expect(failure.getByRole('button', { name: 'Try again' })).toHaveCount(0);
+});
+
+test('orders a comment range across both sides by its rows in the diff', async ({ page }) => {
+  const { dialog, posts } = await openPostTour(page, { respond: postedWhole });
+  const diffPane = dialog.getByLabel('Relevant changes');
+  await expect(diffPane.getByText('const y = 8;', { exact: true })).toBeVisible();
+  // `+const x` (new 5) sits above `-const y` (old 7), picked top-down or bottom-up
+  const added = diffPane.locator('[data-line-type="change-addition"][data-column-number="5"]');
+  const removed = diffPane.locator('[data-line-type="change-deletion"][data-column-number="7"]');
+  await added.click();
+  await removed.click({ modifiers: ['Shift'] });
+  await diffPane.locator('[data-utility-button]').click();
+  await dialog.getByLabel('Comment on lines new 5 – old 7').fill('Top down.');
+  await dialog.getByRole('button', { name: 'Done' }).click();
+  await removed.click();
+  await added.click({ modifiers: ['Shift'] });
+  await diffPane.locator('[data-utility-button]').click();
+  await dialog.getByLabel('Comment on lines new 5 – old 7').fill('Bottom up.');
+  await dialog.getByRole('button', { name: 'Done' }).click();
+  await expect(diffPane.locator('.review-tour-inline-comment').filter({ hasText: 'Lines new 5 – old 7' })).toHaveCount(2);
+  // the usual shape, `-old service` above `+new service`, picked bottom-up, starts on the removed line
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await diffPane.locator('[data-line-type="change-addition"][data-column-number="4"]').click();
+  await diffPane.locator('[data-line-type="change-deletion"][data-column-number="4"]').click({ modifiers: ['Shift'] });
+  await diffPane.locator('[data-utility-button]').click();
+  await dialog.getByLabel('Comment on lines old 4 – new 4').fill('Usual shape.');
+  await dialog.getByRole('button', { name: 'Done' }).click();
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  // the change request quotes the rows between them, and the post sends each range in that order
+  await expect(dialog.getByLabel('Consolidated change request')).toHaveValue(/### src\/route\.ts new 5 – old 7\n```diff\n\+const x = 9;\n const b = 2;\n const c = 3;\n-const y = 8;\n```\nTop down\./u);
+  await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]!.comments.map(({ startSide, startLine, endSide, endLine, body }) => ({ startSide, startLine, endSide, endLine, body }))).toEqual([
+    { startSide: 'additions', startLine: 5, endSide: 'deletions', endLine: 7, body: 'Top down.' },
+    { startSide: 'additions', startLine: 5, endSide: 'deletions', endLine: 7, body: 'Bottom up.' },
+    { startSide: 'deletions', startLine: 4, endSide: 'additions', endLine: 4, body: 'Usual shape.' }
+  ]);
+});
+
+test('posts all of the feedback again after the tour is regenerated', async ({ page }) => {
+  const { dialog, posts, comparison } = await openPostTour(page, { respond: postedWhole });
+  await commentOnLine(dialog, 'const x = 9;', 'line 5', 'Guard x.');
+  await dialog.getByLabel('Feedback for this change').fill('Route reads well.');
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
+  await expect(dialog.getByRole('button', { name: 'Posted to PR #123' })).toBeDisabled();
+
+  // the Worktree moves, the tour goes stale, and Regenerate rebuilds it with the same steps and Changes
+  comparison.fingerprint = 'post-fingerprint-regenerated';
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await dialog.getByRole('button', { name: 'Regenerate' }).click();
+  await expect(dialog.getByText('Step 1 of 2')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  await expect(dialog.getByRole('region', { name: 'Draft review on GitHub' })).toHaveCount(0);
+  // the regenerated tour posts its comments and notes again, for a draft that may have been replaced
+  await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
+  await expect.poll(() => posts.length).toBe(2);
+  expect(posts[1]).toMatchObject({ fingerprint: 'post-fingerprint-regenerated', body: posts[0]!.body, comments: posts[0]!.comments });
+});
