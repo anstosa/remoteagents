@@ -7,6 +7,7 @@
 // itself is purely visual: the diff mode (Hunks / Full context / Plain file), unified vs split, and
 // the changed-file rail/drawer.
 import { type MouseEvent as ReactMouseEvent, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { closeOnMiddleClick } from '../middle-click.js';
 import type { CodeViewLineSelection } from '@pierre/diffs';
 import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions, type FileDiffMetadata } from '@pierre/diffs/react';
 import { openSelectionContextMenu, preserveContextMenuPress, useSelectionActions, type SelectionActions, type SelectionContextMode } from '../selection-context-menu.js';
@@ -527,7 +528,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   </>;
 
   return (
-    <section className={`code-pane${expanded ? ' expanded' : ''}`} data-wrap-lines={wrapLines ? 'true' : undefined} style={style} role="region" aria-label="Code changes" ref={panelRef} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => codeContextMenu(event, selectionActions, [
+    <section onAuxClickCapture={event => closeOnMiddleClick(event, onClose)} className={`code-pane${expanded ? ' expanded' : ''}`} data-wrap-lines={wrapLines ? 'true' : undefined} style={style} role="region" aria-label="Code changes" ref={panelRef} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => codeContextMenu(event, selectionActions, [
       { id: 'working', label: 'Working changes', checked: mode === 'working', onSelect: () => onSetMode('working') },
       ...(prAvailable ? [{ id: 'pr', label: 'All PR changes', checked: mode === 'pr', onSelect: () => onSetMode('pr') }] : [])
     ])}>
@@ -619,7 +620,7 @@ function FileView({ filePreview, options, style, expanded, onBack, onClose, onOp
     return <EditorJumpButton file={path} line={selection === null ? 1 : Math.min(selection.range.start, selection.range.end)} onOpen={onOpenInEditor} />;
   };
   return (
-    <section className={`code-pane code-pane-file${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => codeContextMenu(event, selectionActions)}>
+    <section onAuxClickCapture={event => closeOnMiddleClick(event, onClose)} className={`code-pane code-pane-file${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => codeContextMenu(event, selectionActions)}>
       <PanelHeader panelKey="code" label="code panel" title={<nav className="code-pane-crumbs" aria-label="Location">
           <button type="button" className="code-pane-crumb-back" onClick={onBack}>‹ Changes</button>
           <span className="code-pane-crumb-sep" aria-hidden="true">/</span>

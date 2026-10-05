@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { closeOnMiddleClick } from './middle-click.js';
 import { PanelHeader, PanelIcon, panelIcons, usePanelExpand, type PanelAction } from './panel-header.js';
 import { actionGlyphs, ProcessNotices, RelationChips, StackIcon, stackGlyphs, StateDot, StateText, UsedFailure, useStackControls, WarningIcon, wholeStackActions, type ProcessAction, type ProjectStack, type StackControls, type StackHandlers } from './stack-controls.js';
 import { dependantsOf, processActionLabel, processActions, processesSummary, processWarns, stackOperationLabel, usedProcessDown, usedProcesses, type StackProcessOutput, type StackProcessState, type StackSelection, type UsedProcess } from './stack-operations.js';
@@ -144,7 +145,7 @@ export function StackPanel({ worktreeId, title, stack, selection, onSelect, onCl
       <StateDot state={dot.state} busy={dot.busy} /><span className="stack-pane-item-name">{name}</span>{warn && <WarningIcon className="stack-row-warning" />}<StateText process={state} warn={warn && where !== undefined} />
       {where !== undefined && <span className="stack-pane-item-where" title={where}>{where}</span>}
     </button>;
-  return <section className={`stack-pane${expanded ? ' expanded' : ''}`} role="region" aria-label="Stack">
+  return <section onAuxClickCapture={event => closeOnMiddleClick(event, onClose)} className={`stack-pane${expanded ? ' expanded' : ''}`} role="region" aria-label="Stack">
     <PanelHeader panelKey="stack" label="stack" title={<><span className="stack-pane-title" title={`Stack · ${title}`}>Stack · {title}</span><span className="stack-process-state">{summary}</span></>} secondary={stackActions} close={{ key: 'close', label: 'Close Stack panel', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} />
     <div className="stack-pane-body">
       <nav className="stack-pane-list" aria-label="Stack processes">
