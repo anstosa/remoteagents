@@ -149,7 +149,10 @@ export class PromptService {
     if (submitTarget === undefined || submitTarget.socket.fingerprint !== first.socket.fingerprint || submitTarget.agent.paneId !== first.agent.paneId) return false;
     // an idle pane takes the Adapter's idle keys (Codex submits `/new` with Enter, not Tab)
     const keys = agentAttentionState(submitTarget.agent) === 'finished' ? composed.idleKeys ?? composed.keys : composed.keys;
-    return await this.tmux.sendKeys(submitTarget.socket, submitTarget.agent.paneId, keys);
+    const submitted = await this.tmux.sendKeys(submitTarget.socket, submitTarget.agent.paneId, keys);
+    // clear stale prose questions after delivery
+    if (submitted) this.discovery.invalidateMessageQuestion?.(agentId);
+    return submitted;
   }
 
   // submit one server-owned advisor prompt directly
@@ -493,6 +496,8 @@ export class PromptService {
     if (submitted && settle) submitted = await this.waitForSubmissionAccepted(submitTarget, composed.text, observeDraft, keys, adapter.completion, rolloutBaseline, attachmentPrompt, acceptUntil);
     // confirm the server-owned prompt left the composer
     if (submitted && submission === 'confirmed-enter') submitted = await this.waitForUpdateAdvisorStart(agentId, submitTarget, attachmentPrompt);
+    // clear stale prose questions after delivery
+    if (submitted) this.discovery.invalidateMessageQuestion?.(agentId);
     if (!submitted) {
       // halt only when a durable prompt is still waiting
       await this.holdFailedSubmission(scope);

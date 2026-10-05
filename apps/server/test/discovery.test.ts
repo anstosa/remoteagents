@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { DiscoveryService, gitUpstreamSummary, ProcSocketFinder } from '../src/discovery/service.js';
 import { inlineQuestionId } from '../src/adapters/inline-questions.js';
 import { pendingOmxQuestion } from '../src/adapters/omx-questions.js';
+import { adapterFor } from '../src/adapters/registry.js';
 import type { SocketRef } from '../src/domain/models.js';
 import type { WorktreeEntry } from '../src/git/worktrees.js';
 import { AgentNotificationCoordinator } from '../src/notifications.js';
@@ -330,6 +331,189 @@ describe('DiscoveryService dashboard', () => {
     // reported 'question' wins over the title's inferred 'finished'
     expect(dashboard.agents[0]).toMatchObject({ kind: 'codex', attention: 'question', sandboxed: true, conversationId: 'abc-123' });
     expect(dashboard.adapters).toMatchObject({ codex: { launchable: false, stateSource: 'title', turnCapture: true, conversations: true, inlineQuestions: true, commands: true, sandbox: false } });
+  });
+
+  // prose questions affect presentation without blocking normal prompt submission
+  it.each(['codex', 'omx', 'claude'] as const)('publishes only the latest idle %s message question', async kind => {
+    let attention: 'working' | 'finished' = 'working';
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const latestMessage = vi.spyOn(adapterFor(kind)!.conversations!, 'latestMessage').mockResolvedValue('Which target should I use?');
+    const tmux = {
+      markSessionPlace: async () => true,
+      listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Ready', reportedAttention: attention, reportedSession: 'conversation-1' }]
+    };
+    const service = new DiscoveryService(socketFinder(), tmux as never, processInspector({ kind }));
+    const delivered = vi.fn();
+    const notifications = new AgentNotificationCoordinator(delivered);
+    try {
+      const working = (await service.dashboard(false, true)).agents[0]!;
+      expect(working).not.toHaveProperty('hasMessageQuestion');
+      expect(latestMessage).not.toHaveBeenCalled();
+      notifications.observe(working);
+
+      attention = 'finished';
+      const asking = (await service.dashboard(false, true)).agents[0]!;
+      expect(asking).toMatchObject({ attention: 'finished', hasMessageQuestion: true });
+      expect(asking).not.toHaveProperty('question');
+      expect(latestMessage).toHaveBeenCalledWith({ pid: 123, cwd: '/tmp', conversationId: 'conversation-1' });
+      notifications.observe(asking);
+      notifications.observe((await service.dashboard(false, true)).agents[0]!);
+      expect(delivered).toHaveBeenCalledTimes(1);
+      expect(delivered).toHaveBeenCalledWith(expect.objectContaining({ kind: 'question' }));
+      expect(notifications.isUnread(asking)).toBe(false);
+
+      // a new prompt or newer response clears the previous question
+      latestMessage.mockResolvedValue(undefined);
+      now += 2_000;
+      expect((await service.dashboard(false, true)).agents[0]).not.toHaveProperty('hasMessageQuestion');
+      latestMessage.mockResolvedValue('The change is complete.');
+      now += 2_000;
+      expect((await service.dashboard(false, true)).agents[0]).not.toHaveProperty('hasMessageQuestion');
+
+      // unavailable transcripts must not break the dashboard
+      latestMessage.mockRejectedValueOnce(new Error('transcript unavailable'));
+      now += 2_000;
+      expect((await service.dashboard(false, true)).agents[0]).toMatchObject({ attention: 'finished' });
+    } finally {
+      latestMessage.mockRestore();
+      clock.mockRestore();
+      notifications.stop();
+    }
+  });
+
+  // a slow transcript cannot stall working status or revive an answered question
+  it('does not block discovery on message reads or publish a stale idle result', async () => {
+    let attention: 'finished' | 'working' = 'finished';
+    let finishRead!: (message: string) => void;
+    const pending = new Promise<string>(resolve => { finishRead = resolve; });
+    const latestMessage = vi.spyOn(adapterFor('codex')!.conversations!, 'latestMessage').mockReturnValue(pending);
+    const tmux = {
+      markSessionPlace: async () => true,
+      listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Ready', reportedAttention: attention }]
+    };
+    const service = new DiscoveryService(socketFinder(), tmux as never, processInspector());
+    try {
+      expect((await service.dashboard(false, true)).agents[0]).toMatchObject({ attention: 'finished' });
+      expect((await service.dashboard(false, true)).agents[0]).not.toHaveProperty('hasMessageQuestion');
+      expect(latestMessage).toHaveBeenCalledTimes(1);
+      attention = 'working';
+      expect((await service.dashboard(false, true)).agents[0]).toMatchObject({ attention: 'working' });
+      finishRead('Should I proceed?');
+      await pending;
+      expect((await service.dashboard(false, true)).agents[0]).not.toHaveProperty('hasMessageQuestion');
+    } finally {
+      finishRead('');
+      latestMessage.mockRestore();
+    }
+  });
+
+  // frequent pane polls reuse a bounded background transcript result
+  it('throttles completed message reads without delaying fresh pane status', async () => {
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const latestMessage = vi.spyOn(adapterFor('codex')!.conversations!, 'latestMessage').mockResolvedValue('Deploy where?');
+    const service = new DiscoveryService(socketFinder(), paneLister([{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Ready' }]) as never, processInspector());
+    try {
+      expect((await service.dashboard(false, true)).agents[0]).toHaveProperty('hasMessageQuestion', true);
+      await service.dashboard(false, true);
+      now += 1_999;
+      expect((await service.dashboard(false, true)).agents[0]).toHaveProperty('hasMessageQuestion', true);
+      expect(latestMessage).toHaveBeenCalledTimes(1);
+      latestMessage.mockResolvedValue('Done.');
+      now += 1;
+      expect((await service.dashboard(false, true)).agents[0]).not.toHaveProperty('hasMessageQuestion');
+      expect(latestMessage).toHaveBeenCalledTimes(2);
+    } finally {
+      latestMessage.mockRestore();
+      clock.mockRestore();
+    }
+  });
+
+  // prompt delivery supersedes both published and in-flight question observations
+  it('invalidates a question after delivery while the pane still reports finished', async () => {
+    let finishRead!: (message: string) => void;
+    const pending = new Promise<string>(resolve => { finishRead = resolve; });
+    const latestMessage = vi.spyOn(adapterFor('codex')!.conversations!, 'latestMessage').mockResolvedValue('Deploy where?');
+    const service = new DiscoveryService(socketFinder(), paneLister([{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Ready' }]) as never, processInspector());
+    try {
+      const asking = (await service.dashboard()).agents[0]!;
+      expect(asking).toHaveProperty('hasMessageQuestion', true);
+      latestMessage.mockReturnValueOnce(pending);
+      service.invalidateMessageQuestion(asking.id);
+      expect((await service.dashboard()).agents[0]).not.toHaveProperty('hasMessageQuestion');
+      service.invalidateMessageQuestion(asking.id);
+      latestMessage.mockResolvedValue(undefined);
+      finishRead('Deploy where?');
+      await pending;
+      expect((await service.dashboard()).agents[0]).toMatchObject({ attention: 'finished' });
+      expect((await service.dashboard()).agents[0]).not.toHaveProperty('hasMessageQuestion');
+    } finally {
+      finishRead('');
+      latestMessage.mockRestore();
+    }
+  });
+
+  // another pane's slow enrichment must not freeze an already-answered question
+  it('does not publish or cache an invalidated question while another agent is still building', async () => {
+    let releaseSecond!: () => void;
+    let startedSecond!: () => void;
+    const blocked = new Promise<void>(resolve => { releaseSecond = resolve; });
+    const started = new Promise<void>(resolve => { startedSecond = resolve; });
+    let calls = 0;
+    const pullRequests = {
+      // hold the second agent after the first agent has finished enrichment
+      cachedPullRequest: async () => {
+        calls += 1;
+        // wait only on the second pane's first dashboard
+        if (calls === 2) { startedSecond(); await blocked; }
+        return undefined;
+      }
+    };
+    const latestMessage = vi.spyOn(adapterFor('codex')!.conversations!, 'latestMessage').mockResolvedValue('Deploy where?');
+    const service = new DiscoveryService(socketFinder(), paneLister([
+      { paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Ready' },
+      { paneId: '%2', sessionId: '$1', pid: 124, path: '/tmp', title: 'Ready' }
+    ]) as never, processInspector(), pullRequests as never);
+    try {
+      const building = service.dashboard();
+      await started;
+      // drain the first agent's enrichment continuations while its sibling remains blocked
+      await new Promise<void>(resolve => setImmediate(resolve));
+      service.invalidateMessageQuestion('socket:%1');
+      releaseSecond();
+      const dashboard = await building;
+      expect(dashboard.agents.find(agent => agent.id === 'socket:%1')).not.toHaveProperty('hasMessageQuestion');
+      expect(dashboard.agents.find(agent => agent.id === 'socket:%2')).toHaveProperty('hasMessageQuestion', true);
+      expect((await service.dashboard()).agents.find(agent => agent.id === 'socket:%1')).not.toHaveProperty('hasMessageQuestion');
+    } finally {
+      releaseSecond();
+      latestMessage.mockRestore();
+    }
+  });
+
+  // native dialogs discard old prose reads even when the title remains idle
+  it('does not revive an older message question after a native question disappears', async () => {
+    let finishRead!: (message: string) => void;
+    const pending = new Promise<string>(resolve => { finishRead = resolve; });
+    const latestMessage = vi.spyOn(adapterFor('omx')!.conversations!, 'latestMessage').mockReturnValue(pending);
+    const nativeQuestion = vi.spyOn(adapterFor('omx')!.questions!, 'pending').mockResolvedValue(undefined);
+    const service = new DiscoveryService(socketFinder(), paneLister([{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Ready' }]) as never, processInspector({ kind: 'omx' }));
+    try {
+      await service.dashboard(false, true);
+      nativeQuestion.mockResolvedValue({ id: 'native-question', text: 'Which target?', choices: ['Staging', 'Production'] });
+      expect((await service.dashboard(false, true)).agents[0]).toMatchObject({ attention: 'question', question: { id: 'native-question' } });
+      finishRead('Deploy where?');
+      await pending;
+      nativeQuestion.mockResolvedValue(undefined);
+      // keep the next read pending so only stale cached results could revive the flag
+      latestMessage.mockReturnValue(new Promise(() => {}));
+      expect((await service.dashboard(false, true)).agents[0]).not.toHaveProperty('hasMessageQuestion');
+    } finally {
+      finishRead('');
+      latestMessage.mockRestore();
+      nativeQuestion.mockRestore();
+    }
   });
 
   // refresh attention on the configured poll before completion grace expires

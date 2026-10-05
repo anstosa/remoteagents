@@ -1,7 +1,7 @@
 import { appendFile, mkdir, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { codexConversationName, codexConversationSummaries, discoverCodexConversation, openRollouts, validCodexThreadId } from '../../src/adapters/codex-conversations.js';
+import { codexConversationName, codexConversationSummaries, codexLatestMessage, latestCodexMessageFromRecords, discoverCodexConversation, openRollouts, validCodexThreadId } from '../../src/adapters/codex-conversations.js';
 import { codexHome, fakeProc, tempDir } from '../helpers/codex-fixtures.js';
 
 // write one representative Codex rollout, returning its absolute path
@@ -114,6 +114,59 @@ describe('Codex conversation lookup', () => {
     process.env.RAC_HOST_PROC = await fakeProc(123, [file]);
 
     await expect(discoverCodexConversation({ pid: 123 })).resolves.toEqual({ id: '0198c888-8888-7888-8888-888888888888' });
+  });
+
+  it('reads the latest assistant text from the pane rollout', async () => {
+    const home = await codexHome();
+    const file = await writeSession(home, 'rollout-2026-08-20T12-00-00', { id: '0198c777-7777-7777-8777-777777777777', cwd: '/home/ubuntu/cora', prompt: 'Initial prompt' });
+    await appendFile(file, `${JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'Do you want me to continue?' } })}\n`);
+    process.env.CODEX_HOME = home;
+    process.env.RAC_HOST_PROC = await fakeProc(123, [file]);
+
+    await expect(codexLatestMessage({ pid: 123 })).resolves.toBe('Do you want me to continue?');
+    process.env.RAC_HOST_PROC = await fakeProc(456, []);
+    await expect(codexLatestMessage({ pid: 456, cwd: '/home/ubuntu/cora' })).resolves.toBe('Do you want me to continue?');
+    await expect(codexLatestMessage({ pid: 456, cwd: '/home/ubuntu/cora', conversationId: '0198c888-8888-7888-8888-888888888888' })).resolves.toBeUndefined();
+  });
+});
+
+describe('Codex latest assistant message', () => {
+  // create one rollout record
+  const line = (type: string, payload: object) => JSON.stringify({ type, payload });
+
+  it('accepts native assistant record variants without ordinals', () => {
+    expect(latestCodexMessageFromRecords([
+      line('response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'response item' }] }),
+    ])).toBe('response item');
+    expect(latestCodexMessageFromRecords([
+      line('event_msg', { type: 'agent_message', message: 'agent event' }),
+      line('event_msg', { type: 'task_complete', last_agent_message: 'completed event' }),
+    ])).toBe('completed event');
+  });
+
+  it('clears stale text at later user, task, abort, and empty-assistant boundaries', () => {
+    const old = line('event_msg', { type: 'agent_message', message: 'Still need an answer?' });
+    expect(latestCodexMessageFromRecords([old, line('response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Continue' }] })])).toBeUndefined();
+    expect(latestCodexMessageFromRecords([old, line('event_msg', { type: 'task_started' })])).toBeUndefined();
+    expect(latestCodexMessageFromRecords([old, line('event_msg', { type: 'turn_aborted' })])).toBeUndefined();
+    expect(latestCodexMessageFromRecords([old, line('response_item', { type: 'message', role: 'assistant', content: [{ type: 'reasoning', text: 'hidden' }] })])).toBeUndefined();
+  });
+
+  it('returns a newer non-question reply instead of an older question', () => {
+    expect(latestCodexMessageFromRecords([
+      line('event_msg', { type: 'agent_message', message: 'Which option should I use?' }),
+      line('event_msg', { type: 'agent_message', message: 'Implemented and verified.' }),
+    ])).toBe('Implemented and verified.');
+  });
+
+  it('ignores malformed and non-record json values', () => {
+    expect(latestCodexMessageFromRecords([
+      'null',
+      '[]',
+      '42',
+      '{bad json',
+      line('event_msg', { type: 'agent_message', message: 'Valid reply' }),
+    ])).toBe('Valid reply');
   });
 });
 

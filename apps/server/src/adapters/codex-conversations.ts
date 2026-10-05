@@ -26,6 +26,8 @@ const maxMetadataBytes = 128 * 1024;
 const maxTitleLength = 120;
 const maxTitleScanBytes = 4 * 1024 * 1024;
 const maxCompletionScanBytes = 4 * 1024 * 1024;
+// discovery polls this reader, so keep each pane read small and fail safe on an oversized record
+const maxLatestMessageScanBytes = 512 * 1024;
 // bound the account-global session-index read to its recent tail. The sidecar is
 // append-only and last-write-wins, so the current name is at the file's end; a
 // smaller-than-cap file is read whole (a true forward read). `readName`'s callers
@@ -258,6 +260,74 @@ async function* walkRollouts(home: string): AsyncGenerator<{ file: string; metad
 async function paneRollout(pane: { pid: number; cwd?: string }): Promise<{ id: string; file: string } | undefined> {
   return await selectTopLevelRollout(await openRollouts(pane.pid))
     ?? (pane.cwd === undefined ? undefined : await rolloutByCwd(pane.cwd));
+}
+
+// retain visible assistant text from one native message payload
+function assistantText(value: unknown): string | undefined {
+  // accept direct event text
+  if (typeof value === 'string') {
+    const text = value.trim() === '' ? undefined : value;
+    return text;
+  }
+  // reject non-message content
+  if (!Array.isArray(value)) return undefined;
+  const text = value
+    .filter((item): item is { type?: string; text: string } => item !== null && typeof item === 'object'
+      && ((item as { type?: unknown }).type === 'output_text' || (item as { type?: unknown }).type === 'text')
+      && typeof (item as { text?: unknown }).text === 'string')
+    .map(item => item.text)
+    .join('\n');
+  // reject assistant records without visible text
+  if (text.trim() === '') return undefined;
+  return text;
+}
+
+/**
+ * fold a rollout tail into its latest unanswered assistant message; user and turn
+ * boundaries clear earlier text so an old question cannot reappear after activity.
+ */
+export function latestCodexMessageFromRecords(lines: Iterable<string>): string | undefined {
+  let latest: string | undefined;
+  // apply rollout records in file order
+  for (const line of lines) {
+    let parsed: unknown;
+    // skip malformed tail fragments
+    try { parsed = JSON.parse(line) as unknown; } catch { continue; }
+    // reject json primitives and arrays
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    const record = parsed as { type?: unknown; payload?: unknown };
+    // require one structured payload
+    if (record.payload === null || typeof record.payload !== 'object') continue;
+    const payload = record.payload as { type?: unknown; role?: unknown; content?: unknown; message?: unknown; last_agent_message?: unknown };
+    // inspect only authored user and assistant messages
+    if (record.type === 'response_item' && payload.type === 'message') {
+      // clear an older reply when a new real turn enters the rollout
+      if (payload.role === 'user') latest = undefined;
+      // replace with this assistant message, including an empty one
+      else if (payload.role === 'assistant') latest = assistantText(payload.content);
+      continue;
+    }
+    // ignore unrelated rollout records
+    if (record.type !== 'event_msg') continue;
+    // clear terminal and prompt boundaries before later assistant output
+    if (payload.type === 'task_started' || payload.type === 'user_message' || payload.type === 'turn_aborted') latest = undefined;
+    // native prose events replace any earlier assistant text
+    else if (payload.type === 'agent_message') latest = assistantText(payload.message);
+    // completion is the final assistant message even without an ordinal
+    else if (payload.type === 'task_complete') latest = assistantText(payload.last_agent_message);
+  }
+  return latest;
+}
+
+/** read the latest unanswered assistant message from one exact pane rollout */
+export async function codexLatestMessage(pane: { pid: number; cwd?: string; conversationId?: string }): Promise<string | undefined> {
+  // reject a malformed reported identity before any filesystem scan
+  if (pane.conversationId !== undefined && !validCodexThreadId(pane.conversationId)) return undefined;
+  const selected = await paneRollout(pane).catch(() => undefined);
+  // fail closed when the pane no longer matches its reported conversation
+  if (selected === undefined || (pane.conversationId !== undefined && selected.id !== pane.conversationId)) return undefined;
+  const lines = await readFileTail(selected.file, maxLatestMessageScanBytes).catch(() => undefined);
+  return lines === undefined ? undefined : latestCodexMessageFromRecords(lines);
 }
 
 // normalize whitespace and clamp a Codex display string to the shared bound, so

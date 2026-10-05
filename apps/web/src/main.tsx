@@ -94,7 +94,7 @@ type AttentionState = 'working' | 'finished' | 'question';
 // `worktreeLabel`/`worktreeOrder` are no longer on the wire (the server carries them on the
 // Worktree); they remain as optional read-only fallbacks the tab bar consults when an Agent's
 // Worktree is not present in the payload, absent from the real server.
-type Agent = { id: string; sessionId: string; home: string; reviewRun?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; paneMode?: string; stack?: Stack; unread?: boolean; completionId?: string; queuedPromptCount: number; launch?: LaunchResolution };
+type Agent = { id: string; sessionId: string; home: string; reviewRun?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; hasMessageQuestion?: true; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; paneMode?: string; stack?: Stack; unread?: boolean; completionId?: string; queuedPromptCount: number; launch?: LaunchResolution };
 type Worktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; consoleShells?: number; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; order: number; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
 // `mode: 'directory'` marks a non-git Project the console launches in place (like Scratch);
 // `launch` is its resolved Launch profile for the Project-level Launch button. A git
@@ -278,8 +278,10 @@ const commandTokenAt = (value: string, cursor: number): CommandToken | undefined
 };
 
 // Attention is resolved server-side (ADR 0001/0002); the web reads it and never regexes a title.
-const actionRequired = (agent: Agent) => agent.attention === 'question';
-const agentState = (agent: Agent): AgentState => agent.attention === 'question' ? 'action-required' : agent.attention === 'working' ? 'working' : 'prompt-done';
+// present latest-message questions without changing composer readiness
+const actionRequired = (agent: Agent) => agent.attention === 'question' || agent.attention === 'finished' && agent.hasMessageQuestion === true;
+// reuse the same displayed attention for badges and notifications
+const agentState = (agent: Agent): AgentState => actionRequired(agent) ? 'action-required' : agent.attention === 'working' ? 'working' : 'prompt-done';
 const agentLabel = (agent: Agent) => (agent.displayLabel ?? (actionRequired(agent) ? agent.title.replace(/(?:\[\s*.\s*\]\s*)?action required\s*\|?\s*/i, '🚨 ') : agent.title)) || agent.home;
 // keep server-owned update advisors inside their modal surface
 const isEmbeddedUpdateAdvisor = (agent: Pick<Agent, 'displayLabel' | 'worktreeId'>): boolean => agent.worktreeId === undefined && /^Update Advisor (?:(?:Starting v[34]|v[234]) )?[0-9a-f]{7}$/u.test(agent.displayLabel ?? '');
@@ -8226,7 +8228,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
         pendingCompletions.current.delete(agent.id);
         void showNotification('finished', `Done working in ${names.projectName}`, `${names.worktreeName} is ready for a new prompt`, tag, `/#agent=${encodeURIComponent(agent.id)}`, agent.worktreeId);
       }
-      if (previous === 'action-required' && state === 'working') void dismissNotification(tag);
+      // clear question notifications on every resolved presentation transition
+      if (previous === 'action-required' && state !== 'action-required') void dismissNotification(tag);
       next.set(agent.id, state);
     }
     for (const [agentId, pending] of pendingCompletions.current) {

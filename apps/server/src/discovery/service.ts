@@ -6,7 +6,7 @@ import { run } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
-import { parseReportedAttention, resolveAttention } from '../adapters/attention.js';
+import { messageAsksQuestion, parseReportedAttention, resolveAttention } from '../adapters/attention.js';
 import { adapterCapabilities, adapterFor, adapters, paneExcluded } from '../adapters/registry.js';
 import { projectIdOf, worktreeMatchesWorkspace, worktreePathOf, worktreeWireId } from '../workspaces/resolver.js';
 import { gitCommonDir, listWorktrees, type WorktreeEntry } from '../git/worktrees.js';
@@ -129,6 +129,8 @@ export class DiscoveryService {
   // the base64 reported Inline question payload (`@rac_question`) per agent id, kept
   // server-side so the dashboard and answer path can re-derive it; never published
   private paneQuestionPayloads = new Map<string, string>();
+  // coalesce transcript reads without delaying live pane status scans
+  private readonly messageQuestions = new Map<string, { identity: string; hasQuestion: boolean; pending: boolean; nextReadAt: number }>();
   // each tmux session's `@rac_place` mark, keyed like `Agent.sessionId`
   // (`${fingerprint}:${session}`); rediscovered every scan, then extended by the dashboard's claims
   private sessionMarks = new Map<string, string>();
@@ -275,6 +277,11 @@ export class DiscoveryService {
     this.paneCwds = paneCwds;
     this.paneReported = paneReported;
     this.paneQuestionPayloads = paneQuestionPayloads;
+    // discard removed panes so late transcript reads cannot restore their state
+    for (const id of this.messageQuestions.keys()) {
+      // detach absent panes from both cached and in-flight reads
+      if (!panePids.has(id)) this.invalidateMessageQuestion(id);
+    }
     this.refreshedAt = Date.now();
     this.generation++;
     return agents;
@@ -526,6 +533,47 @@ export class DiscoveryService {
     return capture === undefined ? undefined : questions.reported(payload, capture);
   }
 
+  // accepted prompts and native dialogs supersede cached and in-flight prose questions
+  invalidateMessageQuestion(agentId: string): void {
+    const state = this.messageQuestions.get(agentId);
+    // dashboard builds may still hold this mutable observation
+    if (state !== undefined) state.hasQuestion = false;
+    this.messageQuestions.delete(agentId);
+    this.dashboardSnapshot = undefined;
+  }
+
+  // read unanswered prose independently of browser connections and native answer dialogs
+  private agentMessageQuestion(agent: Agent): { hasQuestion: boolean } {
+    const read = adapterFor(agent.kind)?.conversations?.latestMessage;
+    const pid = this.panePids.get(agent.id);
+    // new work, native dialogs and vanished panes invalidate older question reads
+    if (agent.attention !== 'finished' || read === undefined || pid === undefined) {
+      this.invalidateMessageQuestion(agent.id);
+      return { hasQuestion: false };
+    }
+    // claude has an exact session id; codex's directory fallback must be unshared
+    const cwd = agent.kind === 'claude' ? this.paneDirectory(agent.id) : this.paneWorkingDirectory(agent.id);
+    const pane = { pid, ...(cwd === undefined ? {} : { cwd }), ...(agent.conversationId === undefined ? {} : { conversationId: agent.conversationId }) };
+    const identity = JSON.stringify([agent.kind, pane]);
+    const previous = this.messageQuestions.get(agent.id);
+    // prevent an older dashboard build from publishing a replaced conversation
+    if (previous !== undefined && previous.identity !== identity) previous.hasQuestion = false;
+    const state = previous?.identity === identity ? previous : { identity, hasQuestion: false, pending: false, nextReadAt: 0 };
+    this.messageQuestions.set(agent.id, state);
+    // bound identity scans across faster pane polls without caching a stale rollout path
+    if (!state.pending && Date.now() >= state.nextReadAt) {
+      state.pending = true;
+      void read(pane).catch(() => undefined).then(message => {
+        // ignore replies from removed panes, older conversations or resumed work
+        if (this.messageQuestions.get(agent.id) === state) state.hasQuestion = messageAsksQuestion(message);
+      }).finally(() => {
+        state.pending = false;
+        state.nextReadAt = Date.now() + DiscoveryService.refreshCacheMs;
+      });
+    }
+    return state;
+  }
+
   // enrich live agent state with independently cached worktree metadata
   private async buildDashboard(force = false, freshAgents = false): Promise<Dashboard> {
     const discovered = await this.refresh(force, freshAgents);
@@ -559,6 +607,8 @@ export class DiscoveryService {
     const worktreeById = new Map(worktrees.map(worktree => [worktree.id, worktree] as const));
     // the stable tab order follows configured checkout order and discovery defaults
     const orderOf = new Map(worktrees.map((worktree, index) => [worktree.id, index] as const));
+    // retain mutable observations until all panes and places finish enrichment
+    const messageQuestionStates = new Map<string, { hasQuestion: boolean }>();
     const agents = await Promise.all(discovered.map(async (discoveredAgent) => {
       const place = this.placeOf(discoveredAgent, places);
       const agent = place === undefined ? discoveredAgent : { ...discoveredAgent, placeId: place.id, home: place.home };
@@ -571,6 +621,9 @@ export class DiscoveryService {
         metadataFor(home),
         this.agentQuestion(agent, questionFolder)
       ]);
+      // native questions replace prose state without starting another transcript read
+      if (question !== undefined) this.invalidateMessageQuestion(agent.id);
+      messageQuestionStates.set(agent.id, question === undefined ? this.agentMessageQuestion(agent) : { hasQuestion: false });
       const branch = meta.branch ?? agent.branch;
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, branch);
       const gitPrStatus = await gitPrComparisonForBase(meta, branch, pullRequest?.baseBranch);
@@ -608,7 +661,11 @@ export class DiscoveryService {
     });
     const listed = this.listPlaces(places, [...discovered.flatMap(agent => this.placeOf(agent, places) ?? []), ...shellPlaces, ...await this.pinnedScratchPlaces(places)]);
     this.listedPlaces = new Map(listed.map(place => [place.id, place]));
-    return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(this.adapters), agents, projects, places: listed.map(place => this.placeView(place, shellCounts)) };
+    // materialize flags only at publication so concurrent replies can invalidate earlier panes
+    const presentedAgents = agents.map(agent => agent.attention === 'finished' && agent.question === undefined && messageQuestionStates.get(agent.id)?.hasQuestion === true
+      ? { ...agent, hasMessageQuestion: true as const }
+      : agent);
+    return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(this.adapters), agents: presentedAgents, projects, places: listed.map(place => this.placeView(place, shellCounts)) };
   }
 
   // The directory-Project or Scratch Place with this id, as the current dashboard lists it (with

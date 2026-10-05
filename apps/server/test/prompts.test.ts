@@ -27,6 +27,58 @@ it('decodes a 25 MiB attachment and rejects malformed base64', () => {
 });
 describe('safe prompt flow',()=>{it('pastes through a generated buffer and submits an idle Codex composer with Enter',async()=>{const calls:string[][]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,b:string,p:string)=>{calls.push(['paste',b,p]);return true},sendKeys:async(_s:unknown,p:string,keys:string[])=>{calls.push([keys.join('+'),p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'hello; $(not-a-command)')).resolves.toBe(true);expect(calls[0]?.[0]).toBe('paste');expect(calls[0]?.[2]).toBe('hello; $(not-a-command) ');expect(calls.slice(1)).toEqual([['Enter','%1']]);expect(calls[0]?.[1]).toMatch(/^rac-/)});
 
+// preserve unanswered questions when prompt submission fails
+it('invalidates a prose question only after prompt delivery succeeds', async () => {
+  const invalidated: string[] = [];
+  let submissions = 0;
+  const discovery = {
+    // use a non-worktree pane
+    worktreesNow: () => [],
+    // retain the same idle target
+    target: async () => ({ agent, socket }),
+    // record accepted-delivery invalidations
+    invalidateMessageQuestion: (id: string) => invalidated.push(id)
+  };
+  const tmux = {
+    // accept both paste attempts
+    pastePrompt: async () => true,
+    // reject only the second submission
+    sendKeys: async () => ++submissions === 1
+  };
+  const service = new PromptService(discovery as never, tmux as never);
+
+  await expect(service.submit(agent.id, 'accepted prompt')).resolves.toBe(true);
+  await expect(service.submit(agent.id, 'rejected prompt')).resolves.toBe(false);
+
+  expect(invalidated).toEqual([agent.id]);
+});
+
+// clear prose questions only after a reset reaches the pane
+it('invalidates a prose question only after reset delivery succeeds', async () => {
+  const invalidated: string[] = [];
+  let submissions = 0;
+  const discovery = {
+    // use a non-worktree pane
+    worktreesNow: () => [],
+    // retain the same idle target
+    target: async () => ({ agent, socket }),
+    // record accepted-delivery invalidations
+    invalidateMessageQuestion: (id: string) => invalidated.push(id)
+  };
+  const tmux = {
+    // accept both paste attempts
+    pastePrompt: async () => true,
+    // reject only the second submission
+    sendKeys: async () => ++submissions === 1
+  };
+  const service = new PromptService(discovery as never, tmux as never);
+
+  await expect(service.submitReset(agent.id, '/new')).resolves.toBe(true);
+  await expect(service.submitReset(agent.id, '/new')).resolves.toBe(false);
+
+  expect(invalidated).toEqual([agent.id]);
+});
+
 it('uses the Adapter queue key if the pane becomes active while the prompt is pasted', async () => {
   const working = stated({ ...agent, title: '⠋ Working' });
   let targets = 0;

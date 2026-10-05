@@ -38,6 +38,8 @@ const sdkEntrypoints = new Set(['sdk-cli', 'sdk-ts', 'sdk-py']);
 // bound the final-message read: the reply sits at the transcript's end, and a Review run's
 // JSON reply may run to hundreds of kilobytes once escaped
 const maxFinalMessageScanBytes = 8 * 1024 * 1024;
+// discovery polls this reader, so keep each pane read small and fail safe on an oversized record
+const maxLatestMessageScanBytes = 512 * 1024;
 // a top-level transcript filename is exactly `<session-uuid>.jsonl`
 const transcriptFile = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/iu;
 
@@ -217,7 +219,67 @@ export async function claudeConversationSummaries(directories: readonly string[]
   return summaries;
 }
 
-type AssistantRecord = { type?: unknown; isSidechain?: unknown; message?: { id?: unknown; content?: unknown } };
+type AssistantRecord = { type?: unknown; isMeta?: unknown; isSidechain?: unknown; message?: { id?: unknown; role?: unknown; content?: unknown } };
+
+// identify a typed main-thread user message rather than a tool result
+function isRealUserMessage(record: AssistantRecord): boolean {
+  // ignore synthetic and sidechain records
+  if (record.type !== 'user' || record.isMeta === true || record.isSidechain === true || record.message?.role !== 'user') return false;
+  const content = record.message.content;
+  // direct string content is a typed prompt
+  if (typeof content === 'string') return content.trim() !== '';
+  // reject tool results and malformed content
+  if (!Array.isArray(content)) return false;
+  return content.some(block => block !== null && typeof block === 'object'
+    && (block as { type?: unknown }).type === 'text'
+    && typeof (block as { text?: unknown }).text === 'string'
+    && (block as { text: string }).text.trim() !== '');
+}
+
+// append the visible text blocks from one Claude message record
+function appendClaudeText(content: unknown, texts: string[]): void {
+  // accept direct assistant text
+  if (typeof content === 'string') {
+    // retain non-empty direct text
+    if (content.trim() !== '') texts.push(content);
+    return;
+  }
+  // reject non-message content
+  if (!Array.isArray(content)) return;
+  // retain only rendered text blocks
+  for (const block of content as Array<{ type?: unknown; text?: unknown }>) if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim() !== '') texts.push(block.text);
+}
+
+/**
+ * the latest unanswered main-thread assistant message; a later typed user message
+ * clears stale assistant text; tool results and sidechains do not change it.
+ */
+export function latestClaudeMessageFromRecords(lines: Iterable<string>): string | undefined {
+  let messageId: unknown;
+  let texts: string[] = [];
+  // apply transcript records in file order
+  for (const line of lines) {
+    let parsed: unknown;
+    // skip malformed tail fragments
+    try { parsed = JSON.parse(line) as unknown; } catch { continue; }
+    // reject json primitives and arrays
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    const record = parsed as AssistantRecord;
+    // clear only typed user prompts
+    if (isRealUserMessage(record)) {
+      messageId = undefined;
+      texts = [];
+      continue;
+    }
+    // ignore sidechains and non-assistant bookkeeping
+    if (record.type !== 'assistant' || record.isSidechain === true || record.message === undefined || record.message === null) continue;
+    // reset when a newer assistant message begins, even before it emits text
+    if (record.message.id !== messageId || messageId === undefined) { messageId = record.message.id; texts = []; }
+    appendClaudeText(record.message.content, texts);
+  }
+  const text = texts.join('\n\n');
+  return text === '' ? undefined : text;
+}
 
 /**
  * The text of the last assistant message among these transcript records. The transcript
@@ -254,4 +316,12 @@ export async function claudeLastAssistantText(id: string, cwd: string | undefine
   if (!validClaudeSessionId(id) || cwd === undefined) return undefined;
   const lines = await readFileTail(transcriptPath(id, cwd, env), maxFinalMessageScanBytes).catch(() => undefined);
   return lines === undefined ? undefined : lastAssistantTextFromRecords(lines);
+}
+
+/** read the latest unanswered message from claude's reported conversation */
+export async function claudeConversationLatestMessage(pane: { pid: number; cwd?: string; conversationId?: string }, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
+  // require the reported id and raw pane cwd that key Claude's transcript
+  if (pane.conversationId === undefined || !validClaudeSessionId(pane.conversationId) || pane.cwd === undefined) return undefined;
+  const lines = await readFileTail(transcriptPath(pane.conversationId, pane.cwd, env), maxLatestMessageScanBytes).catch(() => undefined);
+  return lines === undefined ? undefined : latestClaudeMessageFromRecords(lines);
 }

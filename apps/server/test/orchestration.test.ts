@@ -70,6 +70,27 @@ function dependencies(overrides: Partial<OrchestrationDependencies> = {}): Orche
 }
 
 describe('OrchestrationService', () => {
+  // integration summaries share the UI's question priority without changing execution status
+  it('includes prose questions in worktree and scratch attention summaries', async () => {
+    const deps = dependencies();
+    const dashboard = await deps.loadDashboard();
+    const asking = { ...dashboard.agents[0]!, hasMessageQuestion: true as const };
+    const scratch = { ...asking, id: 'scratch-agent', worktreeId: undefined, projectId: undefined, displayLabel: 'Scratch', home: '/scratch' };
+    const working = { ...asking, id: 'working-agent', worktreeId: dave.id, displayLabel: 'Dave', attention: 'working' as const };
+    // provide the same mixed dashboard to each public summary
+    const service = new OrchestrationService({ ...deps, loadDashboard: async () => ({ ...dashboard, agents: [working, asking, scratch] }) });
+
+    await expect(service.workspaceSummary()).resolves.toMatchObject({ ok: true, value: {
+      worktrees: [expect.objectContaining({ id: cora.id, attention: 'question' }), expect.objectContaining({ id: dave.id, attention: 'working' })],
+      scratchAgents: [expect.objectContaining({ id: scratch.id, attention: 'question' })]
+    } });
+    await expect(service.attentionSummary()).resolves.toMatchObject({ ok: true, value: {
+      state: 'question',
+      agents: [expect.objectContaining({ id: asking.id, attention: 'question' }), expect.objectContaining({ id: scratch.id, attention: 'question' }), expect.objectContaining({ id: working.id, attention: 'working' })]
+    } });
+    await expect(service.agentStatus(asking.id)).resolves.toMatchObject({ ok: true, value: { attention: 'finished' } });
+  });
+
   it('maps each interrupt outcome to its result', async () => {
     const cancelled = new OrchestrationService(dependencies({ prompts: { ...dependencies().prompts, cancel: async () => 'ok' } }));
     await expect(cancelled.cancel(activeAgent.id)).resolves.toMatchObject({ ok: true, value: { cancelled: true } });

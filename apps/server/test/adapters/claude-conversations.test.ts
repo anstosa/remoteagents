@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { claudeConfigDir, claudeConversationName, claudeConversationSummaries, claudeLastAssistantText, lastAssistantTextFromRecords, validClaudeSessionId } from '../../src/adapters/claude-conversations.js';
+import { claudeConfigDir, claudeConversationLatestMessage, claudeConversationName, claudeConversationSummaries, claudeLastAssistantText, latestClaudeMessageFromRecords, lastAssistantTextFromRecords, validClaudeSessionId } from '../../src/adapters/claude-conversations.js';
 
 const cwd = '/tachi/code/remoteagents';
 const encoded = '-tachi-code-remoteagents';
@@ -284,5 +284,51 @@ describe('claude final assistant message', () => {
     await expect(claudeLastAssistantText('not-a-uuid', cwd, env)).resolves.toBeUndefined();
     await expect(claudeLastAssistantText(id, undefined, env)).resolves.toBeUndefined();
     await expect(claudeLastAssistantText(id, cwd, env)).resolves.toBeUndefined();
+  });
+
+  it('reads the latest assistant message for the reported conversation and raw cwd', async () => {
+    const configDir = await transcript([
+      { type: 'user', isSidechain: false, message: { role: 'user', content: 'Can you proceed?' } },
+      { type: 'assistant', isSidechain: false, message: { id: 'answer', content: [{ type: 'text', text: 'Yes. Should I start?' }] } },
+    ]);
+    await expect(claudeConversationLatestMessage({ pid: 123, cwd, conversationId: id }, { RAC_CLAUDE_CONFIG_DIR: configDir } as NodeJS.ProcessEnv)).resolves.toBe('Yes. Should I start?');
+    await expect(claudeConversationLatestMessage({ pid: 123, cwd }, { RAC_CLAUDE_CONFIG_DIR: configDir } as NodeJS.ProcessEnv)).resolves.toBeUndefined();
+  });
+
+  it('clears stale assistant text only for newer real main-thread messages', () => {
+    // create one assistant transcript record
+    const assistant = (messageId: string, content: unknown, isSidechain = false) => JSON.stringify({ type: 'assistant', isSidechain, message: { id: messageId, content } });
+    // create one user transcript record
+    const user = (content: unknown, isSidechain = false) => JSON.stringify({ type: 'user', isSidechain, message: { role: 'user', content } });
+    const question = assistant('q', [{ type: 'text', text: 'Which option?' }]);
+
+    expect(latestClaudeMessageFromRecords([question, user('Use the first')])).toBeUndefined();
+    expect(latestClaudeMessageFromRecords([question, user([{ type: 'tool_result', content: 'result' }])])).toBe('Which option?');
+    expect(latestClaudeMessageFromRecords([question, user('side task', true), assistant('side', [{ type: 'text', text: 'side answer' }], true)])).toBe('Which option?');
+    expect(latestClaudeMessageFromRecords([question, JSON.stringify({ type: 'user', isMeta: true, message: { role: 'user', content: 'system reminder' } })])).toBe('Which option?');
+  });
+
+  it('joins the current assistant message and clears it when a newer message has no text', () => {
+    // create one assistant transcript record
+    const record = (messageId: string, content: unknown) => JSON.stringify({ type: 'assistant', isSidechain: false, message: { id: messageId, content } });
+    expect(latestClaudeMessageFromRecords([
+      record('a', [{ type: 'text', text: 'one' }]),
+      record('a', [{ type: 'tool_use' }]),
+      record('a', [{ type: 'text', text: 'two' }]),
+    ])).toBe('one\n\ntwo');
+    expect(latestClaudeMessageFromRecords([
+      record('a', [{ type: 'text', text: 'old question?' }]),
+      record('b', [{ type: 'thinking', thinking: 'new response' }]),
+    ])).toBeUndefined();
+  });
+
+  it('ignores malformed and non-record json values', () => {
+    expect(latestClaudeMessageFromRecords([
+      'null',
+      '[]',
+      '42',
+      '{bad json',
+      JSON.stringify({ type: 'assistant', isSidechain: false, message: { id: 'valid', content: [{ type: 'text', text: 'Valid reply' }] } }),
+    ])).toBe('Valid reply');
   });
 });

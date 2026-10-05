@@ -34,6 +34,10 @@ describe('instance attention', () => {
     expect(instanceAttention({ agents: [agent('⠋ Working'), agent('Ready', false, { question })] })).toBe('question');
   });
 
+  it('presents a latest-message question while canonical attention remains finished', () => {
+    expect(instanceAttention({ agents: [agent('Ready', false, { attention: 'finished', hasMessageQuestion: true })] })).toBe('question');
+  });
+
   it('retains completed attention until it is read', () => {
     expect(instanceAttention({ agents: [agent('Ready', true)] })).toBe('completed');
     expect(instanceAttention({ agents: [agent('Ready')] })).toBe('idle');

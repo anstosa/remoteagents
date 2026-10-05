@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { RemoteServer } from './config/schema.js';
 import type { Agent } from './domain/models.js';
 import { isInstanceIcon, type InstanceIcon } from './instance-icon.js';
-import { agentAttentionState } from './notifications.js';
+import { agentPresentationAttentionState } from './notifications.js';
 
 export type InstanceAttention = 'idle' | 'working' | 'question' | 'completed' | 'unavailable';
 export type InstanceStatus = { url: string; name: string; icon?: InstanceIcon; attention: InstanceAttention };
@@ -16,9 +16,9 @@ const statusCacheMs = 5_000;
 // reduce dashboard details to one safe attention state
 export function instanceAttention(dashboard: { agents: Array<Agent & { unread: boolean }> }): Exclude<InstanceAttention, 'unavailable'> {
   // prioritize active questions over completed notifications
-  if (dashboard.agents.some(agent => agentAttentionState(agent) === 'question')) return 'question';
+  if (dashboard.agents.some(agent => agentPresentationAttentionState(agent) === 'question')) return 'question';
   // show active work before any retained completion notification
-  if (dashboard.agents.some(agent => agentAttentionState(agent) === 'working')) return 'working';
+  if (dashboard.agents.some(agent => agentPresentationAttentionState(agent) === 'working')) return 'working';
   // retain completed state until its notification is viewed
   if (dashboard.agents.some(agent => agent.unread)) return 'completed';
   return 'idle';

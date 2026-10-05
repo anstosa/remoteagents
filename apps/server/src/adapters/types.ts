@@ -255,6 +255,8 @@ export interface Adapter {
      * read error — an unknown id, an unknown cwd, or an unreadable/absent store.
      */
     readName?(id: string, cwd?: string): Promise<string | undefined>;
+    /** the latest unanswered assistant message from this pane's bounded transcript tail */
+    latestMessage?(pane: { pid: number; cwd?: string; conversationId?: string }): Promise<string | undefined>;
   };
   /**
    * Turn completion read from the agent's own structured event log rather than the

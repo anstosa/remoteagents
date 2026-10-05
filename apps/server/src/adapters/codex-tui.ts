@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { codexDraftState, failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
 import { parseChoiceQuestion } from './codex-questions.js';
-import { codexConversationName, codexConversationSummaries, codexHome, codexPromptAccepted, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
+import { codexConversationName, codexConversationSummaries, codexHome, codexLatestMessage, codexPromptAccepted, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
 import type { Adapter, AttentionState, PromptCommand } from './types.js';
 
 // The new-conversation reset lives in its own module; both the Codex and OMX Adapters
@@ -138,6 +138,8 @@ export const codexConversations: NonNullable<Adapter['conversations']> = {
   // Codex and OMX rename the current thread with `/rename <name> ` (trailing space), submitted as Enter
   rename: (name) => ({ text: `/rename ${name} `, keys: ['Enter'] }),
   readName: (id) => codexConversationName(id),
+  // read ordinary questions without opening an answer dialog
+  latestMessage: (pane) => codexLatestMessage(pane),
 };
 
 export const codexCompletion: NonNullable<Adapter['completion']> = {

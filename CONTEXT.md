@@ -82,6 +82,7 @@ _Avoid_: Isolated, jailed, wrapped
 
 **Attention state**:
 What an Agent needs from the operator right now: working, finished, or question.
+The UI, notifications, and integration attention/workspace summaries also show a question when an idle Agent's latest unanswered message asks one in prose. This does not create an Inline question or switch the composer into answer mode; replies still use the normal prompt path.
 _Avoid_: Status, activity
 
 **Reported state**:

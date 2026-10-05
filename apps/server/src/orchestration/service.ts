@@ -2,7 +2,7 @@ import type { ValidatedConfig } from '../config/schema.js';
 import type { DashboardPayload } from '../dashboard/updates.js';
 import type { DiscoveryService } from '../discovery/service.js';
 import { stackActions, type Agent, type Worktree } from '../domain/models.js';
-import { agentAttentionState } from '../notifications.js';
+import { agentAttentionState, agentPresentationAttentionState } from '../notifications.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
 import type { PromptService } from '../prompts/service.js';
 import { validPrompt } from '../prompts/validation.js';
@@ -458,19 +458,21 @@ export class OrchestrationService {
     return await this.operation(async () => {
       const dashboard = await this.dependencies.loadDashboard();
       const statuses = this.worktreeStatuses(dashboard);
+      // align workspace rollups with displayed question priority
       const worktrees = statuses.map(status => {
         const agents = dashboard.agents.filter(agent => status.agentIds.includes(agent.id));
-        const attention = agents.some(agent => agentAttentionState(agent) === 'question')
+        const attention = agents.some(agent => agentPresentationAttentionState(agent) === 'question')
           ? 'question' as const
-          : agents.some(agent => agentAttentionState(agent) === 'working')
+          : agents.some(agent => agentPresentationAttentionState(agent) === 'working')
             ? 'working' as const
             : agents.length > 0 ? 'finished' as const : 'inactive' as const;
         return { id: status.id, label: status.label, active: status.active, agents: agents.length, attention, ...(status.branch === undefined ? {} : { branch: status.branch }), changes: status.gitStatus?.files ?? 0 };
       });
       const configuredIds = new Set(statuses.flatMap(status => status.agentIds));
+      // apply the same presentation to unconfigured agents
       const scratchAgents = dashboard.agents
         .filter(agent => !configuredIds.has(agent.id))
-        .map(agent => ({ id: agent.id, label: agentLabel(agent), attention: agentAttentionState(agent) }))
+        .map(agent => ({ id: agent.id, label: agentLabel(agent), attention: agentPresentationAttentionState(agent) }))
         .sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
       const lines = [
         ...worktrees.map(worktree => `${worktree.label}: ${worktree.attention}${worktree.branch === undefined ? '' : ` on ${worktree.branch}`} (${worktree.changes} changes)`),
@@ -484,7 +486,8 @@ export class OrchestrationService {
   async attentionSummary(): Promise<OrchestrationResult<AttentionSummaryV1>> {
     return await this.operation(async () => {
       const dashboard = await this.dependencies.loadDashboard();
-      const agents = dashboard.agents.map(agent => ({ id: agent.id, label: agentLabel(agent), attention: agentAttentionState(agent), unread: agent.unread }));
+      // summarize requests for attention rather than prompt readiness
+      const agents = dashboard.agents.map(agent => ({ id: agent.id, label: agentLabel(agent), attention: agentPresentationAttentionState(agent), unread: agent.unread }));
       const priority = { question: 0, working: 1, finished: 2 } as const;
       agents.sort((left, right) => priority[left.attention] - priority[right.attention] || left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
       const state = agents.some(agent => agent.attention === 'question')

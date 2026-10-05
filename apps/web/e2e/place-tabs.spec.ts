@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-type MockAgent = { id: string; kind: 'claude' | 'codex'; attention?: 'working' | 'finished' | 'question'; unread?: boolean; conversation?: string | null; history?: string[] };
+type MockAgent = { id: string; kind: 'claude' | 'codex'; attention?: 'working' | 'finished' | 'question'; hasMessageQuestion?: true; unread?: boolean; conversation?: string | null; history?: string[] };
 type Console = { agents: MockAgent[]; dismissed: string[] };
 
 const worktree = { id: 'app:/worktrees/cora', projectId: 'app', label: 'Cora', path: '/worktrees/cora', main: false, detached: false, locked: false, branch: 'cora', available: true, pinned: false, order: 0 };
@@ -15,7 +15,7 @@ async function mockConsole(page: Page, state: Console) {
     const path = url.pathname;
     if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (path === '/api/dashboard') {
-      const agents = state.agents.map(agent => ({ id: agent.id, sessionId: 'socket:$1', home: '/worktrees/cora', placeId: worktree.id, worktreeId: worktree.id, projectId: 'app', title: 'Ready', branch: 'cora', kind: agent.kind, queuedPromptCount: 0, ...(agent.attention === undefined ? {} : { attention: agent.attention }), ...(agent.unread === true ? { unread: true } : {}) }));
+      const agents = state.agents.map(agent => ({ id: agent.id, sessionId: 'socket:$1', home: '/worktrees/cora', placeId: worktree.id, worktreeId: worktree.id, projectId: 'app', title: 'Ready', branch: 'cora', kind: agent.kind, queuedPromptCount: 0, ...(agent.attention === undefined ? {} : { attention: agent.attention }), ...(agent.hasMessageQuestion === true ? { hasMessageQuestion: true } : {}), ...(agent.unread === true ? { unread: true } : {}) }));
       return route.fulfill({ json: { generation: 1, agents, projects: [{ id: 'app', label: 'App', available: true, worktrees: [worktree, delta] }] } });
     }
     if (path === '/api/push/public-key') return route.fulfill({ json: {} });
@@ -175,3 +175,29 @@ test('the toolbar launches another Agent at a Worktree that has one, and the swi
   expect(launches).toEqual([`/api/worktrees/${encodeURIComponent(worktree.id)}/launch`]);
   await expect(page.getByRole('tab')).toHaveCount(2);
 });
+
+// desktop tabs and the phone dropdown share the question signal without an answer picker
+for (const width of [1280, 390]) {
+  // preserve the normal composer for questions asked in ordinary assistant prose
+  test(`latest-message questions keep the normal composer at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const state: Console = { agents: [{ id: 'agent-1', kind: 'codex', attention: 'finished', hasMessageQuestion: true }], dismissed: [] };
+    await mockConsole(page, state);
+    await page.goto('/#agent=agent-1');
+    const cora = page.getByRole('tab', { name: /^Cora — /u });
+    await expect(cora).toHaveAccessibleName('Cora — Action required');
+    await expect(agentPanel(page).getByText('Needs answer', { exact: true })).toBeVisible();
+    const prompt = agentPanel(page).getByRole('textbox', { name: 'Prompt', exact: true });
+    await expect(prompt).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Agent question' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Switch to normal prompt mode' })).toHaveCount(0);
+    await prompt.fill('Use staging.');
+
+    // resumed work clears the warning and keeps the ordinary reply draft intact
+    state.agents = [{ id: 'agent-1', kind: 'codex', attention: 'working' }];
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(cora).toHaveAccessibleName('Cora — Working', { timeout: 10_000 });
+    await expect(agentPanel(page).getByText('Needs answer', { exact: true })).toHaveCount(0);
+    await expect(prompt).toHaveValue('Use staging.');
+  });
+}

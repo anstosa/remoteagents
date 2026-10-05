@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent } from '../src/domain/models.js';
 import { resolveAttention } from '../src/adapters/attention.js';
-import { AgentNotificationCoordinator, agentAttentionState, agentNotification, reviewNotification, scheduleNotification, type AgentNotification, type AgentNotificationContext } from '../src/notifications.js';
+import { AgentNotificationCoordinator, agentAttentionState, agentNotification, agentPresentationAttentionState, reviewNotification, scheduleNotification, type AgentNotification, type AgentNotificationContext } from '../src/notifications.js';
 
 // Resolve attention from the title exactly as DiscoveryService would, so the
 // coordinator reads the same resolved state the wire carries.
@@ -46,6 +46,14 @@ describe('agent notifications', () => {
       url: '/#agent=socket%3A%251',
       worktreeId: 'eric'
     });
+  });
+
+  it('presents a latest-message question without changing canonical attention', () => {
+    const questioning = agent({ attention: 'finished', hasMessageQuestion: true });
+
+    expect(agentAttentionState(questioning)).toBe('finished');
+    expect(agentPresentationAttentionState(questioning)).toBe('question');
+    expect(agentPresentationAttentionState({ ...questioning, attention: 'working' })).toBe('working');
   });
 
   it('does not misreport an action-required transition as completion', () => {
@@ -115,6 +123,21 @@ describe('agent notifications', () => {
     await vi.advanceTimersByTimeAsync(2_000);
 
     expect(delivered).toEqual([]);
+    coordinator.stop();
+  });
+
+  it('notifies for a latest-message question without creating an unread completion', async () => {
+    vi.useFakeTimers();
+    const delivered: AgentNotification[] = [];
+    const coordinator = new AgentNotificationCoordinator(notification => delivered.push(notification), 2_000);
+
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent({ attention: 'finished', hasMessageQuestion: true }));
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(delivered).toEqual([expect.objectContaining({ kind: 'question', body: 'Eric: has a question' })]);
+    expect(coordinator.isUnread(agent())).toBe(false);
+    expect(coordinator.completionId(agent())).toBeUndefined();
     coordinator.stop();
   });
 

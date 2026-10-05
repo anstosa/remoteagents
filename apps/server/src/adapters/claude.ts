@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import { claudeConfigDir, claudeConversationName, claudeConversationSummaries, validClaudeSessionId } from './claude-conversations.js';
+import { claudeConfigDir, claudeConversationLatestMessage, claudeConversationName, claudeConversationSummaries, validClaudeSessionId } from './claude-conversations.js';
 import { claudeSkillDirectories, claudeSlash } from './claude-commands.js';
 import { claudeFiles, claudeHooksFileName } from './claude-hooks.js';
 import { claudeNewConversation } from './claude-new-conversation.js';
@@ -93,6 +93,8 @@ export const claudeAdapter: Adapter = {
     // Claude renames the current Conversation with `/rename <name>`, submitted as Enter
     rename: (name) => ({ text: `/rename ${name}`, keys: ['Enter'] }),
     readName: (id, cwd) => claudeConversationName(id, cwd),
+    // read ordinary questions without opening an answer dialog
+    latestMessage: (pane) => claudeConversationLatestMessage(pane),
   },
   newConversation: claudeNewConversation,
   files: claudeFiles,

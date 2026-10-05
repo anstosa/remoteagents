@@ -1,5 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import { parseReportedAttention, resolveAttention } from '../../src/adapters/attention.js';
+import { messageAsksQuestion, parseReportedAttention, resolveAttention } from '../../src/adapters/attention.js';
+
+// recognize prose questions without treating code or urls as requests for input
+describe('messageAsksQuestion', () => {
+  // retain questions in paragraphs and markdown emphasis
+  it.each([
+    'Should I proceed?',
+    'The change is ready. **Which target should I use?**\nI can use either.',
+    'Choose a target?\n1. Staging\n2. Production',
+    '可以继续吗？',
+    'Use `value?.enabled` here. Does that match your intent?'
+  ])('recognizes a question in %s', message => {
+    expect(messageAsksQuestion(message)).toBe(true);
+  });
+
+  // exclude non-prose question marks and quoted history
+  it.each([
+    undefined,
+    'Finished the requested changes.',
+    'Use `value?.enabled ?? false`.',
+    'See https://example.test/?q=ready for the result.',
+    '[Preview](https://example.test/?q=ready)',
+    '```ts\nconst x = ready ? one : two;\n```\nDone.',
+    '~~~\nShould I proceed?\n~~~\nDone.',
+    'Example:\n\n    const x = ready ? one : two;',
+    '> Should I proceed?\nThat earlier question is resolved.',
+    '```\nAn unfinished code block?'
+  ])('ignores non-question content in %s', message => {
+    expect(messageAsksQuestion(message)).toBe(false);
+  });
+});
 
 describe('resolveAttention precedence', () => {
   // reported → question → inferred → finished

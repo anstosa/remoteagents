@@ -49,6 +49,11 @@ export function agentAttentionState(agent: Pick<Agent, 'attention'>): AgentAtten
   return agent.attention;
 }
 
+// promote latest-message questions only on presentation surfaces
+export function agentPresentationAttentionState(agent: Pick<Agent, 'attention' | 'hasMessageQuestion'>): AgentAttentionState {
+  return agent.attention === 'finished' && agent.hasMessageQuestion === true ? 'question' : agent.attention;
+}
+
 export const agentNotificationTag = (agent: Pick<Agent, 'id' | 'worktreeId'>) => agent.worktreeId === undefined ? `agent-status-${agent.id}` : `worktree-status-${agent.worktreeId}`;
 
 // build one review-ready push payload
@@ -127,7 +132,7 @@ export class AgentNotificationCoordinator {
   // track each agent independently even when several share one workspace
   observe(agent: Agent, hasQueuedPrompt = false, context?: AgentNotificationContext): void {
     const key = agent.id;
-    const current = agentAttentionState(agent);
+    const current = agentPresentationAttentionState(agent);
     const previous = this.states.get(key);
     this.states.set(key, current);
 
