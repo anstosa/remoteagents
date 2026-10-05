@@ -205,3 +205,11 @@ _Avoid_: Review profile, reviewer
 **Review run**:
 One prompt sent to one agent in a Worktree that must answer with validated JSON — the tour's narration or a Code review. Headless or interactive, by the agent kind's configured mode.
 _Avoid_: Review job (a job is the server's tracking of one run's result)
+
+**Pull request**:
+The GitHub pull request a Worktree's branch is open as, found through the Worktree's `origin`. The operator picks it when posting a Review tour, and the console checks it is open and from this branch.
+_Avoid_: PR (fine as a UI label), merge request
+
+**Draft review**:
+The operator's unsubmitted GitHub review on a Pull request, which a Review tour's notes and inline comments can be posted to. The console only ever creates or adds to it; the operator submits or discards it on GitHub. GitHub's API calls it a pending review.
+_Avoid_: Pending review, review draft, submitted review

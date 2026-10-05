@@ -835,10 +835,11 @@ iOS 16.4 or later before enabling alerts.
 If a worktree has a GitHub `origin` remote and the host has GitHub CLI
 credentials (or `RAC_GITHUB_TOKEN`), the console can show a link to its open
 pull request. The lookup is read-only and its result is cached briefly. The
-same credentials let a guided review of an All PR tour post its comments to
-that pull request as your pending review, which you then finish on GitHub; that
-needs a token allowed to write pull request reviews, and the commented files
-must be committed and pushed.
+same credentials let a guided review of an All PR tour post its notes and
+comments to that pull request as your draft review (GitHub shows it as
+Pending), which you then finish on GitHub; that needs a token allowed to write
+pull request reviews, and the commented files must be committed and pushed.
+See ADR 0011.
 
 ## Operational checks
 

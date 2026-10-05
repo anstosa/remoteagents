@@ -1273,15 +1273,17 @@ test('binds a guided review started from a Review run\'s pane to the Worktree\'s
 const postRoutePatch = 'diff --git a/src/route.ts b/src/route.ts\nindex 1111111..2222222 100644\n--- a/src/route.ts\n+++ b/src/route.ts\n@@ -4,4 +4,4 @@\n const a = 1;\n+const x = 9;\n const b = 2;\n const c = 3;\n-const y = 8;\n';
 const postTour = { title: 'Post tour', overview: 'Review the route constants.', scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'post-fingerprint-123456', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: postRoutePatch }, { id: 'chg_service01', file: 'src/service.ts', category: 'implementation', kind: 'hunk', patch: 'diff --git a/src/service.ts b/src/service.ts\nindex 3333333..4444444 100644\n--- a/src/service.ts\n+++ b/src/service.ts\n@@ -4 +4 @@\n-old service\n+new service\n' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route renames its constants.', changeIds: ['chg_route0001'] }, { id: 'service', title: 'Apply the operation', explanation: 'The service performs the transition.', changeIds: ['chg_service01'] }] };
 const openPullRequest = { number: 123, title: 'Review tour', status: 'open', url: 'https://github.com/owner/repo/pull/123' };
-type PrReviewPost = { scope: string; includeTests: boolean; includeDocs: boolean; fingerprint: string; body: string; comments: { id: string; changeId: string; startSide: string; startLine: number; endSide: string; endLine: number; body: string }[] };
+type PrReviewPost = { scope: string; includeTests: boolean; includeDocs: boolean; fingerprint: string; pullRequestNumber: number; sections: { key: string; markdown: string }[]; comments: { id: string; changeId: string; startSide: string; startLine: number; endSide: string; endLine: number; body: string }[] };
 const draftReview = { url: 'https://github.com/owner/repo/pull/123/files', pullRequest: { number: 123, url: openPullRequest.url } };
-// a post GitHub takes whole: every comment on its lines, and the body when there is one
-const postedWhole = (post: PrReviewPost, route: Route) => route.fulfill({ json: { status: 'ok', review: draftReview, bodyPosted: post.body !== '', comments: post.comments.map(comment => ({ id: comment.id, result: 'line' })) } });
+// a post GitHub takes whole: every section, and every comment on its lines
+const postedWhole = (post: PrReviewPost, route: Route) => route.fulfill({ json: { status: 'ok', review: draftReview, sections: post.sections.map(({ key }) => ({ key, posted: true })), comments: post.comments.map(comment => ({ id: comment.id, result: 'line' })) } });
+// the post's fixed fields for the post tour; a test adds its sections and comments
+const postEnvelope = { scope: 'pr', includeTests: false, includeDocs: false, fingerprint: postTour.fingerprint, pullRequestNumber: 123 };
 
-// Restore the post tour on a Worktree with a pull request (or, with null, none); `respond` answers
-// each post. The returned `comparison` is the Worktree's current one: moving its fingerprint makes the
+// Restore the post tour on a Worktree with a pull request (or, with null, none), with `stored`
+// beside it in the stored review (a Code review, say); `respond` answers each post. The returned `comparison` is the Worktree's current one: moving its fingerprint makes the
 // tour stale, and Regenerate builds the tour again with it.
-async function openPostTour(page: Page, { scope = 'pr', pullRequest = openPullRequest as Record<string, unknown> | null, respond = (_post: PrReviewPost, route: Route) => route.fulfill({ status: 500, json: { status: 'error', error: { code: 'post_failed', retryable: false } } }) }: { scope?: 'pr' | 'working'; pullRequest?: Record<string, unknown> | null; respond?: (post: PrReviewPost, route: Route) => Promise<void> } = {}): Promise<{ dialog: ReturnType<Page['getByRole']>; posts: PrReviewPost[]; prompts: string[]; comparison: { fingerprint: string } }> {
+async function openPostTour(page: Page, { scope = 'pr', pullRequest = openPullRequest as Record<string, unknown> | null, stored = {}, respond = (_post: PrReviewPost, route: Route) => route.fulfill({ status: 500, json: { status: 'error', error: { code: 'post_failed', retryable: false } } }) }: { scope?: 'pr' | 'working'; pullRequest?: Record<string, unknown> | null; stored?: Record<string, unknown>; respond?: (post: PrReviewPost, route: Route) => Promise<void> } = {}): Promise<{ dialog: ReturnType<Page['getByRole']>; posts: PrReviewPost[]; prompts: string[]; comparison: { fingerprint: string } }> {
   const posts: PrReviewPost[] = [];
   const prompts: string[] = [];
   const tour = { ...postTour, scope, base: scope === 'pr' ? 'origin/main' : 'HEAD' };
@@ -1293,7 +1295,7 @@ async function openPostTour(page: Page, { scope = 'pr', pullRequest = openPullRe
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, ...claudeReviewCapabilities, reviews: [{ worktreeId: 'owen', branch: 'feature/review-tour', savedAt: '2026-10-04T12:00:00.000Z', title: tour.title, scope, includeTests: false, includeDocs: false, fingerprint: tour.fingerprint }], agents: [{ ...startSheetAgent, ...(pullRequest === null ? {} : { pullRequest }) }], projects: [] } });
     if (await fulfillAgentSupport(route, url.pathname)) return;
-    if (url.pathname === '/api/worktrees/owen/review-tour') return route.fulfill({ json: { status: 'ready', review: { worktreeId: 'owen', branch: 'feature/review-tour', savedAt: '2026-10-04T12:00:00.000Z', tour } } });
+    if (url.pathname === '/api/worktrees/owen/review-tour') return route.fulfill({ json: { status: 'ready', review: { worktreeId: 'owen', branch: 'feature/review-tour', savedAt: '2026-10-04T12:00:00.000Z', tour, ...stored } } });
     if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') return route.fulfill({ json: { status: 'comparison', comparison: { scope, base: tour.base, includeTests: false, includeDocs: false, fingerprint: comparison.fingerprint } } });
     if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') return route.fulfill({ status: 202, json: { status: 'pending', job: pendingJob('job-regen') } });
     if (url.pathname === '/api/review-tour/jobs/job-regen') return request.method() === 'DELETE' ? route.fulfill({ status: 204 }) : route.fulfill({ json: { status: 'ready', tour: { ...tour, fingerprint: comparison.fingerprint } } });
@@ -1334,7 +1336,7 @@ test('posts inline comments and notes to the pull request as a draft review and 
   const { dialog, posts, prompts } = await openPostTour(page, { respond: (post, route) => {
     const byBody = (body: string) => post.comments.find(comment => comment.body === body)?.id ?? '';
     // the first post places one comment on its lines, one as a file-level comment and fails one
-    if (posts.length === 1) return route.fulfill({ json: { status: 'ok', review: draftReview, bodyPosted: true, comments: [{ id: byBody('Guard x.'), result: 'line' }, { id: byBody('Name a.'), result: 'file', reason: 'The lines are not in the pull request diff.' }, { id: byBody('Rename the service.'), result: 'failed', reason: 'GitHub rejected the thread.' }] } });
+    if (posts.length === 1) return route.fulfill({ json: { status: 'ok', review: draftReview, sections: post.sections.map(({ key }) => ({ key, posted: true })), comments: [{ id: byBody('Guard x.'), result: 'line' }, { id: byBody('Name a.'), result: 'file', reason: 'The lines are not in the pull request diff.' }, { id: byBody('Rename the service.'), result: 'failed', reason: 'GitHub rejected the thread.' }] } });
     return postedWhole(post, route);
   } });
   await commentOnLine(dialog, 'const x = 9;', 'line 5', 'Guard x.');
@@ -1347,13 +1349,12 @@ test('posts inline comments and notes to the pull request as a draft review and 
   // the post carries the notes, without the agent-directed intro, and every comment with its lines
   await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
   await expect.poll(() => posts.length).toBe(1);
-  expect(posts[0]).toMatchObject({ scope: 'pr', includeTests: false, includeDocs: false, fingerprint: postTour.fingerprint, body: '## Accept the request\n\nRoute reads well.' });
-  expect(posts[0]!.comments.map(({ id: _id, ...comment }) => comment)).toEqual([
-    { changeId: 'chg_route0001', startSide: 'additions', startLine: 5, endSide: 'additions', endLine: 5, body: 'Guard x.' },
-    { changeId: 'chg_route0001', startSide: 'additions', startLine: 4, endSide: 'additions', endLine: 4, body: 'Name a.' },
-    { changeId: 'chg_service01', startSide: 'additions', startLine: 4, endSide: 'additions', endLine: 4, body: 'Rename the service.' }
-  ]);
-  const failedId = posts[0]!.comments[2]!.id;
+  const [guardId, nameId, failedId] = posts[0]!.comments.map(comment => comment.id);
+  expect(posts[0]).toEqual({ ...postEnvelope, sections: [{ key: 'step:route', markdown: '## Accept the request\n\nRoute reads well.' }], comments: [
+    { id: guardId, changeId: 'chg_route0001', startSide: 'additions', startLine: 5, endSide: 'additions', endLine: 5, body: 'Guard x.' },
+    { id: nameId, changeId: 'chg_route0001', startSide: 'additions', startLine: 4, endSide: 'additions', endLine: 4, body: 'Name a.' },
+    { id: failedId, changeId: 'chg_service01', startSide: 'additions', startLine: 4, endSide: 'additions', endLine: 4, body: 'Rename the service.' }
+  ] });
 
   // the summary links the draft review and lists the file-level and failed comments with their reasons
   const posted = dialog.getByRole('region', { name: 'Draft review on GitHub' });
@@ -1377,19 +1378,17 @@ test('posts inline comments and notes to the pull request as a draft review and 
   await commentOnLine(dialog, 'old service', 'line 4', 'Why drop it?');
   await dialog.getByLabel('Feedback for this change').fill('Service looks fine.');
   await dialog.getByRole('button', { name: 'Review summary' }).click();
-  await expect(posted).toContainText('1 comment not posted yet.');
+  await expect(posted).toContainText('1 comment and 1 note not posted yet.');
   await posted.getByRole('button', { name: 'Retry failed' }).click();
   await expect.poll(() => posts.length).toBe(2);
-  expect(posts[1]!.body).toBe('');
-  expect(posts[1]!.comments.map(comment => comment.id)).toEqual([failedId]);
+  expect(posts[1]).toEqual({ ...postEnvelope, sections: [], comments: [posts[0]!.comments[2]] });
   await expect(posted).toContainText('2 line comments · 1 file-level comment · notes in the review body');
   await expect(posted.getByRole('list', { name: 'Failed comments' })).toHaveCount(0);
 
   // the next Post sends the new comment and only the new note's section
   await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
   await expect.poll(() => posts.length).toBe(3);
-  expect(posts[2]!.body).toBe('## Apply the operation\n\nService looks fine.');
-  expect(posts[2]!.comments.map(comment => comment.body)).toEqual(['Why drop it?']);
+  expect(posts[2]).toEqual({ ...postEnvelope, sections: [{ key: 'step:service', markdown: '## Apply the operation\n\nService looks fine.' }], comments: [{ id: posts[2]!.comments[0]?.id, changeId: 'chg_service01', startSide: 'deletions', startLine: 4, endSide: 'deletions', endLine: 4, body: 'Why drop it?' }] });
   // with everything posted the button says so, and sending to the agent still works
   await expect(dialog.getByRole('button', { name: 'Posted to PR #123' })).toBeDisabled();
   await dialog.getByRole('button', { name: 'Send change request' }).click();
@@ -1403,13 +1402,16 @@ test('posts inline comments and notes to the pull request as a draft review and 
   await dialog.getByRole('button', { name: 'Review summary' }).click();
   await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
   await expect.poll(() => posts.length).toBe(4);
-  expect(posts[3]).toMatchObject({ body: '## Accept the request\n\nRoute reads very well.', comments: [] });
+  expect(posts[3]).toEqual({ ...postEnvelope, sections: [{ key: 'step:route', markdown: '## Accept the request\n\nRoute reads very well.' }], comments: [] });
 });
 
 test('explains a refused post and offers to try again only when retrying can help', async ({ page }) => {
-  const { dialog, posts } = await openPostTour(page, { respond: (_post, route) => posts.length === 1
-    ? route.fulfill({ status: 409, json: { status: 'error', error: { code: 'head_mismatch', retryable: true, message: 'Your local commit does not match the pull request\'s head on GitHub. Push your commits (or pull), then post again.', localHead: 'abc1234def567', pullRequestHead: '9876543fedcba' } } })
-    : route.fulfill({ status: 502, json: { status: 'error', error: { code: 'github_forbidden', retryable: false, message: 'The GitHub token cannot write pull request reviews.' } } }) });
+  const refusals = [
+    { status: 409, error: { code: 'head_mismatch', retryable: true, message: 'Your local commit does not match the pull request\'s head on GitHub. Push your commits (or pull), then post again.', localHead: 'abc1234def567', pullRequestHead: '9876543fedcba' } },
+    { status: 502, error: { code: 'github_failed', retryable: true, message: 'GitHub could not add the comments: Bad gateway' } },
+    { status: 409, error: { code: 'pull_request_mismatch', retryable: false, message: 'The branch\'s pull request is now #124, not #123. Reopen the review, then post again.' } }
+  ];
+  const { dialog, posts } = await openPostTour(page, { respond: (_post, route) => { const { status, error } = refusals[posts.length - 1]!; return route.fulfill({ status, json: { status: 'error', error } }); } });
   await commentOnLine(dialog, 'const x = 9;', 'line 5', 'Guard x.');
   await dialog.getByRole('button', { name: 'Next' }).click();
   await dialog.getByRole('button', { name: 'Review summary' }).click();
@@ -1421,12 +1423,48 @@ test('explains a refused post and offers to try again only when retrying can hel
   await expect(failure).toBeFocused();
   await expect(dialog.getByRole('region', { name: 'Draft review on GitHub' })).toHaveCount(0);
   await expect(post).toBeEnabled();
-  // a retryable failure offers Try again; a final one offers none
+  // a retryable failure offers Try again; GitHub's 502 is the post's failure, not a lost console, so
+  // the reconnecting overlay never shows, even briefly
+  await page.evaluate(() => {
+    const seen = window as unknown as { reconnectingSeen?: boolean };
+    seen.reconnectingSeen = false;
+    new MutationObserver(() => { if (document.querySelector('[aria-label="Reconnecting to console"]') !== null) seen.reconnectingSeen = true; }).observe(document.body, { childList: true, subtree: true });
+  });
   await failure.getByRole('button', { name: 'Try again' }).click();
-  await expect(failure).toContainText('The GitHub token cannot write pull request reviews.');
-  expect(posts).toHaveLength(2);
-  expect(posts[1]!.comments.map(comment => comment.body)).toEqual(['Guard x.']);
+  await expect(failure).toContainText('GitHub could not add the comments: Bad gateway');
+  expect(await page.evaluate(() => (window as unknown as { reconnectingSeen?: boolean }).reconnectingSeen)).toBe(false);
+  await expect(dialog).toBeVisible();
+  // a final refusal offers no Try again
+  await failure.getByRole('button', { name: 'Try again' }).click();
+  await expect(failure).toContainText('The branch\'s pull request is now #124, not #123.');
   await expect(failure.getByRole('button', { name: 'Try again' })).toHaveCount(0);
+  expect(posts).toHaveLength(3);
+  expect(posts.every(candidate => candidate.comments.length === 1 && candidate.comments[0]!.body === 'Guard x.')).toBe(true);
+});
+
+test('posts notes alone, each section under its own heading', async ({ page }) => {
+  const general = [{ id: 'g-route', severity: 'medium', title: 'No tests', body: 'Nothing covers the route.', file: 'src/route.ts' }, { id: 'g.docs', severity: 'low', title: 'No docs', body: 'Nothing documents it.' }];
+  const { dialog, posts } = await openPostTour(page, { respond: postedWhole, stored: { codeReview: { fingerprint: postTour.fingerprint, preset: { id: 'correctness', label: 'Correctness', agent: 'claude' }, completedAt: '2026-10-04T12:00:00.000Z', findings: [], general } } });
+  const findings = dialog.getByRole('region', { name: 'General findings' });
+  await findings.getByRole('group', { name: 'Suggested comment: No tests' }).getByRole('button', { name: 'Keep' }).click();
+  await findings.getByLabel('General note: No tests').fill('Add a route test.');
+  await findings.getByRole('group', { name: 'Suggested comment: No docs' }).getByRole('button', { name: 'Keep' }).click();
+  await findings.getByLabel('General note: No docs').fill('Document the route.');
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await dialog.getByLabel('Feedback for this change').fill('Service looks fine.');
+  await dialog.getByRole('button', { name: 'Review summary' }).click();
+  await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
+  await expect.poll(() => posts.length).toBe(1);
+  // each section stands alone, since the server appends it as its own chunk; an id outside the key
+  // alphabet is keyed by its digest
+  expect(posts[0]).toEqual({ ...postEnvelope, sections: [
+    { key: 'general:g-route', markdown: '## General — src/route.ts\n\nAdd a route test.' },
+    { key: expect.stringMatching(/^general:h[0-9a-f]+$/u), markdown: '## General\n\nDocument the route.' },
+    { key: 'step:service', markdown: '## Apply the operation\n\nService looks fine.' }
+  ], comments: [] });
+  const posted = dialog.getByRole('region', { name: 'Draft review on GitHub' });
+  await expect(posted).toContainText('0 line comments · 0 file-level comments · notes in the review body');
+  await expect(dialog.getByRole('button', { name: 'Posted to PR #123' })).toBeDisabled();
 });
 
 test('orders a comment range across both sides by its rows in the diff', async ({ page }) => {
@@ -1459,6 +1497,7 @@ test('orders a comment range across both sides by its rows in the diff', async (
   await expect(dialog.getByLabel('Consolidated change request')).toHaveValue(/### src\/route\.ts new 5 – old 7\n```diff\n\+const x = 9;\n const b = 2;\n const c = 3;\n-const y = 8;\n```\nTop down\./u);
   await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
   await expect.poll(() => posts.length).toBe(1);
+  expect(Object.keys(posts[0]!).sort()).toEqual(['comments', 'fingerprint', 'includeDocs', 'includeTests', 'pullRequestNumber', 'scope', 'sections']);
   expect(posts[0]!.comments.map(({ startSide, startLine, endSide, endLine, body }) => ({ startSide, startLine, endSide, endLine, body }))).toEqual([
     { startSide: 'additions', startLine: 5, endSide: 'deletions', endLine: 7, body: 'Top down.' },
     { startSide: 'additions', startLine: 5, endSide: 'deletions', endLine: 7, body: 'Bottom up.' },
@@ -1486,5 +1525,5 @@ test('posts all of the feedback again after the tour is regenerated', async ({ p
   // the regenerated tour posts its comments and notes again, for a draft that may have been replaced
   await dialog.getByRole('button', { name: 'Post to PR #123' }).click();
   await expect.poll(() => posts.length).toBe(2);
-  expect(posts[1]).toMatchObject({ fingerprint: 'post-fingerprint-regenerated', body: posts[0]!.body, comments: posts[0]!.comments });
+  expect(posts[1]).toEqual({ ...posts[0], fingerprint: 'post-fingerprint-regenerated' });
 });

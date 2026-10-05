@@ -5,20 +5,24 @@ import { at, GithubClient, GithubRequestError, githubErrorMessage, githubReposit
 import { run } from '../tmux/command.js';
 import { ReviewTourError, type ReviewComparison, type ReviewTourInput } from './contracts.js';
 
-// Posts a Review tour's feedback to the branch's GitHub pull request as the operator's pending
-// (draft) review, which they finish on GitHub. Inline comments land as line threads where
-// GitHub's own diff carries the same rows at the same line numbers, and as file-level threads
-// quoting the commented rows where it does not. Line numbers must name committed, pushed
-// content: a commented file must be clean, local HEAD must be the PR's head, and an existing
-// pending review must sit on that same commit. Every thread and the summary carry a hidden
-// marker, so a retry, a double submit, or a lost response never posts anything twice.
+// Posts a Review tour's feedback to one GitHub pull request of the branch as the operator's draft
+// review (GitHub's PENDING review), which they finish on GitHub; the console never submits it
+// (ADR 0011). Inline comments land as line threads where GitHub's own diff carries the same rows
+// at the same line numbers, and as file-level threads quoting the commented rows where it does not
+// or where GitHub refuses the line range. Line numbers must name committed, pushed content: a
+// commented file must be clean, local HEAD must be the PR's head, and an existing draft must sit on
+// that same commit. Every thread and every note section carries a hidden marker that is checked
+// against the draft before posting and read back after a lost response, so a retry or a second
+// submit skips what the draft already holds instead of adding it again.
 
 type Capture = (agentId: string, input: ReviewTourInput) => Promise<ReviewComparison>;
 
-// 200 comments of 4,000 characters and a 20,000-character body, at up to three UTF-8 bytes a
-// character; the web caps a tour's total feedback at 20,000 characters, far below this
+// 200 comments of 4,000 characters and 40,000 characters of sections, at up to three UTF-8 bytes a
+// character; the web caps a tour's notes at 20,000 characters of raw text, far below this
 export const PR_REVIEW_REQUEST_BODY_BYTES = 3_145_728;
-const maxBody = 20_000;
+const maxSections = 100;
+// the notes' 20,000-character cap plus the headings and quotes the web adds around them
+const maxSectionCharacters = 40_000;
 const maxComments = 200;
 const maxComment = 4_000;
 // GitHub lists at most 3000 files of a pull request
@@ -28,16 +32,21 @@ const maxCommentPages = 50;
 const threadBatch = 10;
 const maxQuotedRows = 8;
 const markerPattern = /<!-- rac:([A-Za-z0-9_-]+) -->/gu;
+// per-alias GraphQL error types that are not GitHub refusing the thread itself
+const unrefusedTypes = new Set(['FORBIDDEN', 'INSUFFICIENT_SCOPES', 'RATE_LIMITED']);
 
 export type ReviewDiffSide = 'deletions' | 'additions';
 export type PullRequestReviewComment = { id: string; changeId: string; startSide: ReviewDiffSide; startLine: number; endSide: ReviewDiffSide; endLine: number; body: string };
 type CommentRange = Pick<PullRequestReviewComment, 'startSide' | 'startLine' | 'endSide' | 'endLine'>;
-// `body` is the review summary; empty leaves the review's body as it is (a retry sends it empty)
-export type PullRequestReviewInput = { scope: 'pr'; includeTests: boolean; includeDocs: boolean; fingerprint: string; body: string; comments: PullRequestReviewComment[] };
+// one part of the review body (a step's note, the general notes), deduped by its key and text
+export type PullRequestReviewSection = { key: string; markdown: string };
+// `pullRequestNumber` pins the pull request the operator chose
+export type PullRequestReviewInput = { scope: 'pr'; includeTests: boolean; includeDocs: boolean; fingerprint: string; pullRequestNumber: number; sections: PullRequestReviewSection[]; comments: PullRequestReviewComment[] };
 // `file` is a comment posted as a file-level thread, `reason` saying why it could not sit on its lines
 export type PullRequestReviewCommentResult = { id: string; result: 'line' | 'file' | 'failed'; reason?: string };
-export type PullRequestReviewResult = { status: 'ok'; review: { url: string; pullRequest: { number: number; url: string } }; bodyPosted: boolean; comments: PullRequestReviewCommentResult[] };
-export type PullRequestReviewErrorCode = 'stale' | 'uncommitted' | 'no_pull_request' | 'no_github_token' | 'head_mismatch' | 'pending_review_outdated' | 'github_forbidden' | 'github_failed';
+// a section is `posted` when the draft holds it, appended now or already there
+export type PullRequestReviewResult = { status: 'ok'; review: { url: string; pullRequest: { number: number; url: string } }; sections: Array<{ key: string; posted: boolean }>; comments: PullRequestReviewCommentResult[] };
+export type PullRequestReviewErrorCode = 'stale' | 'uncommitted' | 'no_pull_request' | 'pull_request_mismatch' | 'no_github_token' | 'head_mismatch' | 'pending_review_outdated' | 'github_forbidden' | 'github_failed';
 
 export class PullRequestReviewError extends Error {
   // carry an operator-facing message and the details the client shows with it
@@ -57,12 +66,15 @@ function reviewError(error: unknown): unknown {
 }
 
 const sideSchema = z.enum(['deletions', 'additions']);
-// an id travels inside an HTML comment marker, so it is held to a charset that cannot close one
+// ids and keys travel inside HTML comment markers, so they are held to charsets that cannot close one
 const commentSchema = z.object({ id: z.string().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/u), changeId: z.string().min(8).max(100), startSide: sideSchema, startLine: z.number().int().positive(), endSide: sideSchema, endLine: z.number().int().positive(), body: z.string().max(maxComment).refine(body => body.trim() !== '') }).strict();
-const inputSchema = z.object({ scope: z.literal('pr'), includeTests: z.boolean(), includeDocs: z.boolean(), fingerprint: z.string().min(16).max(128), body: z.string().max(maxBody), comments: z.array(commentSchema).max(maxComments) }).strict()
-  // require something to post, and ids the results can be keyed by
-  .refine(input => input.body.trim() !== '' || input.comments.length > 0)
-  .refine(input => new Set(input.comments.map(comment => comment.id)).size === input.comments.length);
+const sectionSchema = z.object({ key: z.string().min(1).max(120).regex(/^[A-Za-z0-9_:-]+$/u), markdown: z.string().max(maxSectionCharacters).refine(markdown => markdown.trim() !== '') }).strict();
+const inputSchema = z.object({ scope: z.literal('pr'), includeTests: z.boolean(), includeDocs: z.boolean(), fingerprint: z.string().min(16).max(128), pullRequestNumber: z.number().int().positive(), sections: z.array(sectionSchema).max(maxSections), comments: z.array(commentSchema).max(maxComments) }).strict()
+  // require something to post, ids and keys the results can be keyed by, and bounded notes
+  .refine(input => input.sections.length > 0 || input.comments.length > 0)
+  .refine(input => new Set(input.comments.map(comment => comment.id)).size === input.comments.length)
+  .refine(input => new Set(input.sections.map(section => section.key)).size === input.sections.length)
+  .refine(input => input.sections.reduce((total, section) => total + section.markdown.length, 0) <= maxSectionCharacters);
 
 // parse the exact post request
 export function parsePullRequestReviewInput(value: unknown): PullRequestReviewInput | undefined {
@@ -131,10 +143,10 @@ export function placementProblem(tourPatch: string, githubPatch: string | undefi
 // a GitHub diff side for a tour side
 export function githubSide(side: ReviewDiffSide): 'LEFT' | 'RIGHT' { return side === 'deletions' ? 'LEFT' : 'RIGHT'; }
 
-// a comment's lines in words, e.g. "Lines 12–14 (new)"
+// a comment's lines in the web's words: "Line 5 (new)", "Lines 5–7 (old)", "Lines new 5 – old 7"
 export function commentLocation(comment: CommentRange): string {
   const side = (value: ReviewDiffSide) => value === 'deletions' ? 'old' : 'new';
-  if (comment.startSide !== comment.endSide) return `Lines ${comment.startLine} (${side(comment.startSide)}) – ${comment.endLine} (${side(comment.endSide)})`;
+  if (comment.startSide !== comment.endSide) return `Lines ${side(comment.startSide)} ${comment.startLine} – ${side(comment.endSide)} ${comment.endLine}`;
   return comment.startLine === comment.endLine ? `Line ${comment.endLine} (${side(comment.endSide)})` : `Lines ${comment.startLine}–${comment.endLine} (${side(comment.endSide)})`;
 }
 
@@ -155,8 +167,18 @@ export function fileThreadBody(tourPatch: string, comment: PullRequestReviewComm
 // the hidden marker a thread carries, naming the tour comment it posts
 export function commentMarker(id: string): string { return `<!-- rac:${id} -->`; }
 
-// the hidden marker a summary carries, naming its text
-export function summaryMarker(body: string): string { return `<!-- rac-summary:${createHash('sha256').update(body).digest('hex').slice(0, 16)} -->`; }
+// the hidden marker a section carries, naming its key and text: a changed text is a new section
+export function sectionMarker(section: PullRequestReviewSection): string { return `<!-- rac-section:${section.key}:${createHash('sha256').update(section.markdown.trim()).digest('hex').slice(0, 16)} -->`; }
+
+// a section as appended to the review body
+export function sectionText(section: PullRequestReviewSection): string { return `${section.markdown.trim()}\n\n${sectionMarker(section)}`; }
+
+// a review body with the sections it does not yet hold appended; undefined when it holds them all
+export function appendSections(body: string, sections: PullRequestReviewSection[]): string | undefined {
+  const missing = sections.filter(section => !body.includes(sectionMarker(section)));
+  if (missing.length === 0) return undefined;
+  return [...(body.trim() === '' ? [] : [body]), ...missing.map(sectionText)].join('\n\n');
+}
 
 // the tour comments a review already holds, by the markers in its comments' bodies
 export function placedComments(comments: Array<{ body: string; subjectType?: string }>): Map<string, 'line' | 'file'> {
@@ -185,24 +207,28 @@ export function ambiguousBatch(payload: GraphqlPayload): boolean {
   return (payload.data === null || payload.data === undefined) && errors.length > 0 && errors.every(error => !Array.isArray(at(error, 'path')));
 }
 
-// each aliased thread's failure reason, undefined where GitHub created it; GraphQL succeeds partially,
-// naming a failed alias in an error's `path`
-export function threadFailures(count: number, payload: unknown): Array<string | undefined> {
+// one aliased thread's outcome; `refused` is GitHub rejecting that thread itself (a line it cannot
+// resolve, a range it does not accept), as against a permission, rate limit, or request failure
+export type ThreadOutcome = { created: true } | { created: false; reason: string; refused: boolean };
+
+// each aliased thread's outcome; GraphQL succeeds partially, naming a failed alias in an error's `path`
+export function threadOutcomes(count: number, payload: unknown): ThreadOutcome[] {
   const value = payload !== null && typeof payload === 'object' ? payload as GraphqlPayload : {};
-  const byAlias = new Map<string, string>();
+  const byAlias = new Map<string, { reason: string; refused: boolean }>();
   let general: string | undefined;
   for (const error of Array.isArray(value.errors) ? value.errors as unknown[] : []) {
     const message = githubErrorMessage(error) ?? 'GitHub rejected the comment.';
     const path = at(error, 'path');
     const alias = Array.isArray(path) && typeof path[0] === 'string' ? path[0] : undefined;
+    const type = at(error, 'type');
     // an error without a path failed the whole request
     if (alias === undefined) general ??= message;
-    else if (!byAlias.has(alias)) byAlias.set(alias, message);
+    else if (!byAlias.has(alias)) byAlias.set(alias, { reason: message, refused: !(typeof type === 'string' && unrefusedTypes.has(type)) });
   }
   const data = value.data !== null && typeof value.data === 'object' ? value.data : {};
-  return Array.from({ length: count }, (_, index) => {
-    const result = data[`t${index}`] as { thread?: { id?: unknown } | null } | null | undefined;
-    return typeof result?.thread?.id === 'string' ? undefined : byAlias.get(`t${index}`) ?? general ?? 'GitHub did not create the comment thread.';
+  return Array.from({ length: count }, (_, index): ThreadOutcome => {
+    if (typeof at(data[`t${index}`], 'thread', 'id') === 'string') return { created: true };
+    return { created: false, ...byAlias.get(`t${index}`) ?? { reason: general ?? 'GitHub did not create the comment thread.', refused: false } };
   });
 }
 
@@ -210,29 +236,34 @@ export function threadFailures(count: number, payload: unknown): Array<string | 
 
 type PendingReview = { id: string; body: string; commit?: string };
 type PullRequestState = { id: string; number: number; url: string; headRefOid: string; pending?: PendingReview };
-// a pending review as it stands: its body and the tour comments its threads already post
+// a draft review as it stands: its body and the tour comments its threads already post
 type ReviewState = { id: string; body: string; placed: Map<string, 'line' | 'file'> };
-type PlannedThread = { comment: PullRequestReviewComment; path: string; placement: 'line' | 'file'; reason?: string; body: string };
+type PlannedThread = { comment: PullRequestReviewComment; path: string; patch: string; placement: 'line' | 'file'; reason?: string; body: string };
 // a batch either reports each thread, or failed in a way that may have applied some of it
-type BatchOutcome = { ambiguous: false; failures: Array<string | undefined> } | { ambiguous: true; reason: string };
+type BatchOutcome = { ambiguous: false; outcomes: ThreadOutcome[] } | { ambiguous: true; reason: string };
 
 const git = '/usr/bin/git';
-const pullRequestQuery = 'query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){pullRequests(headRefName:$branch,states:[OPEN],first:20){nodes{id number url headRefOid headRepositoryOwner{login} reviews(states:[PENDING],first:1){nodes{id body commit{oid}}}}}}}';
+const pullRequestQuery = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id number url state headRefName headRefOid headRepositoryOwner{login} reviews(states:[PENDING],first:1){nodes{id body commit{oid}}}}}}';
 const reviewQuery = 'query($id:ID!,$after:String){node(id:$id){...on PullRequestReview{id body comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{body subjectType}}}}}';
 
-// a comment's result from where a thread already posts it
+// a comment's result from where a thread posts it
 function placedResult(thread: PlannedThread, placement: 'line' | 'file'): PullRequestReviewCommentResult {
   return { id: thread.comment.id, result: placement, ...(placement === 'file' && thread.reason !== undefined ? { reason: thread.reason } : {}) };
 }
 
+// the comment re-planned as a file-level thread quoting its rows
+function fileThread(thread: PlannedThread, reason: string): PlannedThread {
+  return { ...thread, placement: 'file', reason, body: `${fileThreadBody(thread.patch, thread.comment)}\n\n${commentMarker(thread.comment.id)}` };
+}
+
 export class PullRequestReviewService {
-  // one post per checkout at a time: a second post waits, then finds the first one's markers and posts nothing again
+  // one post per checkout at a time: a second post waits, then finds the first one's markers
   private readonly posting = new Map<string, Promise<unknown>>();
   private readonly github: GithubClient;
 
   constructor(private readonly capture: Capture, private readonly command: Command = run, request: Request = fetch, private readonly getToken: Token = githubToken) { this.github = new GithubClient(request, 15_000); }
 
-  // post a tour's feedback as the operator's pending review on the branch's pull request
+  // post a tour's feedback as the operator's draft review on the chosen pull request
   async post(agentId: string, input: PullRequestReviewInput): Promise<PullRequestReviewResult> {
     const comparison = await this.capture(agentId, { scope: input.scope, includeTests: input.includeTests, includeDocs: input.includeDocs });
     // the comments' change ids and line numbers belong to the tour's Comparison
@@ -258,13 +289,13 @@ export class PullRequestReviewService {
     const files = [...new Set(known.map(comment => changes.get(comment.changeId)!.file))];
     await this.requireCommitted(comparison.workspace, files);
     const repository = await this.repository(comparison.workspace);
-    // require a GitHub origin and a branch to find the pull request by
+    // require a GitHub origin and a branch the pull request must be from
     if (repository === undefined) throw new PullRequestReviewError('no_pull_request', false, 'The worktree\'s origin is not a GitHub repository.');
     const branch = comparison.branch;
     if (branch === undefined) throw new PullRequestReviewError('no_pull_request', false, 'The worktree is not on a branch, so it has no pull request.');
     const token = await this.getToken();
     if (token === undefined) throw new PullRequestReviewError('no_github_token', false, 'GitHub authentication is not configured. Set RAC_GITHUB_TOKEN or sign in with the gh CLI.');
-    const [head, pullRequest] = await Promise.all([this.head(comparison.workspace), this.pullRequest(token, repository, branch)]);
+    const [head, pullRequest] = await Promise.all([this.head(comparison.workspace), this.pullRequest(token, repository, input.pullRequestNumber, branch)]);
     // the comments' lines are local commits' lines, so they must be the PR's head
     if (head !== pullRequest.headRefOid) throw new PullRequestReviewError('head_mismatch', true, 'Your local commit does not match the pull request\'s head on GitHub. Push your commits (or pull), then post again.', { localHead: head, pullRequestHead: pullRequest.headRefOid });
     // threads attach to the draft's commit, so an older draft would misplace them
@@ -278,47 +309,33 @@ export class PullRequestReviewService {
       const remote = remoteFiles.get(change.file);
       if (remote === undefined) { results.set(comment.id, { id: comment.id, result: 'failed', reason: 'The file is not part of the pull request on GitHub.' }); continue; }
       const reason = placementProblem(change.patch, remote.patch, comment);
-      const text = reason === undefined ? comment.body.trim() : fileThreadBody(change.patch, comment);
-      planned.push({ comment, path: change.file, placement: reason === undefined ? 'line' : 'file', ...(reason === undefined ? {} : { reason }), body: `${text}\n\n${commentMarker(comment.id)}` });
+      const line: PlannedThread = { comment, path: change.file, patch: change.patch, placement: 'line', body: `${comment.body.trim()}\n\n${commentMarker(comment.id)}` };
+      planned.push(reason === undefined ? line : fileThread(line, reason));
     }
-    const body = input.body.trim();
-    const summary = body === '' ? '' : `${body}\n\n${summaryMarker(body)}`;
     let review = pullRequest.pending === undefined ? undefined : await this.reviewState(token, pullRequest.pending.id);
-    // open a draft only when there is something to put in it
-    if (review === undefined && (planned.length > 0 || summary !== '')) review = await this.openReview(token, repository, branch, pullRequest.id, head, summary);
-    let bodyPosted = false;
-    // add the summary unless the review already carries it
-    if (review !== undefined && summary !== '') {
-      if (!review.body.includes(summaryMarker(body))) await this.updateReviewBody(token, review.id, review.body.trim() === '' ? summary : `${review.body}\n\n${summary}`);
-      bodyPosted = true;
-    }
+    // open a draft only when there is something to put in it, its body holding the sections
+    if (review === undefined && (planned.length > 0 || input.sections.length > 0)) review = await this.openReview(token, repository, pullRequest.number, branch, pullRequest.id, head, appendSections('', input.sections) ?? '');
+    // append the sections the draft does not hold yet
+    const body = review === undefined ? undefined : appendSections(review.body, input.sections);
+    if (review !== undefined && body !== undefined) review = await this.updateReviewBody(token, review, body);
     // a comment some earlier post already placed keeps that placement
     const fresh = planned.filter(thread => {
       const placed = review?.placed.get(thread.comment.id);
       if (placed !== undefined) results.set(thread.comment.id, placedResult(thread, placed));
       return placed === undefined;
     });
-    // add the rest in batches; a failure is reported for the client to retry, never retried here
-    for (let start = 0; start < fresh.length; start += threadBatch) {
-      const batch = fresh.slice(start, start + threadBatch);
-      const outcome = await this.addThreads(token, batch.map(thread => threadInput(review!.id, thread.path, thread.comment, thread.placement, thread.body)));
-      if (!outcome.ambiguous) {
-        batch.forEach((thread, index) => results.set(thread.comment.id, outcome.failures[index] === undefined ? placedResult(thread, thread.placement) : { id: thread.comment.id, result: 'failed', reason: outcome.failures[index] }));
-        continue;
-      }
-      // read back what the batch did; without that, all of it counts as failed and a retry dedupes
-      const reread = await this.reviewState(token, review!.id).catch(() => undefined);
-      batch.forEach(thread => {
-        const placed = reread?.placed.get(thread.comment.id);
-        results.set(thread.comment.id, placed === undefined ? { id: thread.comment.id, result: 'failed', reason: outcome.reason } : placedResult(thread, placed));
-      });
+    if (review !== undefined) {
+      const refused = await this.addThreads(token, review.id, fresh, results);
+      // a line range GitHub refuses goes on the file instead, a different mutation the markers guard
+      await this.addThreads(token, review.id, refused.map(({ thread, reason }) => fileThread(thread, `GitHub refused the line range: ${reason}`)), results);
     }
-    return { status: 'ok', review: { url: `${pullRequest.url}/files`, pullRequest: { number: pullRequest.number, url: pullRequest.url } }, bodyPosted, comments: input.comments.map(comment => results.get(comment.id)!) };
+    const finalBody = review?.body ?? '';
+    return { status: 'ok', review: { url: `${pullRequest.url}/files`, pullRequest: { number: pullRequest.number, url: pullRequest.url } }, sections: input.sections.map(section => ({ key: section.key, posted: finalBody.includes(sectionMarker(section)) })), comments: input.comments.map(comment => results.get(comment.id)!) };
   }
 
-  // refuse a pending review on another commit
+  // refuse a draft review on another commit
   private requireCurrentDraft(pending: PendingReview | undefined, head: string): void {
-    if (pending !== undefined && pending.commit !== head) throw new PullRequestReviewError('pending_review_outdated', true, 'You have a pending review on an older commit of this pull request. Submit or discard it on GitHub first.', { pendingReviewCommit: pending.commit ?? null, head });
+    if (pending !== undefined && pending.commit !== head) throw new PullRequestReviewError('pending_review_outdated', true, 'You have a draft review (GitHub shows it as Pending) on an older commit of this pull request. Submit or discard it on GitHub first.', { pendingReviewCommit: pending.commit ?? null, head });
   }
 
   // refuse commented files whose working tree differs from HEAD, staged, unstaged or untracked
@@ -341,24 +358,28 @@ export class PullRequestReviewService {
     return head.stdout.trim().toLowerCase();
   }
 
-  // the branch's open pull request from origin's own owner, with the viewer's pending review
-  private async pullRequest(token: string, repository: GithubRepository, branch: string): Promise<PullRequestState> {
+  // the chosen pull request, which must be open and from this branch on origin's own owner, with
+  // the viewer's draft review
+  private async pullRequest(token: string, repository: GithubRepository, number: number, branch: string): Promise<PullRequestState> {
     const action = 'GitHub could not load the pull request';
-    const payload = await this.github.query(token, pullRequestQuery, { owner: repository.owner, name: repository.name, branch }, action);
-    const nodes = at(payload.data, 'repository', 'pullRequests', 'nodes');
-    if (!Array.isArray(nodes)) throw graphqlError(payload, action);
-    const node = nodes.find(candidate => String(at(candidate, 'headRepositoryOwner', 'login')).toLowerCase() === repository.owner.toLowerCase());
-    if (node === undefined) throw new PullRequestReviewError('no_pull_request', true, `No open pull request was found for ${branch} on GitHub.`);
-    const [id, number, url, headRefOid] = [at(node, 'id'), at(node, 'number'), at(node, 'url'), at(node, 'headRefOid')];
-    if (typeof id !== 'string' || !Number.isInteger(number) || typeof url !== 'string' || typeof headRefOid !== 'string') throw new GithubRequestError('GitHub returned invalid pull request data.');
+    const payload = await this.github.query(token, pullRequestQuery, { owner: repository.owner, name: repository.name, number }, action);
+    const found = at(payload.data, 'repository');
+    if (found === null || typeof found !== 'object') throw graphqlError(payload, action);
+    const node = at(found, 'pullRequest');
+    const mismatch = (message: string) => new PullRequestReviewError('pull_request_mismatch', false, message, { pullRequestNumber: number });
+    if (node === null || typeof node !== 'object') throw mismatch(`Pull request #${number} was not found on GitHub.`);
+    if (at(node, 'state') !== 'OPEN') throw mismatch(`Pull request #${number} is not open.`);
+    if (at(node, 'headRefName') !== branch || String(at(node, 'headRepositoryOwner', 'login')).toLowerCase() !== repository.owner.toLowerCase()) throw mismatch(`Pull request #${number} is not from this worktree's branch ${branch}.`);
+    const [id, url, headRefOid] = [at(node, 'id'), at(node, 'url'), at(node, 'headRefOid')];
+    if (typeof id !== 'string' || typeof url !== 'string' || typeof headRefOid !== 'string') throw new GithubRequestError('GitHub returned invalid pull request data.');
     const review = (at(node, 'reviews', 'nodes') as unknown[] | undefined)?.[0];
     const [reviewId, reviewBody, commit] = [at(review, 'id'), at(review, 'body'), at(review, 'commit', 'oid')];
-    return { id, number: number as number, url, headRefOid: headRefOid.toLowerCase(), ...(typeof reviewId === 'string' ? { pending: { id: reviewId, body: typeof reviewBody === 'string' ? reviewBody : '', ...(typeof commit === 'string' ? { commit: commit.toLowerCase() } : {}) } } : {}) };
+    return { id, number, url, headRefOid: headRefOid.toLowerCase(), ...(typeof reviewId === 'string' ? { pending: { id: reviewId, body: typeof reviewBody === 'string' ? reviewBody : '', ...(typeof commit === 'string' ? { commit: commit.toLowerCase() } : {}) } } : {}) };
   }
 
-  // a pending review's body and every comment it holds, page by page
+  // a draft review's body and every comment it holds, page by page
   private async reviewState(token: string, id: string): Promise<ReviewState> {
-    const action = 'GitHub could not read the pending review';
+    const action = 'GitHub could not read the draft review';
     const comments: Array<{ body: string; subjectType?: string }> = [];
     let body = '';
     let after: string | undefined;
@@ -396,32 +417,65 @@ export class PullRequestReviewService {
     return found;
   }
 
-  // open a pending review on the head commit (no `event` keeps it a draft); when the outcome is
+  // open a draft review on the head commit (no `event` keeps it pending); when the outcome is
   // unknown, a draft that now exists on the head is the one this opened
-  private async openReview(token: string, repository: GithubRepository, branch: string, pullRequestId: string, head: string, summary: string): Promise<ReviewState> {
-    const action = 'GitHub could not start a pending review';
+  private async openReview(token: string, repository: GithubRepository, number: number, branch: string, pullRequestId: string, head: string, body: string): Promise<ReviewState> {
+    const action = 'GitHub could not start a draft review';
     try {
-      const payload = await this.github.mutate(token, 'mutation($input:AddPullRequestReviewInput!){addPullRequestReview(input:$input){pullRequestReview{id}}}', { input: { pullRequestId, commitOID: head, ...(summary === '' ? {} : { body: summary }) } }, action);
+      const payload = await this.github.mutate(token, 'mutation($input:AddPullRequestReviewInput!){addPullRequestReview(input:$input){pullRequestReview{id}}}', { input: { pullRequestId, commitOID: head, ...(body === '' ? {} : { body }) } }, action);
       const id = at(payload.data, 'addPullRequestReview', 'pullRequestReview', 'id');
       if (typeof id !== 'string') throw graphqlError(payload, action);
-      return { id, body: summary, placed: new Map() };
+      return { id, body, placed: new Map() };
     } catch (error) {
       if (!(error instanceof GithubRequestError) || error.kind !== 'transient') throw error;
-      const pending = (await this.pullRequest(token, repository, branch)).pending;
+      const pending = (await this.pullRequest(token, repository, number, branch)).pending;
       if (pending === undefined) throw error;
       this.requireCurrentDraft(pending, head);
       return await this.reviewState(token, pending.id);
     }
   }
 
-  private async updateReviewBody(token: string, pullRequestReviewId: string, body: string): Promise<void> {
-    const action = 'GitHub could not update the pending review';
-    const payload = await this.github.mutate(token, 'mutation($input:UpdatePullRequestReviewInput!){updatePullRequestReview(input:$input){pullRequestReview{id}}}', { input: { pullRequestReviewId, body } }, action);
-    if (typeof at(payload.data, 'updatePullRequestReview', 'pullRequestReview', 'id') !== 'string') throw graphqlError(payload, action);
+  // replace the draft's body; when the outcome is unknown, the draft's body is read back
+  private async updateReviewBody(token: string, review: ReviewState, body: string): Promise<ReviewState> {
+    const action = 'GitHub could not update the draft review';
+    try {
+      const payload = await this.github.mutate(token, 'mutation($input:UpdatePullRequestReviewInput!){updatePullRequestReview(input:$input){pullRequestReview{id}}}', { input: { pullRequestReviewId: review.id, body } }, action);
+      if (typeof at(payload.data, 'updatePullRequestReview', 'pullRequestReview', 'id') !== 'string') throw graphqlError(payload, action);
+      return { ...review, body };
+    } catch (error) {
+      if (!(error instanceof GithubRequestError) || error.kind !== 'transient') throw error;
+      return await this.reviewState(token, review.id);
+    }
   }
 
-  // add one batch of threads; a refused request fails each thread, a lost or broken one is ambiguous
-  private async addThreads(token: string, inputs: Array<Record<string, unknown>>): Promise<BatchOutcome> {
+  // add threads in batches, settling each comment's result; returns the line threads GitHub
+  // refused, for the caller to place on their files
+  private async addThreads(token: string, reviewId: string, threads: PlannedThread[], results: Map<string, PullRequestReviewCommentResult>): Promise<Array<{ thread: PlannedThread; reason: string }>> {
+    const refused: Array<{ thread: PlannedThread; reason: string }> = [];
+    for (let start = 0; start < threads.length; start += threadBatch) {
+      const batch = threads.slice(start, start + threadBatch);
+      const outcome = await this.addBatch(token, batch.map(thread => threadInput(reviewId, thread.path, thread.comment, thread.placement, thread.body)));
+      if (!outcome.ambiguous) {
+        batch.forEach((thread, index) => {
+          const result = outcome.outcomes[index]!;
+          if (result.created) { results.set(thread.comment.id, placedResult(thread, thread.placement)); return; }
+          results.set(thread.comment.id, { id: thread.comment.id, result: 'failed', reason: result.reason });
+          if (result.refused && thread.placement === 'line') refused.push({ thread, reason: result.reason });
+        });
+        continue;
+      }
+      // read back what the batch did; without that, all of it counts as failed and a retry dedupes
+      const reread = await this.reviewState(token, reviewId).catch(() => undefined);
+      batch.forEach(thread => {
+        const placed = reread?.placed.get(thread.comment.id);
+        results.set(thread.comment.id, placed === undefined ? { id: thread.comment.id, result: 'failed', reason: outcome.reason } : placedResult(thread, placed));
+      });
+    }
+    return refused;
+  }
+
+  // send one batch; a refused request fails each thread, a lost or broken one is ambiguous
+  private async addBatch(token: string, inputs: Array<Record<string, unknown>>): Promise<BatchOutcome> {
     const action = 'GitHub could not add the comments';
     const mutation = threadMutation(inputs);
     let payload: GraphqlPayload;
@@ -429,8 +483,8 @@ export class PullRequestReviewService {
       payload = await this.github.mutate(token, mutation.query, mutation.variables, action, 30_000);
     } catch (error) {
       const reason = error instanceof Error ? error.message : `${action}.`;
-      return error instanceof GithubRequestError && error.kind !== 'transient' ? { ambiguous: false, failures: inputs.map(() => reason) } : { ambiguous: true, reason };
+      return error instanceof GithubRequestError && error.kind !== 'transient' ? { ambiguous: false, outcomes: inputs.map(() => ({ created: false, reason, refused: false })) } : { ambiguous: true, reason };
     }
-    return ambiguousBatch(payload) ? { ambiguous: true, reason: graphqlError(payload, action).message } : { ambiguous: false, failures: threadFailures(inputs.length, payload) };
+    return ambiguousBatch(payload) ? { ambiguous: true, reason: graphqlError(payload, action).message } : { ambiguous: false, outcomes: threadOutcomes(inputs.length, payload) };
   }
 }

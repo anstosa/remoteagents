@@ -41,21 +41,23 @@ export type ReviewPullRequest = { number: number; url: string };
 // quoting its lines (`reason` says why its lines were not placed), or failed; `location` names where
 // the comment sat when posted, so the summary can list it after the comment is edited or deleted.
 type PostedComment = { result: 'line' | 'file' | 'failed'; reason?: string; location: string };
-// The draft (pending) review on the pull request so far: where to finish it, the text of each body
-// section its body took by section key, and each posted comment's outcome by comment id.
+// The draft (pending) review on the pull request so far: where to finish it, the markdown of each
+// body section it took by section key, and each posted comment's outcome by comment id.
 type PullRequestPost = { url: string; number: number; sections: Record<string, string>; comments: Record<string, PostedComment> };
-// One keyed section of the review body: a kept general Finding's note (`general:<id>`), a step's note
-// under its title (`step:<id>`), or the retained feedback (`retained`). A later post sends only the
-// sections that are new or whose text changed since one was posted.
-type BodySection = { key: string; text: string; heading?: string };
-// a successful post: the review to finish on GitHub, whether its body took the notes, each comment's outcome
-type PostedResponse = { review: { url: string; pullRequest: { number: number } }; bodyPosted: boolean; comments: { id: string; result: PostedComment['result']; reason?: string }[] };
+// One keyed section of the review body, appended to it as its own chunk so it carries its own heading:
+// a kept general Finding's note (`general:<id>`), a step's note (`step:<id>`), or the retained
+// feedback (`retained`). A later post sends only the sections new or changed since one was posted.
+type BodySection = { key: string; markdown: string };
+// a successful post: the review to finish on GitHub, which sections its body took, each comment's outcome
+type PostedResponse = { review: { url: string; pullRequest: { number: number } }; sections: { key: string; posted: boolean }[]; comments: { id: string; result: PostedComment['result']; reason?: string }[] };
 
 const maxFeedback = 4_000;
 const maxFeedbackTotal = 20_000;
 const maxDispatch = 30_000;
-// the most inline comments the server takes in one post
+// the most inline comments, and body sections and their markdown, the server takes in one post
 const maxPostComments = 200;
+const maxPostSections = 100;
+const maxPostMarkdown = 40_000;
 const transitionMs = 240;
 
 // replace a cached generic title until the tour is regenerated
@@ -248,31 +250,46 @@ function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, comme
   return [`Please address the feedback from my guided review of ${tour.scope === 'working' ? 'Working' : 'All PR'} changes against ${tour.base}.`, `Tour: ${displayedTourTitle(tour)}`, `Comparison: ${tour.fingerprint.slice(0, 12)}`, ...generalSection(generalNotes.flatMap(generalItem)), ...notes, ...retainedSection(orphanFeedback)].join('\n\n');
 }
 
+// A section key from a generated id: the id itself when the server's key alphabet allows it, else a
+// stable digest of it.
+function sectionKey(prefix: string, id: string): string {
+  if (/^[A-Za-z0-9_-]{1,100}$/u.test(id)) return `${prefix}:${id}`;
+  let hash = 0x811c9dc5;
+  for (const char of id) hash = Math.imul(hash ^ char.codePointAt(0)!, 0x01000193) >>> 0;
+  return `${prefix}:h${hash.toString(16)}`;
+}
+
 // The draft review's body on the pull request as keyed sections: the change request's notes for a
-// human reader — the general notes, each step's note under its title, and the retained feedback —
-// without its agent-directed intro; the inline comments post as line comments instead.
-function pullRequestBodySections(tour: ReviewTour, feedback: Record<string, string>, orphanFeedback: string, generalNotes: GeneralNote[]): BodySection[] {
+// human reader — each general note under its file, each step's note under its title, and the retained
+// feedback — without its agent-directed intro; the inline comments post as line comments instead.
+function pullRequestBodySections(tour: ReviewTour, feedback: Record<string, string>, retained: string, generalNotes: GeneralNote[]): BodySection[] {
   return [
-    ...generalNotes.flatMap(note => generalItem(note).map(text => ({ key: `general:${note.finding.id}`, text }))),
+    ...generalNotes.flatMap(({ finding, note }) => note.trim() === '' ? [] : [{ key: sectionKey('general', finding.id), markdown: `## ${finding.file === undefined ? 'General' : `General — ${finding.file}`}\n\n${note.trim()}` }]),
     ...tour.steps.flatMap(step => {
       const note = feedback[step.id]?.trim();
-      return note ? [{ key: `step:${step.id}`, heading: step.title, text: note }] : [];
+      return note ? [{ key: sectionKey('step', step.id), markdown: `## ${step.title}\n\n${note}` }] : [];
     }),
-    ...retainedSection(orphanFeedback).map(text => ({ key: 'retained', text }))
+    ...retainedSection(retained).map(markdown => ({ key: 'retained', markdown }))
   ];
 }
 
-// the markdown of some body sections, in the change request's shape
-function pullRequestReviewBody(sections: BodySection[]): string {
-  const general = sections.filter(section => section.key.startsWith('general:')).map(section => section.text);
-  return [...generalSection(general), ...sections.flatMap(section => section.heading === undefined ? [] : [`## ${section.heading}\n\n${section.text}`]), ...sections.filter(section => section.key === 'retained').map(section => section.text)].join('\n\n');
+// the sections one post takes: the first ones within the server's count and markdown caps
+function sectionBatch(sections: BodySection[]): BodySection[] {
+  const batch: BodySection[] = [];
+  let total = 0;
+  for (const section of sections) {
+    if (batch.length === maxPostSections || total + section.markdown.length > maxPostMarkdown) break;
+    batch.push(section);
+    total += section.markdown.length;
+  }
+  return batch;
 }
 
 // validate a post's per-comment outcomes
 function isPostedResponse(body: Record<string, unknown>): body is Record<string, unknown> & PostedResponse {
-  const { review, bodyPosted, comments } = body as Partial<PostedResponse>;
+  const { review, sections, comments } = body as Partial<PostedResponse>;
   return body.status === 'ok' && review !== null && typeof review === 'object' && typeof review.url === 'string' && review.pullRequest !== null && typeof review.pullRequest === 'object' && typeof review.pullRequest.number === 'number'
-    && typeof bodyPosted === 'boolean' && Array.isArray(comments) && comments.every(comment => comment !== null && typeof comment === 'object' && typeof comment.id === 'string' && ['line', 'file', 'failed'].includes(comment.result) && (comment.reason === undefined || typeof comment.reason === 'string'));
+    && Array.isArray(sections) && sections.every(section => section !== null && typeof section === 'object' && typeof section.key === 'string' && typeof section.posted === 'boolean') && Array.isArray(comments) && comments.every(comment => comment !== null && typeof comment === 'object' && typeof comment.id === 'string' && ['line', 'file', 'failed'].includes(comment.result) && (comment.reason === undefined || typeof comment.reason === 'string'));
 }
 
 // Translate a refused post to the pull request. The server words its own refusals (`message`); the
@@ -334,6 +351,8 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
   const [pullRequestPost, setPullRequestPost] = useState<PullRequestPost>();
   const [posting, setPosting] = useState(false);
   const [postError, setPostError] = useState<{ message: string; retryable: boolean; retry: boolean }>();
+  // retained feedback lines from detached comments already posted as threads, left out of the retained section posted
+  const [postedOrphans, setPostedOrphans] = useState<string[]>([]);
   const [stale, setStale] = useState(false);
   const [retry, setRetry] = useState(0);
   const [closing, setClosing] = useState(false);
@@ -425,7 +444,8 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
     setTourRun(undefined);
     setStale(false);
     setSent(false);
-    // a regenerated tour posts all of its feedback again; the server skips what the draft already holds
+    // A regenerated tour starts its post tracking over, so its next post sends all of its feedback;
+    // the server matches every section and comment against the draft and skips what it already holds.
     setPullRequestPost(undefined);
     setPostError(undefined);
     // a new start supersedes any Code review; one requested with this launch comes back with the job
@@ -458,12 +478,17 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
           return note !== undefined && note !== '' && !nextStepIds.has(candidate.id) ? [`${candidate.title}: ${note}`] : [];
         }) ?? [];
         // an inline comment follows its Change (ids are content digests), so only a reworked hunk detaches it
-        const orphanedComments = comments.flatMap(comment => {
+        const detached = comments.flatMap(comment => {
           const change = tour?.changes.find(candidate => candidate.id === comment.changeId);
-          return !nextChangeIds.has(comment.changeId) && change !== undefined && comment.body.trim() !== '' ? [`${commentLocation(change.file, comment)}: ${comment.body.trim()}`] : [];
+          const result = pullRequestPost?.comments[comment.id]?.result;
+          return !nextChangeIds.has(comment.changeId) && change !== undefined && comment.body.trim() !== '' ? [{ text: `${commentLocation(change.file, comment)}: ${comment.body.trim()}`, posted: result === 'line' || result === 'file' }] : [];
         });
+        const orphanedComments = detached.map(({ text }) => text);
         // preserve feedback detached by regeneration
         if (orphaned.length + orphanedComments.length > 0) setOrphanFeedback(current => [current.trim(), ...orphaned, ...orphanedComments].filter(Boolean).join('\n\n'));
+        // a detached comment already a thread on the pull request stays out of the retained section posted there
+        const posted = detached.flatMap(({ text, posted }) => posted ? [text] : []);
+        if (posted.length > 0) setPostedOrphans(current => [...current, ...posted]);
         setFeedback(current => Object.fromEntries(Object.entries(current).filter(([id]) => nextStepIds.has(id))));
         setComments(current => current.filter(comment => nextChangeIds.has(comment.changeId)));
         setTour(ready);
@@ -781,31 +806,30 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
   const postableComments = comments.filter(comment => comment.body.trim() !== '' && tour?.changes.some(change => change.id === comment.changeId) === true);
   const unpostedComments = postableComments.filter(comment => pullRequestPost?.comments[comment.id] === undefined || pullRequestPost.comments[comment.id]!.result === 'failed');
   const failedComments = postableComments.filter(comment => pullRequestPost?.comments[comment.id]?.result === 'failed');
-  const unpostedSections = tour === undefined ? [] : pullRequestBodySections(tour, feedback, orphanFeedback, generalNotes).filter(section => pullRequestPost?.sections[section.key] !== section.text);
-  const reviewBody = pullRequestReviewBody(unpostedSections);
-  // only the first `maxPostComments` go in one post; the rest wait for the next
+  const retainedForPullRequest = postedOrphans.reduce((text, entry) => text.replace(entry, ''), orphanFeedback).replace(/\n{3,}/gu, '\n\n');
+  const unpostedSections = tour === undefined ? [] : pullRequestBodySections(tour, feedback, retainedForPullRequest, generalNotes).filter(section => pullRequestPost?.sections[section.key] !== section.markdown);
+  // one post takes the first `maxPostComments` comments and the sections within the caps; the rest wait for the next
   const pendingComments = unpostedComments.filter(comment => pullRequestPost?.comments[comment.id] === undefined).length;
-  const allPosted = reviewBody.trim() === '' && unpostedComments.length === 0;
+  const allPosted = unpostedSections.length === 0 && unpostedComments.length === 0;
   const canPost = launch.scope === 'pr' && pullRequest !== undefined;
   // Post feedback to the pull request as the operator's draft review: everything not yet posted, or
   // with `retry` only the failed comments. The server de-duplicates, so a repeat is harmless.
   const postToPullRequest = async (retry = false) => {
     const outgoing = (retry ? failedComments : unpostedComments).slice(0, maxPostComments);
-    const sections = retry ? [] : unpostedSections;
-    const body = retry ? '' : reviewBody.trim();
-    if (posting || !canPost || tour === undefined || (body === '' && outgoing.length === 0)) return;
-    if (body.length > maxFeedbackTotal) { setPostError({ message: 'Shorten the notes before posting.', retryable: false, retry }); return; }
+    const sections = retry ? [] : sectionBatch(unpostedSections);
+    if (posting || !canPost || tour === undefined || (sections.length === 0 && outgoing.length === 0)) return;
     setPosting(true);
     setPostError(undefined);
     try {
       // reject changed Comparisons before posting
       if (!await comparisonCurrent()) { setState('tour'); return; }
-      const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/pr-review`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope: 'pr', includeTests, includeDocs, fingerprint: tour.fingerprint, body, comments: outgoing.map(({ id, changeId, startSide, startLine, endSide, endLine, body: text }) => ({ id, changeId, startSide, startLine, endSide, endLine, body: text.trim() })) }) });
+      const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/pr-review`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope: 'pr', includeTests, includeDocs, fingerprint: tour.fingerprint, pullRequestNumber: pullRequest.number, sections, comments: outgoing.map(({ id, changeId, startSide, startLine, endSide, endLine, body: text }) => ({ id, changeId, startSide, startLine, endSide, endLine, body: text.trim() })) }) }, false);
       const responseJson = await responseBody(response);
       if (response.ok && isPostedResponse(responseJson)) {
         const locations = new Map(outgoing.map(comment => [comment.id, commentLocation(tour.changes.find(change => change.id === comment.changeId)?.file ?? '', comment)]));
         const outcomes = Object.fromEntries(responseJson.comments.map(({ id, result, reason }) => [id, { result, ...(reason === undefined ? {} : { reason }), location: locations.get(id) ?? '' }]));
-        const posted = responseJson.bodyPosted ? Object.fromEntries(sections.map(section => [section.key, section.text])) : {};
+        const taken = new Set(responseJson.sections.flatMap(({ key, posted }) => posted ? [key] : []));
+        const posted = Object.fromEntries(sections.flatMap(section => taken.has(section.key) ? [[section.key, section.markdown]] : []));
         setPullRequestPost(current => ({ url: responseJson.review.url, number: responseJson.review.pullRequest.number, sections: { ...current?.sections, ...posted }, comments: { ...current?.comments, ...outcomes } }));
         return;
       }
@@ -914,7 +938,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
     <p>{[plural(lineCount, 'line comment'), plural(fileLevel.length, 'file-level comment'), ...(Object.keys(pullRequestPost.sections).length > 0 ? ['notes in the review body'] : [])].join(' · ')}</p>
     {fileLevel.length > 0 && <ul aria-label="File-level comments">{fileLevel.map(([id, outcome]) => <li key={id}><strong>{outcome.location}</strong>{outcome.reason !== undefined && <small>{outcome.reason}</small>}</li>)}</ul>}
     {failedComments.length > 0 && <div className="review-tour-pr-failed"><strong role="status">{plural(failedComments.length, 'comment')} failed</strong><ul aria-label="Failed comments">{failedComments.map(comment => { const outcome = pullRequestPost.comments[comment.id]!; return <li key={comment.id}><strong>{outcome.location}</strong>{outcome.reason !== undefined && <small>{outcome.reason}</small>}</li>; })}</ul><button type="button" disabled={posting || stale} onClick={() => void postToPullRequest(true)}>Retry failed</button></div>}
-    {pendingComments > 0 && <p>{plural(pendingComments, 'comment')} not posted yet{unpostedComments.length > maxPostComments ? ` — one post takes ${maxPostComments}; Post again for the rest` : ''}.</p>}
+    {pendingComments + unpostedSections.length > 0 && <p>{[...(pendingComments > 0 ? [plural(pendingComments, 'comment')] : []), ...(unpostedSections.length > 0 ? [plural(unpostedSections.length, 'note')] : [])].join(' and ')} not posted yet{unpostedComments.length > maxPostComments || sectionBatch(unpostedSections).length < unpostedSections.length ? ' — one post cannot take them all; Post again for the rest' : ''}.</p>}
     <small>Comments and notes already posted are not updated by later edits; new comments and new or changed notes are added to the review.</small>
   </section>;
   // keep generation and freshness polling mounted while minimized

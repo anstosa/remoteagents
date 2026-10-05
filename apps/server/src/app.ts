@@ -1594,7 +1594,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // cancel only owner-scoped jobs
     return codeReviews.cancel(owner, (request.params as { jobId: string }).jobId) ? reply.code(204).send() : reply.code(404).send({ status: 'error', error: { code: 'target_unavailable', retryable: false } });
   });
-  // post a tour's feedback to the branch's pull request as the operator's pending review
+  // post a tour's feedback to the branch's pull request as the operator's draft review
   app.post('/api/agents/:id/review-tour/pr-review', { bodyLimit: PR_REVIEW_REQUEST_BODY_BYTES }, async (request, reply) => {
     controlled(request, true);
     const input = parsePullRequestReviewInput(request.body);
