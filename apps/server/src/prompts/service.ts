@@ -6,7 +6,7 @@ import { TmuxAdapter } from '../tmux/adapter.js';
 import { failedTurnFromCapture, lastPromptFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from '../adapters/codex-turns.js';
 import { adapterFor } from '../adapters/registry.js';
 import type { Adapter, AgentKind, CompletionBaseline, CompletionEvent, PaneSnapshot, SubmissionDraftState, SubmissionMode, TmuxKey } from '../adapters/types.js';
-import type { Agent } from '../domain/models.js';
+import { isReviewRun, type Agent } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
 import { agentAttentionState } from '../notifications.js';
@@ -873,10 +873,11 @@ export class PromptService {
   }
 
   // the Worktree-scoped key (queued prompts, history): the Worktree wire id
-  // `<projectId>:<realpath>`, or an `agent:<id>` scope for a Scratch or advisor pane
-  private historyScope(agent: Pick<Agent, 'displayLabel' | 'home'>, agentId: string): string {
-    // prevent advisor prompts and feedback from entering the repository queue
-    if (isUpdateAdvisorLabel(agent.displayLabel)) return `agent:${agentId}`;
+  // `<projectId>:<realpath>`, or an `agent:<id>` scope for a Scratch, advisor or Review run pane
+  private historyScope(agent: Pick<Agent, 'displayLabel' | 'home' | 'reviewRun'>, agentId: string): string {
+    // prevent advisor prompts and feedback from entering the repository queue; a Review run's
+    // prompt queued in the shared Worktree scope would drain into the operator's own Agent
+    if (isUpdateAdvisorLabel(agent.displayLabel) || isReviewRun(agent)) return `agent:${agentId}`;
     const worktree = configuredWorktreeForWorkspace(this.discovery.worktreesNow(), agent.home);
     return worktree === undefined ? `agent:${agentId}` : worktree.id;
   }

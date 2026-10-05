@@ -180,6 +180,31 @@ it('queues prompts that arrive while an idle restart holds the worktree lock', a
   }
 });
 
+it('keeps a Review run prompt out of the Worktree queue the operator Agent drains', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'rac-review-run-scope-'));
+  const queue = new QueuedPromptService(join(directory, 'queue.json'));
+  const pasted: string[][] = [];
+  const worktree = { id: 'cora:/tmp', projectId: 'cora', label: 'Cora', path: '/tmp', identity: '/tmp', available: true, pinned: true, main: true, detached: false, locked: false };
+  const operator = { ...agent, id: 'socket:%1', paneId: '%1' };
+  const reviewer = { ...agent, id: 'socket:%2', paneId: '%2', reviewRun: 'run-1' };
+  const discovery = { worktreesNow: () => [worktree], target: async (id: string) => ({ agent: id === reviewer.id ? reviewer : operator, socket }) };
+  const tmux = {
+    pastePrompt: async (_socket: unknown, pane: string, _buffer: string, prompt: string) => { pasted.push([pane, prompt]); return true; },
+    sendKeys: async () => true
+  };
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue);
+  try {
+    // the operator's Agent holds the Worktree scope, as a busy or restarting Agent does
+    const release = await service.acquireRestartLock(operator.id);
+    await expect(service.submit(reviewer.id, 'Narrate the tour')).resolves.toBe(true);
+    expect(pasted).toEqual([['%2', 'Narrate the tour ']]);
+    await expect(queue.list('cora:/tmp')).resolves.toEqual([]);
+    release?.();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it('blocks restart acquisition while a submitted prompt awaits its working state', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-awaiting-start-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
