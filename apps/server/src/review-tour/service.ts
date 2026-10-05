@@ -46,15 +46,20 @@ export class ReviewTourService {
     return { ...generated, scope: prepared.comparison.scope, base: prepared.comparison.base, includeTests: prepared.comparison.includeTests, includeDocs: prepared.comparison.includeDocs, fingerprint: prepared.comparison.fingerprint, changes: prepared.comparison.changes };
   }
 
-  // recompute current source identity without generation
-  async fingerprint(agentId: string, input: ReviewTourInput): Promise<{ comparison: PublicReviewComparison; empty: boolean }> {
+  // capture the agent's current Comparison without generation
+  async current(agentId: string, input: ReviewTourInput): Promise<ReviewComparison> {
     const target = await this.discovery.target(agentId);
     // distinguish missing and unconfigured targets
     if (target === undefined) throw new ReviewTourError('target_unavailable', true);
     const resolved = await resolveConfiguredWorkspace(this.discovery, agentId);
     // require a configured active agent
     if (resolved === undefined) throw new ReviewTourError('configured_worktree_required', false);
-    const comparison = await captureReviewComparison(resolved, input);
+    return await captureReviewComparison(resolved, input);
+  }
+
+  // recompute current source identity without generation
+  async fingerprint(agentId: string, input: ReviewTourInput): Promise<{ comparison: PublicReviewComparison; empty: boolean }> {
+    const comparison = await this.current(agentId, input);
     return { comparison: publicReviewComparison(comparison), empty: comparison.changes.length === 0 };
   }
 }

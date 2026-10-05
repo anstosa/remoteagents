@@ -1,68 +1,29 @@
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { run } from '../tmux/command.js';
 import type { PullRequestCheckStatus, PullRequestIssues, PullRequestSummary } from '../domain/models.js';
+import { GithubClient, GithubRequestError, githubRepository, githubToken, type Command, type GithubRepository, type Request, type ResponseLike, type Token } from './github.js';
 
-type Command = (binary: string, args: string[]) => Promise<{ code: number; stdout: string }>;
-type ResponseLike = { ok: boolean; status?: number; json(): Promise<unknown> };
-type Request = (input: string, init?: RequestInit) => Promise<ResponseLike>;
-type Token = () => Promise<string | undefined>;
+// the lookup failure the switch routes surface, kept under its old name
+export { GithubRequestError as PullRequestLookupError, githubRepository } from './github.js';
 
-type GithubRepository = { owner: string; name: string };
 type PullRequestCandidate = PullRequestSummary & { headSha?: string };
 type PullRequestChoiceCandidate = PullRequestChoice & { ownedByViewer: boolean };
 export type PullRequestChoice = { number: number; title: string; branch: string; headSha: string; headOnOrigin: boolean; draft: boolean; url: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
 export type OpenPullRequestChoices = { own: PullRequestChoice[]; others: PullRequestChoice[] };
 const cacheTtlMs = 60_000;
-const githubRequestAttempts = 3;
 const failingCheckConclusions = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
-const retryableGithubStatuses = new Set([500, 502, 503, 504]);
-
-export class PullRequestLookupError extends Error {
-  // expose a safe gateway status
-  constructor(message: string, readonly statusCode = 502, readonly githubStatus?: number) {
-    super(message);
-    this.name = 'PullRequestLookupError';
-  }
-}
-
-// read one bounded GitHub error message
-function githubErrorMessage(value: unknown): string | undefined {
-  const message = value !== null && typeof value === 'object' && typeof (value as { message?: unknown }).message === 'string' ? (value as { message: string }).message.trim().replace(/\s+/gu, ' ').slice(0, 300) : '';
-  return message || undefined;
-}
-
-// preserve one GitHub response failure
-async function githubResponseError(response: ResponseLike, action: string): Promise<PullRequestLookupError> {
-  const payload = await response.json().catch(() => undefined);
-  const status = Number.isInteger(response.status) ? ` (${response.status})` : '';
-  const detail = githubErrorMessage(payload);
-  return new PullRequestLookupError(detail === undefined ? `${action}${status}.` : `${action}${status}: ${detail}`, 502, response.status);
-}
 
 // identify rejected GitHub credentials
 function githubAuthenticationFailure(error: unknown): boolean {
-  return error instanceof PullRequestLookupError && (error.githubStatus === 401 || error.githubStatus === 403);
-}
-
-export function githubRepository(remote: string): GithubRepository | undefined {
-  const match = /^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/)([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(remote.trim());
-  return match === null ? undefined : { owner: match[1]!, name: match[2]! };
-}
-
-async function githubToken(): Promise<string | undefined> {
-  if (process.env.RAC_GITHUB_TOKEN) return process.env.RAC_GITHUB_TOKEN;
-  const hosts = await readFile(process.env.RAC_GH_HOSTS ?? join(homedir(), '.config/gh/hosts.yml'), 'utf8').catch(() => '');
-  return /^\s+oauth_token:\s*(\S+)\s*$/m.exec(hosts)?.[1];
+  return error instanceof GithubRequestError && (error.githubStatus === 401 || error.githubStatus === 403);
 }
 
 export class PullRequestService {
   private readonly cache = new Map<string, { expiresAt: number; value?: PullRequestSummary; pending?: Promise<PullRequestSummary | undefined> }>();
   private token?: Promise<string | undefined>;
   private viewer?: Promise<string>;
+  private readonly github: GithubClient;
 
-  constructor(private readonly command: Command = run, private readonly request: Request = fetch, private readonly now: () => number = Date.now, private readonly getToken: Token = githubToken) {}
+  constructor(private readonly command: Command = run, private readonly request: Request = fetch, private readonly now: () => number = Date.now, private readonly getToken: Token = githubToken) { this.github = new GithubClient(request); }
 
   async url(workspace: string, branch?: string): Promise<string | undefined> {
     const cached = await this.lookupCached(workspace, branch);
@@ -73,13 +34,13 @@ export class PullRequestService {
   async open(workspace: string): Promise<OpenPullRequestChoices> {
     const repository = await this.repository(workspace);
     // require one GitHub repository
-    if (repository === undefined) throw new PullRequestLookupError('The worktree does not have a supported GitHub origin.', 503);
+    if (repository === undefined) throw new GithubRequestError('The worktree does not have a supported GitHub origin.', 503);
     this.token ??= this.getToken();
     const token = await this.token;
     // retry authentication discovery later
     if (token === undefined) {
       this.token = undefined;
-      throw new PullRequestLookupError('GitHub authentication is not configured for pull request lookup.', 503);
+      throw new GithubRequestError('GitHub authentication is not configured for pull request lookup.', 503);
     }
     this.viewer ??= this.viewerLogin(token);
     let viewer: string;
@@ -95,7 +56,7 @@ export class PullRequestService {
     const query = new URLSearchParams({ state: 'open', per_page: '100' });
     let response: ResponseLike;
     try {
-      response = await this.requiredGithubRequest(`https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls?${query}`, { headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}` } }, 'GitHub could not load pull requests');
+      response = await this.github.get(`https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls?${query}`, token, 'GitHub could not load pull requests');
     } catch (error) {
       // reload rejected credentials and viewer identity
       if (githubAuthenticationFailure(error)) {
@@ -106,7 +67,7 @@ export class PullRequestService {
     }
     const pulls = await response.json().catch(() => undefined);
     // reject malformed success responses
-    if (!Array.isArray(pulls)) throw new PullRequestLookupError('GitHub returned invalid pull request data.');
+    if (!Array.isArray(pulls)) throw new GithubRequestError('GitHub returned invalid pull request data.');
     const choices = pulls.flatMap((pull): PullRequestChoiceCandidate[] => {
       // ignore malformed pull requests
       if (pull === null || typeof pull !== 'object') return [];
@@ -167,35 +128,11 @@ export class PullRequestService {
 
   // identify the authenticated GitHub user
   private async viewerLogin(token: string): Promise<string> {
-    const response = await this.requiredGithubRequest('https://api.github.com/user', { headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}` } }, 'GitHub could not identify the authenticated user');
+    const response = await this.github.get('https://api.github.com/user', token, 'GitHub could not identify the authenticated user');
     const value = await response.json().catch(() => undefined);
     // require the authenticated login
-    if (value === null || typeof value !== 'object' || typeof (value as { login?: unknown }).login !== 'string') throw new PullRequestLookupError('GitHub returned invalid authenticated user data.');
+    if (value === null || typeof value !== 'object' || typeof (value as { login?: unknown }).login !== 'string') throw new GithubRequestError('GitHub returned invalid authenticated user data.');
     return (value as { login: string }).login;
-  }
-
-  // retry transient GitHub gateway failures
-  private async requiredGithubRequest(input: string, init: RequestInit, action: string): Promise<ResponseLike> {
-    let lastError = new PullRequestLookupError(`${action} because the request failed.`);
-    // bound upstream retries
-    for (let attempt = 0; attempt < githubRequestAttempts; attempt += 1) {
-      let response: ResponseLike;
-      try {
-        response = await this.request(input, { ...init, signal: AbortSignal.timeout(8_000) });
-      } catch {
-        // normalize transport failures
-        lastError = new PullRequestLookupError(`${action} because the request failed.`);
-        // preserve an exhausted failure
-        if (attempt === githubRequestAttempts - 1) throw lastError;
-        continue;
-      }
-      // accept one successful response
-      if (response.ok) return response;
-      lastError = await githubResponseError(response, action);
-      // preserve permanent or exhausted failures
-      if (!retryableGithubStatuses.has(response.status ?? 0) || attempt === githubRequestAttempts - 1) throw lastError;
-    }
-    throw lastError;
   }
 
   // load one branch-bound pull request

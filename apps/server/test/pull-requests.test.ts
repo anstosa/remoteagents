@@ -1,5 +1,53 @@
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { githubToken, hostsToken } from '../src/pull-requests/github.js';
 import { PullRequestService, githubRepository } from '../src/pull-requests/service.js';
+
+// gh's multi-account hosts.yml: bob is github.com's active account, and another host has its own token
+const multiAccountHosts = `ghe.example.com:
+    oauth_token: gho_enterprise
+    user: carol
+github.com:
+    users:
+        alice:
+            oauth_token: gho_alice
+        bob:
+            oauth_token: gho_bob
+    git_protocol: https
+    oauth_token: gho_bob
+    user: bob
+other.example.com:
+    oauth_token: gho_other
+`;
+
+describe('GitHub token selection', () => {
+  it('takes the active github.com token, never another account or host', () => {
+    expect(hostsToken(multiAccountHosts)).toBe('gho_bob');
+    expect(hostsToken('github.com:\n    oauth_token: "gho_quoted"\n    user: dana\n')).toBe('gho_quoted');
+    // a keyring login keeps no token in the file; another host's must not stand in for it
+    expect(hostsToken('github.com:\n    users:\n        erin:\n            oauth_token: gho_erin\n    user: erin\nghe.example.com:\n    oauth_token: gho_enterprise\n')).toBeUndefined();
+    expect(hostsToken('')).toBeUndefined();
+  });
+
+  it('prefers RAC_GITHUB_TOKEN, then reads the hosts file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-gh-hosts-'));
+    const hosts = join(directory, 'hosts.yml');
+    await writeFile(hosts, multiAccountHosts);
+    const saved = { token: process.env.RAC_GITHUB_TOKEN, hosts: process.env.RAC_GH_HOSTS };
+    try {
+      process.env.RAC_GH_HOSTS = hosts;
+      delete process.env.RAC_GITHUB_TOKEN;
+      await expect(githubToken()).resolves.toBe('gho_bob');
+      process.env.RAC_GITHUB_TOKEN = 'env-token';
+      await expect(githubToken()).resolves.toBe('env-token');
+    } finally {
+      if (saved.token === undefined) delete process.env.RAC_GITHUB_TOKEN; else process.env.RAC_GITHUB_TOKEN = saved.token;
+      if (saved.hosts === undefined) delete process.env.RAC_GH_HOSTS; else process.env.RAC_GH_HOSTS = saved.hosts;
+    }
+  });
+});
 
 describe('GitHub pull request lookup', () => {
   it('recognizes GitHub origin formats', () => {
