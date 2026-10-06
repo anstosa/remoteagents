@@ -23,10 +23,21 @@ export type SwitchableBranch = { branch: string; checkedOut: boolean; openIn?: P
 export type PullRequestSwitchAvailability = { enabled: boolean; pullRequests: SwitchablePullRequest[]; otherPullRequests: SwitchablePullRequest[]; branches: SwitchableBranch[]; pullRequestsSupported: boolean };
 export type PullRequestMoveResult = 'moved' | 'unavailable' | 'recovery-required' | 'busy';
 // a branch/PR checkout outcome; 'busy' means an involved agent is working and, with job
-// control gone, cannot be interrupted for the checkout
-export type BranchSwitchResult = 'switched' | 'unavailable' | 'busy';
+// control gone, cannot be interrupted for the checkout; `error` explains any other refusal
+export type BranchSwitchResult = 'switched' | 'busy' | { error: string };
+const mutationInProgress = 'Another branch checkout or move is already running. Try again when it finishes.';
+const switchingUnavailable = 'Branch switching is unavailable for this agent\'s worktree.';
+const uncommittedChanges = 'The worktree has uncommitted changes. Commit or stash them, then try again.';
+const alreadyCheckedOut = (branch: string, openIn: PullRequestWorktree | undefined): string => `${branch} is already checked out in ${openIn?.worktreeName ?? 'another worktree'}.`;
+// the first line of a failed git command's stderr, which names the cause; the full output goes to the server log
+function gitFailure(workspace: string, action: string, result: { code: number; stderr?: string }): string | undefined {
+  if (result.code === 0) return undefined;
+  const stderr = result.stderr?.trim() ?? '';
+  console.warn(`[branch-switch] ${workspace}: git ${action} exited ${result.code}${stderr === '' ? '' : `:\n${stderr}`}`);
+  const first = stderr.split('\n')[0]?.replace(/^(fatal|error): /u, '').slice(0, 300);
+  return first ? `git ${action} failed: ${first}` : `git ${action} failed.`;
+}
 type GitHead = { branch?: string; commit: string };
-type SwitchTarget = NonNullable<Awaited<ReturnType<DiscoveryService['target']>>>;
 
 export class PullRequestSwitchService {
   private branchMutationInProgress = false;
@@ -126,17 +137,17 @@ export class PullRequestSwitchService {
   }
 
   async switch(agentId: string, number: number): Promise<BranchSwitchResult> {
-    // reject invalid or concurrent branch mutations
-    if (!Number.isInteger(number) || number < 1 || this.branchMutationInProgress) return 'unavailable';
+    if (!Number.isInteger(number) || number < 1) return { error: 'That is not a valid pull request number.' };
+    if (this.branchMutationInProgress) return { error: mutationInProgress };
     this.branchMutationInProgress = true;
     try {
       const available = await this.available(agentId);
-      const pullRequest = available?.pullRequests.find(candidate => candidate.number === number) ?? available?.otherPullRequests.find(candidate => candidate.number === number);
-      const target = await this.discovery.target(agentId);
-      const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.home);
-      // require one ready and unused target
-      if (!available?.enabled || pullRequest === undefined || pullRequest.checkedOut || target === undefined || targetWorktree === undefined) return 'unavailable';
-      return await this.runSwitch(target, targetWorktree, pullRequest.checkoutBranch, workspace =>
+      if (available === undefined) return { error: switchingUnavailable };
+      const pullRequest = available.pullRequests.find(candidate => candidate.number === number) ?? available.otherPullRequests.find(candidate => candidate.number === number);
+      if (pullRequest === undefined) return { error: `Pull request #${number} is no longer open.` };
+      if (pullRequest.checkedOut) return { error: alreadyCheckedOut(pullRequest.checkoutBranch, pullRequest.openIn) };
+      if (!available.enabled) return { error: uncommittedChanges };
+      return await this.runSwitch(agentId, pullRequest.checkoutBranch, workspace =>
         pullRequest.headOnOrigin ? this.switchBranchRef(workspace, pullRequest) : this.switchPullRequestRef(workspace, pullRequest));
     } finally {
       this.branchMutationInProgress = false;
@@ -145,34 +156,38 @@ export class PullRequestSwitchService {
 
   // switch to one available local branch open in no other worktree
   async switchBranch(agentId: string, branch: string): Promise<BranchSwitchResult> {
-    // reject an empty or concurrent branch mutation
-    if (typeof branch !== 'string' || branch === '' || this.branchMutationInProgress) return 'unavailable';
+    if (typeof branch !== 'string' || branch === '') return { error: 'No branch was named.' };
+    if (this.branchMutationInProgress) return { error: mutationInProgress };
     this.branchMutationInProgress = true;
     try {
       const available = await this.available(agentId);
+      if (available === undefined) return { error: switchingUnavailable };
       // require the branch on the availability list, held by no other worktree
-      const switchable = available?.branches.find(candidate => candidate.branch === branch);
-      const target = await this.discovery.target(agentId);
-      const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.home);
-      if (!available?.enabled || switchable === undefined || switchable.checkedOut || target === undefined || targetWorktree === undefined) return 'unavailable';
-      return await this.runSwitch(target, targetWorktree, branch, workspace => this.switchLocalBranch(workspace, branch));
+      const switchable = available.branches.find(candidate => candidate.branch === branch);
+      if (switchable === undefined) return { error: `${branch} is not a local branch that can be checked out here.` };
+      if (switchable.checkedOut) return { error: alreadyCheckedOut(branch, switchable.openIn) };
+      if (!available.enabled) return { error: uncommittedChanges };
+      return await this.runSwitch(agentId, branch, workspace => this.switchLocalBranch(workspace, branch));
     } finally {
       this.branchMutationInProgress = false;
     }
   }
 
-  // run one branch-changing git transaction in-process, gated on an idle agent
-  private async runSwitch(target: SwitchTarget, targetWorktree: Worktree, checkoutBranch: string, perform: (workspace: string) => Promise<boolean>): Promise<BranchSwitchResult> {
+  // run one branch-changing git transaction in-process, gated on an idle agent; perform returns an error message or undefined
+  private async runSwitch(agentId: string, checkoutBranch: string, perform: (workspace: string) => Promise<string | undefined>): Promise<BranchSwitchResult> {
+    const target = await this.discovery.target(agentId);
+    const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.home);
+    if (target === undefined || targetWorktree === undefined) return { error: switchingUnavailable };
     // without job control a working agent cannot be interrupted for a checkout
     if (agentAttentionState(target.agent) === 'working') return 'busy';
     const currentBranch = await this.command('/usr/bin/git', ['-C', targetWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
-    // reject a no-op switch onto the branch already checked out
-    if (currentBranch.code === 0 && currentBranch.stdout.trim() === checkoutBranch) return 'unavailable';
+    if (currentBranch.code === 0 && currentBranch.stdout.trim() === checkoutBranch) return { error: `${checkoutBranch} is already checked out here.` };
     // a failed fetch or switch leaves the current branch untouched, so nothing to roll back
-    if (!await perform(targetWorktree.identity)) return 'unavailable';
+    const failure = await perform(targetWorktree.identity);
+    if (failure !== undefined) return { error: failure };
     // verify HEAD reached the requested branch before reporting success
     const head = await this.command('/usr/bin/git', ['-C', targetWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
-    return head.code === 0 && head.stdout.trim() === checkoutBranch ? 'switched' : 'unavailable';
+    return head.code === 0 && head.stdout.trim() === checkoutBranch ? 'switched' : { error: `Git finished without checking out ${checkoutBranch}.` };
   }
 
   // move one occupied pull request into the requested worktree
@@ -358,38 +373,37 @@ export class PullRequestSwitchService {
   private pullRequestBranch(pullRequest: PullRequestChoice): string { return `rac/pr/${pullRequest.number}/${pullRequest.headSha.slice(0, 12)}`; }
 
   // switch one existing local branch without touching origin
-  private async switchLocalBranch(workspace: string, branch: string): Promise<boolean> {
-    const switched = await this.command('/usr/bin/git', ['-C', workspace, 'switch', '--', branch]);
-    return switched.code === 0;
+  private async switchLocalBranch(workspace: string, branch: string): Promise<string | undefined> {
+    return gitFailure(workspace, 'switch', await this.command('/usr/bin/git', ['-C', workspace, 'switch', '--', branch]));
   }
 
   // fetch one SHA-pinned origin branch and check out its tracking local branch
-  private async switchBranchRef(workspace: string, pullRequest: SwitchablePullRequest): Promise<boolean> {
+  private async switchBranchRef(workspace: string, pullRequest: SwitchablePullRequest): Promise<string | undefined> {
     const fetchedRef = `refs/remotes/origin/${pullRequest.branch}`;
-    return await this.fetchAndSwitch(workspace, `refs/heads/${pullRequest.branch}:${fetchedRef}`, fetchedRef, pullRequest.headSha, pullRequest.branch, ['--track', fetchedRef]);
+    return await this.fetchAndSwitch(workspace, pullRequest, `refs/heads/${pullRequest.branch}:${fetchedRef}`, fetchedRef, ['--track', fetchedRef]);
   }
 
   // fetch one SHA-pinned GitHub pull request ref and check out its local branch
-  private async switchPullRequestRef(workspace: string, pullRequest: SwitchablePullRequest): Promise<boolean> {
+  private async switchPullRequestRef(workspace: string, pullRequest: SwitchablePullRequest): Promise<string | undefined> {
     const fetchedRef = `refs/rac/pull/${pullRequest.number}`;
-    return await this.fetchAndSwitch(workspace, `refs/pull/${pullRequest.number}/head:${fetchedRef}`, fetchedRef, pullRequest.headSha, pullRequest.checkoutBranch, ['--no-track', fetchedRef]);
+    return await this.fetchAndSwitch(workspace, pullRequest, `refs/pull/${pullRequest.number}/head:${fetchedRef}`, fetchedRef, ['--no-track', fetchedRef]);
   }
 
   // fetch a pinned ref, verify it is the reviewed head, then switch to its local branch, creating it when absent
-  private async fetchAndSwitch(workspace: string, fetchSpec: string, fetchedRef: string, headSha: string, localBranch: string, createArgs: string[]): Promise<boolean> {
+  private async fetchAndSwitch(workspace: string, pullRequest: SwitchablePullRequest, fetchSpec: string, fetchedRef: string, createArgs: string[]): Promise<string | undefined> {
+    const { headSha, checkoutBranch: localBranch } = pullRequest;
     const fetched = await this.command('/usr/bin/git', ['-C', workspace, 'fetch', 'origin', '--no-tags', '--force', fetchSpec]);
-    if (fetched.code !== 0) return false;
+    const fetchFailure = gitFailure(workspace, 'fetch', fetched);
+    if (fetchFailure !== undefined) return `Pull request #${pullRequest.number} could not be fetched from origin. ${fetchFailure}`;
     // require the fetched ref to pin the exact reviewed head before mutating the checkout
-    if (!await this.commitMatches(workspace, `${fetchedRef}^{commit}`, headSha)) return false;
+    if (!await this.commitMatches(workspace, `${fetchedRef}^{commit}`, headSha)) return `Pull request #${pullRequest.number} changed on GitHub after it was listed. Reopen the list and try again.`;
     const existing = await this.command('/usr/bin/git', ['-C', workspace, 'show-ref', '--verify', '--quiet', `refs/heads/${localBranch}`]);
     if (existing.code === 0) {
       // reuse an existing local branch only when it already matches the reviewed head
-      if (!await this.commitMatches(workspace, `refs/heads/${localBranch}^{commit}`, headSha)) return false;
-      const switched = await this.command('/usr/bin/git', ['-C', workspace, 'switch', '--', localBranch]);
-      return switched.code === 0;
+      if (!await this.commitMatches(workspace, `refs/heads/${localBranch}^{commit}`, headSha)) return `The local branch ${localBranch} differs from the pull request head. Update or delete it, then try again.`;
+      return gitFailure(workspace, 'switch', await this.command('/usr/bin/git', ['-C', workspace, 'switch', '--', localBranch]));
     }
-    const created = await this.command('/usr/bin/git', ['-C', workspace, 'switch', '-c', localBranch, ...createArgs]);
-    return created.code === 0;
+    return gitFailure(workspace, 'switch', await this.command('/usr/bin/git', ['-C', workspace, 'switch', '-c', localBranch, ...createArgs]));
   }
 
   // whether one revision resolves to the exact commit

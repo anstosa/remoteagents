@@ -255,7 +255,7 @@ test('shows every pull request target while keeping checkout and worktree action
   const actionOrder = await openOption.locator('.switch-pr-actions').locator('.switch-pr-action').evaluateAll(elements => elements.map(element => element.textContent?.trim()));
   expect(actionOrder).toEqual(['Checkout']);
   await expect(checkout).toBeDisabled();
-  await expect(checkout).toHaveAttribute('title', 'Working copy must be clean and pushed');
+  await expect(checkout).toHaveAttribute('title', 'Commit or stash uncommitted changes first');
   const [checkoutBox, switchBox] = await Promise.all([checkout.boundingBox(), switchToDelta.boundingBox()]);
   expect(checkoutBox).not.toBeNull();
   expect(switchBox).not.toBeNull();
@@ -824,7 +824,7 @@ test('gates branch checkout on a clean, pushed destination', async ({ page }) =>
   const menu = await openBranchTab(page, 'Branches');
   const checkout = menu.getByRole('group', { name: 'feature/clean', exact: true }).getByRole('button', { name: 'Checkout' });
   await expect(checkout).toBeDisabled();
-  await expect(checkout).toHaveAttribute('title', 'Working copy must be clean and pushed');
+  await expect(checkout).toHaveAttribute('title', 'Commit or stash uncommitted changes first');
 });
 
 // show the empty branch state and mark pull requests unavailable without a GitHub origin

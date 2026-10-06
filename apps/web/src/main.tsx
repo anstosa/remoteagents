@@ -6433,7 +6433,7 @@ function pullRequestCheckoutReason(pullRequest: SwitchablePullRequest, enabled: 
   // reject an unresolvable checkout owner
   if (pullRequest.checkedOut && pullRequest.openIn === undefined) return 'Already open in another worktree';
   // protect a dirty working copy
-  if (!enabled) return 'Working copy must be clean and pushed';
+  if (!enabled) return 'Commit or stash uncommitted changes first';
   return pullRequest.checkedOut ? `Move PR #${pullRequest.number} here` : `Checkout PR #${pullRequest.number}`;
 }
 
@@ -6473,7 +6473,7 @@ function branchCheckoutReason(branch: SwitchableBranch, enabled: boolean, refres
   // reject an unresolvable checkout owner
   if (branch.checkedOut && branch.openIn === undefined) return 'Already open in another worktree';
   // protect a dirty working copy
-  if (!enabled) return 'Working copy must be clean and pushed';
+  if (!enabled) return 'Commit or stash uncommitted changes first';
   return branch.checkedOut ? `Move ${branch.branch} here` : `Check out ${branch.branch}`;
 }
 

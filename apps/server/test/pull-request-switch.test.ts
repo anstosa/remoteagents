@@ -142,7 +142,7 @@ describe('pull request switching', () => {
     const service = new PullRequestSwitchService(config, discovery as never, pulls as never, cleanCommand);
 
     await expect(service.available(agent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }], otherPullRequests: [], branches: [], pullRequestsSupported: true });
-    await expect(service.switch(agent.id, 7)).resolves.toBe('unavailable');
+    await expect(service.switch(agent.id, 7)).resolves.toEqual({ error: 'feature/draft is already checked out in Delta.' });
   });
 
   // reject a no-op checkout in the current worktree
@@ -158,7 +158,7 @@ describe('pull request switching', () => {
     const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
     await expect(service.available(currentAgent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { agentId: 'agent-1', worktreeId: worktree.id, worktreeName: 'Cora' } }], otherPullRequests: [], branches: [], pullRequestsSupported: true });
-    await expect(service.switch(currentAgent.id, 7)).resolves.toBe('unavailable');
+    await expect(service.switch(currentAgent.id, 7)).resolves.toEqual({ error: 'feature/draft is already checked out in Cora.' });
   });
 
   // prefer the live branch over cached dashboard metadata
@@ -476,7 +476,7 @@ describe('pull request switching', () => {
       await run('/usr/bin/git', ['-C', repository.originPath, 'switch', 'main']);
       const { service, targetAgent } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true });
 
-      await expect(service.switch(targetAgent.id, 7)).resolves.toBe('unavailable');
+      await expect(service.switch(targetAgent.id, 7)).resolves.toEqual({ error: 'Pull request #7 changed on GitHub after it was listed. Reopen the list and try again.' });
 
       // the fetched ref no longer matches the reviewed head, so the checkout is refused and HEAD stays
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'branch', '--show-current'])).resolves.toMatchObject({ stdout: 'main\n' });
@@ -538,7 +538,7 @@ describe('pull request switching', () => {
       await run('/usr/bin/git', ['-C', repository.targetPath, 'branch', 'feature/draft', 'main']);
       const { service, targetAgent } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true });
 
-      await expect(service.switch(targetAgent.id, 7)).resolves.toBe('unavailable');
+      await expect(service.switch(targetAgent.id, 7)).resolves.toEqual({ error: 'The local branch feature/draft differs from the pull request head. Update or delete it, then try again.' });
 
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'branch', '--show-current'])).resolves.toMatchObject({ stdout: 'main\n' });
     } finally {
@@ -546,17 +546,34 @@ describe('pull request switching', () => {
     }
   }, 15_000);
 
-  it('reports unavailable and leaves the branch when git switch fails', async () => {
+  it('reports why the pull request fetch failed and leaves the branch', async () => {
     const repository = await createSwitchRepository();
     try {
       const command: GitCommand = async (binary, args) => {
-        // fail the local checkout while leaving availability reads intact
-        if (args[2] === 'switch' && args.at(-1) === 'feature/solo') return { code: 1, stdout: '' };
+        if (args.includes('fetch')) return { code: 128, stdout: '', stderr: 'Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf\nfatal: Could not read from remote repository.\n' };
         return await run(binary, args);
       };
       const { service, targetAgent } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true }, 'finished', command);
 
-      await expect(service.switchBranch(targetAgent.id, 'feature/solo')).resolves.toBe('unavailable');
+      await expect(service.switch(targetAgent.id, 7)).resolves.toEqual({ error: 'Pull request #7 could not be fetched from origin. git fetch failed: Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf' });
+
+      await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'branch', '--show-current'])).resolves.toMatchObject({ stdout: 'main\n' });
+    } finally {
+      await rm(repository.root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('reports git\'s reason and leaves the branch when git switch fails', async () => {
+    const repository = await createSwitchRepository();
+    try {
+      const command: GitCommand = async (binary, args) => {
+        // fail the local checkout while leaving availability reads intact
+        if (args[2] === 'switch' && args.at(-1) === 'feature/solo') return { code: 128, stdout: '', stderr: 'fatal: invalid reference: feature/solo\n' };
+        return await run(binary, args);
+      };
+      const { service, targetAgent } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true }, 'finished', command);
+
+      await expect(service.switchBranch(targetAgent.id, 'feature/solo')).resolves.toEqual({ error: 'git switch failed: invalid reference: feature/solo' });
 
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'branch', '--show-current'])).resolves.toMatchObject({ stdout: 'main\n' });
     } finally {
@@ -696,9 +713,9 @@ describe('pull request switching', () => {
       const { service, targetAgent } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true });
 
       // feature/missing is unlisted; feature/draft is offered only as pull request #7; main is the current branch
-      await expect(service.switchBranch(targetAgent.id, 'feature/missing')).resolves.toBe('unavailable');
-      await expect(service.switchBranch(targetAgent.id, 'feature/draft')).resolves.toBe('unavailable');
-      await expect(service.switchBranch(targetAgent.id, '')).resolves.toBe('unavailable');
+      await expect(service.switchBranch(targetAgent.id, 'feature/missing')).resolves.toEqual({ error: 'feature/missing is not a local branch that can be checked out here.' });
+      await expect(service.switchBranch(targetAgent.id, 'feature/draft')).resolves.toEqual({ error: 'feature/draft is not a local branch that can be checked out here.' });
+      await expect(service.switchBranch(targetAgent.id, '')).resolves.toEqual({ error: 'No branch was named.' });
       await expect(service.moveBranch(targetAgent.id, 'feature/missing')).resolves.toBe('unavailable');
       // feature/solo is open nowhere, so it can only be switched, never moved
       await expect(service.moveBranch(targetAgent.id, 'feature/solo')).resolves.toBe('unavailable');
@@ -716,7 +733,7 @@ describe('pull request switching', () => {
     const service = new PullRequestSwitchService(config, discovery as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
 
     // feature/draft is open in another worktree, so it must be moved, never plain-switched
-    await expect(service.switchBranch(agent.id, 'feature/draft')).resolves.toBe('unavailable');
+    await expect(service.switchBranch(agent.id, 'feature/draft')).resolves.toEqual({ error: 'feature/draft is already checked out in Delta.' });
   });
 
   it('moves an occupied local branch here and recovers a dirty source', async () => {
@@ -771,7 +788,7 @@ describe('pull request switching', () => {
       const switching = service.switch(targetAgent.id, 7);
       await startedPromise;
       // the shared branchMutation lock rejects an overlapping branch switch that would otherwise succeed
-      await expect(service.switchBranch(targetAgent.id, 'feature/solo')).resolves.toBe('unavailable');
+      await expect(service.switchBranch(targetAgent.id, 'feature/solo')).resolves.toEqual({ error: 'Another branch checkout or move is already running. Try again when it finishes.' });
       release();
       await expect(switching).resolves.toBe('switched');
     } finally {
@@ -797,7 +814,7 @@ describe('pull request switching', () => {
       const switching = service.switchBranch(targetAgent.id, 'feature/solo');
       await startedPromise;
       // the same lock rejects an overlapping pull request switch that would otherwise succeed, proving it is shared both ways
-      await expect(service.switch(targetAgent.id, 7)).resolves.toBe('unavailable');
+      await expect(service.switch(targetAgent.id, 7)).resolves.toEqual({ error: 'Another branch checkout or move is already running. Try again when it finishes.' });
       release();
       await expect(switching).resolves.toBe('switched');
     } finally {
