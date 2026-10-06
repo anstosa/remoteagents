@@ -186,7 +186,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const projectProxy = new ProjectProxy(() => discovery.worktreesNow(), config.publicOrigin.origin, process.env.RAC_PROJECT_PROXY_HOST);
   const temporaryPreviewProxy = new TemporaryPreviewProxy();
   const temporaryPreviewAccess = new TemporaryPreviewAccess();
-  const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url));
+  // A Worktree id carries its whole percent-encoded path, which outgrows the router's default 100
+  // character parameter cap (a GET then falls to the static 404, others get 414). Node's 16 KiB
+  // request-head limit already bounds the URL, and no route uses a regex parameter.
+  const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536, routerOptions: { maxParamLength: 16_384 } }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url));
   // The UI version is the hashed app bundle: match the module script specifically so
   // other head scripts (e.g. the pre-paint /theme-init.js) can precede it in the HTML.
   const uiVersion = async () => await readFile(join(webRoot, 'index.html'), 'utf8').then(html => /<script[^>]+type="module"[^>]+src="([^"]+)"/u.exec(html)?.[1]).catch(() => undefined); await app.register(cookie); await app.register(staticPlugin, { root: webRoot, index: false }); await app.register(rateLimit, { global: false });

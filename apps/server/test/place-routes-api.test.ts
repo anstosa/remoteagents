@@ -260,3 +260,19 @@ describe('Git-only routes at a directory-Project or Scratch Place', () => {
     } finally { await app.close(); }
   });
 });
+
+describe('a Worktree with a long id', () => {
+  // the router caps each path parameter (100 characters by default), and an encoded Worktree id
+  // is a project id plus a whole, percent-encoded path
+  it('reaches its Place routes instead of a 404 or a 414', async () => {
+    const path = '/tachi/code/obsidian/community-workers.worktrees/npm12-lockfile-fallback-to-npm10';
+    const long = testWorktree({ id: `obsidian-community-workers:${path}`, path, main: false });
+    const placePanes = vi.fn(async () => [shell({ path })]);
+    const app = await start({ launch: { placePanes }, discovery: { worktreesNow: () => [worktree, long] } });
+    try {
+      const response = await app.inject({ method: 'GET', url: url(long.id, '/panes'), headers: read });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().panes.map((pane: { paneId: string }) => pane.paneId)).toEqual(['%9']);
+    } finally { await app.close(); }
+  });
+});
