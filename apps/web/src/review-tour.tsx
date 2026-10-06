@@ -386,6 +386,9 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, tour
   // move focus into the step notes drawer as it opens
   useEffect(() => { if (phone && notesOpen) notesDrawer.current?.focus(); }, [phone, notesOpen]);
 
+  // start each step's narration and diffs at the top
+  useEffect(() => { dialog.current?.querySelectorAll('.review-tour-narration, .review-tour-diff-scroll').forEach(element => { element.scrollTop = 0; }); }, [current]);
+
   // focus the review surface when restored
   useEffect(() => { if (!minimized) dialog.current?.focus(); }, [minimized]);
 
