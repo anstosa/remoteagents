@@ -264,7 +264,7 @@ const renderList = (list: ParsedList, key: string): ReactNode => {
 
 // render note markdown blocks
 // render recognized blocks while preserving paragraph boundaries
-function MarkdownBlocks({ text }: { text: string }) {
+export function MarkdownBlocks({ text }: { text: string }) {
   const lines = text.replace(/\r\n?/gu, '\n').split('\n');
   const blocks: ReactNode[] = [];
   // bound generated pipe-table cells across the entire note
