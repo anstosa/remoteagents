@@ -651,6 +651,7 @@ test('agent output menu preserves selection, copies without gutter columns and p
   let menu = page.getByRole('menu', { name: 'Agent actions' });
   await expect(menu.locator('[role="menuitemradio"][aria-checked="true"]')).toHaveCount(1);
   await expect(menu.getByRole('menuitem', { name: 'Copy', exact: true })).toBeDisabled();
+  await expect(menu.getByRole('menuitem', { name: 'Copy URL', exact: true })).toHaveCount(0);
   await expect(menu.getByRole('menuitem', { name: 'Paste', exact: true })).toBeDisabled();
   await page.keyboard.press('Escape');
 
@@ -681,6 +682,47 @@ test('agent output menu preserves selection, copies without gutter columns and p
   await menu.getByRole('menuitem', { name: 'Paste plain', exact: true }).click();
   await expect(canvas.locator('textarea')).toBeFocused();
   await expect.poll(() => paneInputText(page, 'agent-1')).toContain('terminal paste');
+});
+
+// copy detected links from both output surfaces without requiring a text selection
+test('output link menus copy the target URL', async ({ page }) => {
+  await installClipboardMock(page);
+  await mountConsole(page);
+  await seedPaneSize(page, 'agent-1', 31, 24);
+  const agentUrl = 'https://example.test/releases?view=summary';
+  await pushBytes(page, 'agent-1', `${agentUrl.slice(0, 31)}\r\n${agentUrl.slice(31)}`);
+  const agentLink = page.getByLabel('Live log', { exact: true }).getByRole('link', { name: `Open ${agentUrl}`, exact: true });
+  await expect(agentLink).toHaveCount(2);
+  await expect(agentLink.last()).toHaveAttribute('href', agentUrl);
+
+  await agentLink.last().click({ button: 'right' });
+  let menu = page.getByRole('menu', { name: 'Agent actions' });
+  await menu.getByRole('menuitem', { name: 'Copy URL', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as ClipboardWindow).__contextClipboard.writes)).toEqual([agentUrl]);
+
+  // keep the previous clipboard value when URL copying is denied
+  const copyFailure = page.waitForEvent('console', { predicate: message => message.type() === 'error' && message.text().includes('Copy URL') });
+  await page.evaluate(() => { (window as unknown as ClipboardWindow).__contextClipboard.writeDenied = true; });
+  await agentLink.last().click({ button: 'right' });
+  menu = page.getByRole('menu', { name: 'Agent actions' });
+  await menu.getByRole('menuitem', { name: 'Copy URL', exact: true }).click();
+  await copyFailure;
+  await expect.poll(() => page.evaluate(() => (window as unknown as ClipboardWindow).__contextClipboard.writes)).toEqual([agentUrl]);
+  await page.evaluate(() => { (window as unknown as ClipboardWindow).__contextClipboard.writeDenied = false; });
+
+  const toolbar = page.getByRole('region', { name: 'Workspace toolbar' });
+  await toolbar.getByRole('button', { name: 'Open a terminal' }).click();
+  await page.getByRole('menu', { name: 'Open a terminal' }).getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  const terminalUrl = 'https://example.test/builds/456?view=log';
+  await pushBytes(page, '%5', terminalUrl);
+  const terminalLink = page.getByRole('link', { name: `Open ${terminalUrl}`, exact: true });
+  await expect(terminalLink).toHaveAttribute('href', terminalUrl);
+
+  await terminalLink.click({ button: 'right' });
+  menu = page.getByRole('menu', { name: 'Terminal build actions' });
+  await menu.getByRole('menuitem', { name: 'Copy URL', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as ClipboardWindow).__contextClipboard.writes)).toEqual([agentUrl, terminalUrl]);
 });
 
 test('terminal menu preserves neutral mode until paste explicitly enters output mode', async ({ page }) => {

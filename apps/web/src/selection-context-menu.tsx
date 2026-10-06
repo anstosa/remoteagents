@@ -38,6 +38,7 @@ type SelectionContextMenuOptions = {
   selectAll: () => void;
   cut?: () => void | Promise<void>;
   copy: () => void | Promise<void>;
+  copyUrl?: () => void | Promise<void>;
   paste?: (contents: ClipboardContents) => void | Promise<void>;
   pasteAcceptsFiles?: boolean;
   pasteDisabled?: boolean;
@@ -138,6 +139,7 @@ function selectionItems(options: SelectionContextMenuOptions, clipboard: Clipboa
     { type: 'action', id: 'select-all', label: 'Select all', onSelect: options.selectAll },
     ...(options.cut === undefined ? [] : [{ type: 'action' as const, id: 'cut', label: 'Cut', disabled: !selected, onSelect: options.cut }]),
     { type: 'action', id: 'copy', label: 'Copy', disabled: !selected, onSelect: options.copy },
+    ...(options.copyUrl === undefined ? [] : [{ type: 'action' as const, id: 'copy-url', label: 'Copy URL', onSelect: options.copyUrl }]),
     { type: 'action', id: 'paste', label: pasteLabel, disabled: options.pasteDisabled || options.paste === undefined || !pasteReady, onSelect: () => ready === undefined ? undefined : options.paste?.(ready) },
     { type: 'action', id: 'paste-plain', label: 'Paste plain', disabled: options.pasteDisabled || options.pastePlain === undefined || !ready?.text, onSelect: () => ready === undefined ? undefined : options.pastePlain?.(ready.text) }
   ]);

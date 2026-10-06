@@ -54,6 +54,120 @@ test('opens the complete target for links split across captured terminal rows', 
   await popup.close();
 });
 
+// retain URL punctuation that becomes interior after joining captured rows
+for (const separator of ['?', ':', ',', '.']) {
+  // verify every separator against terminal output rather than a string-only helper
+  test(`joins captured URL rows ending in ${separator}`, async ({ page }) => {
+    const uri = `https://example.com/path${separator}item=12345&view=all`;
+    await page.goto('/');
+    await page.setContent('<div id="output-links"></div>');
+    await page.evaluate(async uri => {
+      const { renderOutputLinkText } = await import('/e2e/output-links-fixture.ts');
+      await renderOutputLinkText(document.querySelector<HTMLElement>('#output-links')!, `Visit ${uri.slice(0, 25)}\r\n${uri.slice(25)} for details.`, 31);
+    }, uri);
+    const links = page.getByRole('link', { name: `Open ${uri}`, exact: true });
+    await expect(links).toHaveCount(2);
+    await expect(links.first()).toHaveAttribute('href', uri);
+    await expect(links.last()).toHaveAttribute('href', uri);
+  });
+}
+
+// do not turn sentence punctuation and a real newline into a fabricated URL
+for (const separator of ['?', ':', ',', '.']) {
+  // keep a hard-break counterexample for each newly accepted punctuation boundary
+  test(`does not append prose after a captured URL ending in ${separator}`, async ({ page }) => {
+    const uri = 'https://example.com/path';
+    await page.goto('/');
+    await page.setContent('<div id="output-links"></div>');
+    await page.evaluate(async ({ uri, separator }) => {
+      const { renderOutputLinkText } = await import('/e2e/output-links-fixture.ts');
+      await renderOutputLinkText(document.querySelector<HTMLElement>('#output-links')!, `Visit ${uri}${separator}\r\nNext line`, 31);
+    }, { uri, separator });
+    const links = page.getByRole('link');
+    await expect(links).toHaveCount(1);
+    await expect(links).toHaveAttribute('href', uri);
+  });
+}
+
+// retain numeric URL continuations such as an explicit port
+test('joins a captured URL split before a numeric port', async ({ page }) => {
+  const uri = 'https://example.com:8443';
+  await page.goto('/');
+  await page.setContent('<div id="output-links"></div>');
+  await page.evaluate(async uri => {
+    const { renderOutputLinkText } = await import('/e2e/output-links-fixture.ts');
+    await renderOutputLinkText(document.querySelector<HTMLElement>('#output-links')!, `${' '.repeat(11)}${uri.slice(0, 20)}\r\n${uri.slice(20)}`, 31);
+  }, uri);
+  const links = page.getByRole('link', { name: `Open ${uri}`, exact: true });
+  await expect(links).toHaveCount(2);
+  await expect(links.first()).toHaveAttribute('href', uri);
+  await expect(links.last()).toHaveAttribute('href', uri);
+});
+
+// carry a complete destination through every captured continuation row
+test('joins three captured URL rows into one destination', async ({ page }) => {
+  const uri = 'https://example.com/path?item=12345&filter=complete&sort=updated&view=details';
+  await page.goto('/');
+  await page.setContent('<div id="output-links"></div>');
+  await page.evaluate(async uri => {
+    const { renderOutputLinkText } = await import('/e2e/output-links-fixture.ts');
+    await renderOutputLinkText(document.querySelector<HTMLElement>('#output-links')!, `Visit ${uri.slice(0, 25)}\r\n${uri.slice(25, 56)}\r\n${uri.slice(56)} for details.`, 31);
+  }, uri);
+  const links = page.getByRole('link', { name: `Open ${uri}`, exact: true });
+  await expect(links).toHaveCount(3);
+  // every visible row must open the same full destination
+  for (const link of await links.all()) await expect(link).toHaveAttribute('href', uri);
+  const popupPromise = page.waitForEvent('popup');
+  await links.last().click();
+  const popup = await popupPromise;
+  await expect(popup).toHaveURL(uri);
+  await popup.close();
+});
+
+// reconstruct a scheme that was captured before both slashes were printed
+test('joins captured rows split inside the URL scheme', async ({ page }) => {
+  const uri = 'https://example.com/path?item=12';
+  await page.goto('/');
+  await page.setContent('<div id="output-links"></div>');
+  await page.evaluate(async uri => {
+    const { renderOutputLinkText } = await import('/e2e/output-links-fixture.ts');
+    await renderOutputLinkText(document.querySelector<HTMLElement>('#output-links')!, `${' '.repeat(24)}${uri.slice(0, 6)}\r\n${uri.slice(6)}`);
+  }, uri);
+  const links = page.getByRole('link', { name: `Open ${uri}`, exact: true });
+  await expect(links).toHaveCount(2);
+  await expect(links.first()).toHaveAttribute('href', uri);
+  await expect(links.last()).toHaveAttribute('href', uri);
+});
+
+// retain native soft-wrap behavior alongside captured-row reconstruction
+test('keeps the full destination across native xterm soft wraps', async ({ page }) => {
+  const uri = 'https://example.com/path?item=12345&filter=complete&sort=updated&view=details';
+  await page.goto('/');
+  await page.setContent('<div id="output-links"></div>');
+  await page.evaluate(async uri => {
+    const { renderOutputLinkText } = await import('/e2e/output-links-fixture.ts');
+    await renderOutputLinkText(document.querySelector<HTMLElement>('#output-links')!, `Visit ${uri} for details.`, 31);
+  }, uri);
+  const links = page.getByRole('link', { name: `Open ${uri}`, exact: true });
+  await expect(links).toHaveCount(3);
+  // every soft-wrapped segment must retain the entire query string
+  for (const link of await links.all()) await expect(link).toHaveAttribute('href', uri);
+});
+
+// preserve real whitespace at a soft-wrap boundary instead of extending the URL
+test('does not append the next wrapped word after a URL delimiter', async ({ page }) => {
+  const uri = 'https://example.com/path';
+  await page.goto('/');
+  await page.setContent('<div id="output-links"></div>');
+  await page.evaluate(async uri => {
+    const { renderOutputLinkText } = await import('/e2e/output-links-fixture.ts');
+    await renderOutputLinkText(document.querySelector<HTMLElement>('#output-links')!, `Visit ${uri} next word`, 31);
+  }, uri);
+  const links = page.getByRole('link', { name: `Open ${uri}`, exact: true });
+  await expect(links).toHaveCount(1);
+  await expect(links).toHaveAttribute('href', uri);
+});
+
 test('keeps native output links stable, clickable, and available to the context menu', async ({ page }) => {
   await page.goto('/');
   await page.setContent('<div id="output-links"></div>');

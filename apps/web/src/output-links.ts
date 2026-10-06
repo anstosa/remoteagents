@@ -1,6 +1,8 @@
 import type { IBufferRange, Terminal as XTerm } from '@xterm/xterm';
 
 const outputUrl = /(https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/;
+// retain punctuation and incomplete schemes at captured row boundaries
+const outputUrlFragment = /(?:https?|HTTPS?):[/]{0,2}[^\s"'!*(){}|\\^<>`]*$/;
 const outputUrlContinuation = /^[^\s"'!*(){}|\\^<>`]/;
 // recognize workspace-style file mentions
 const outputFile = /(?:^|[\s'"`(<\[])(@?(?:(?:file:\/\/)?(?:\/|\.{1,2}\/)?(?:[A-Za-z0-9_@.+-]+\/)+[A-Za-z0-9_@.+-]*[A-Za-z0-9_@+-]|(?:README|LICENSE|Dockerfile|Makefile)(?:\.[A-Za-z0-9_-]+)?|[A-Za-z0-9_@+-]+\.[A-Za-z0-9_-]{1,16})(?:#L\d+(?:-L\d+)?|:\d+(?::\d+)?)?)/u;
@@ -46,14 +48,11 @@ const lineEndsAtRightEdge = (terminal: XTerm, line: number) => {
   return cell !== undefined && cell.getWidth() > 0 && cell.getChars() !== '';
 };
 
-const urlReachesEnd = (text: string) => {
-  const matcher = new RegExp(outputUrl.source, 'g');
-  for (let match = matcher.exec(text); match !== null; match = matcher.exec(text)) {
-    if (match.index + match[0].length === text.length) return true;
-  }
-  return false;
-};
+// require URL syntax before treating sentence punctuation as a captured wrap
+const urlReachesEnd = (text: string, nextText: string) => outputUrlFragment.test(text)
+  && (!/[?:,.]$/u.test(text) || /^[^\s]*[/?#&=%:]/u.test(nextText) || /^\d+(?:\s|$)/u.test(nextText));
 
+// detect output targets across native and inferred captured wraps
 export const terminalOutputLinks = (terminal: XTerm): OutputLink[] => {
   const buffer = terminal.buffer.active;
   const links: OutputLink[] = [];
@@ -65,7 +64,8 @@ export const terminalOutputLinks = (terminal: XTerm): OutputLink[] => {
     while (last + 1 < buffer.length) {
       const next = buffer.getLine(last + 1);
       const nextText = next?.translateToString(true) ?? '';
-      if (!next?.isWrapped && !(lineEndsAtRightEdge(terminal, last) && urlReachesEnd(text) && outputUrlContinuation.test(nextText))) break;
+      // infer captured wraps conservatively when native wrap flags are absent
+      if (!next?.isWrapped && !(lineEndsAtRightEdge(terminal, last) && urlReachesEnd(text, nextText) && outputUrlContinuation.test(nextText))) break;
       last += 1;
       text += nextText;
     }

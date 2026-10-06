@@ -49,6 +49,11 @@ const preserveWorkspacePress = (event: React.MouseEvent | React.PointerEvent) =>
   preserveContextMenuPress(event);
 };
 
+// read a detected http link from one output menu target
+const outputContextMenuUrl = (target: EventTarget | null) => target instanceof Element
+  ? target.closest<HTMLAnchorElement>('a.output-link-overlay:not([data-output-file-path])')?.href
+  : undefined;
+
 // reuse the sticky-note edit and delete glyphs across app controls
 const actionIconPaths = {
   pencil: 'm4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3',
@@ -5446,6 +5451,7 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
   const openTerminalContextMenu = (event: React.MouseEvent<HTMLElement>) => {
     const controller = selectionControllerRef.current;
     const selectedText = controller?.getSelectedText() ?? '';
+    const linkUrl = outputContextMenuUrl(event.target);
     openSelectionContextMenu(event, {
       label: `Terminal ${name} actions`,
       modes: [
@@ -5455,6 +5461,7 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
       selectedText,
       selectAll: () => controller?.selectAll(),
       copy: () => controller?.copy(selectedText),
+      copyUrl: linkUrl === undefined ? undefined : () => copyText(linkUrl),
       paste: contents => { controller?.setMode('output'); if (contents.text) pasteTerminalRef.current?.(contents.text); },
       pastePlain: text => { controller?.setMode('output'); pasteTerminalRef.current?.(text); },
       selectionActions: workspaceSelectionActions
@@ -6187,6 +6194,7 @@ function Log({ id, onTurnOff, embedded = false, onQuestion, onMetadata, header, 
   const openOutputContextMenu = (event: MouseEvent) => {
     const controller = selectionControllerRef.current;
     const selectedText = controller?.getSelectedText() ?? '';
+    const linkUrl = outputContextMenuUrl(event.target);
     const promptInput = Array.from(document.querySelectorAll<HTMLTextAreaElement>('textarea[data-prompt-id]')).find(input => input.dataset.promptId === id);
     const hasPrompt = !embedded && promptInput !== undefined;
     openSelectionContextMenu(event, {
@@ -6199,6 +6207,7 @@ function Log({ id, onTurnOff, embedded = false, onQuestion, onMetadata, header, 
       selectedText,
       selectAll: () => controller?.selectAll(),
       copy: () => controller?.copy(selectedText),
+      copyUrl: linkUrl === undefined ? undefined : () => copyText(linkUrl),
       paste: contents => { controller?.setMode('output'); if (contents.text) pasteOutputRef.current?.(contents.text); },
       pastePlain: text => { controller?.setMode('output'); pasteOutputRef.current?.(text); },
       selectionActions: workspaceSelectionActions
