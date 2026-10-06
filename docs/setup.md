@@ -187,9 +187,19 @@ container-local or direct headless Review runs and ChatGPT account management
 use; `RAC_CODEX_BIN` overrides it. Headless Claude Review runs likewise use
 `adapters.claude.program`, overridden by `RAC_CLAUDE_BIN`. A host-tmux update advisor instead uses
 `RAC_HOST_CODEX_BIN`, falling back to the host-side `adapters.codex.program`.
+The advisor inherits `adapters.codex.args` and `adapters.codex.env`, including
+account/profile selection, even with an executable override. Its approval,
+sandbox, terminal, and working-directory flags replace conflicting adapter
+flags so the review stays in the server checkout. `setup` runs only when the
+advisor uses the configured executable.
 With neither applicable value set, the Codex-only feature reports unavailable
 rather than spawning a bare `codex` from `PATH`. The **Global settings** flyout
 shows the ChatGPT accounts section only when `adapters.codex` is configured.
+
+If the installed Codex supports `--no-daemon`, add it to `adapters.codex.args`
+to keep normal Codex launches and the advisor off the shared background server.
+This is useful after switching accounts when that server still holds the
+previous login. Existing agents are not restarted by this setting.
 
 The console remembers the last kind launched in each worktree (and in Scratch)
 and offers it first next time; with a single configured kind that is simply that

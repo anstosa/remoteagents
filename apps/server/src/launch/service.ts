@@ -66,17 +66,19 @@ export type ReviewRunLaunch = { runId: string; label: string; extraArgs: string[
 const reviewRunIdPattern = /^[A-Za-z0-9_-]{8,64}$/u;
 
 // Drop the replaced flags from the operator's arguments, each with its value (a following
-// token that is not itself a flag, or an attached `--flag=value`), so a run's own flag
+// token that is not itself a flag, or an attached `--flag=value`/`-fvalue`), so a run's own flag
 // never doubles an operator one: Codex refuses a repeated `--sandbox` or `--model`.
 export function withoutFlags(args: string[], flags: ReadonlyMap<string, ReplacedFlagValue>): string[] {
   const kept: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     const attached = argument.startsWith('--') && argument.includes('=');
-    const value = flags.get(attached ? argument.slice(0, argument.indexOf('=')) : argument);
+    // short value options also accept -fvalue and -f=value
+    const attachedShort = /^-[^-].+/u.test(argument) && flags.get(argument.slice(0, 2)) === 'one';
+    const value = flags.get(attached ? argument.slice(0, argument.indexOf('=')) : attachedShort ? argument.slice(0, 2) : argument);
     if (value === undefined) { kept.push(argument); continue; }
     // an attached value or a bare switch takes nothing more
-    if (attached || value === 'none') continue;
+    if (attached || attachedShort || value === 'none') continue;
     // consume the value token(s); a following flag is a separate argument
     while (index + 1 < args.length && !args[index + 1]!.startsWith('-')) { index += 1; if (value === 'one') break; }
   }
@@ -108,6 +110,13 @@ export const scratchLabel = scratchPlaceLabel;
 const placeSessionName = (place: Pick<Place, 'home' | 'hostPath'>): string => worktreeSessionName(placeHostRoot(place)).replaceAll('.', '_');
 // allow approved host repairs and verification
 const updateAdvisorArgs = ['--dangerously-bypass-approvals-and-sandbox', '--no-alt-screen'];
+// preserve account options while keeping the advisor's policy and fixed checkout
+const updateAdvisorReplacedFlags = new Map<string, ReplacedFlagValue>([
+  ['-s', 'one'], ['--sandbox', 'one'], ['-a', 'one'], ['--ask-for-approval', 'one'],
+  ['--dangerously-bypass-approvals-and-sandbox', 'none'], ['--yolo', 'none'],
+  ['--full-auto', 'none'], ['--approve-for-me', 'none'], ['--no-alt-screen', 'none'],
+  ['-C', 'one'], ['--cd', 'one'], ['--worktree', 'none']
+]);
 
 export class LaunchService {
   private pending = new Set<string>();
@@ -419,10 +428,11 @@ export class LaunchService {
     const program = this.codexProgram();
     // report unavailable when no Codex binary is configured
     if (program === undefined) return false;
-    // the advisor launches the codex kind, so it gets the same pre-launch repair —
-    // but only when its resolved program is the configured one
+    // share normal codex account settings even with a host executable override
     const configured = this.config.adapters.codex;
-    const command = composeLaunch(program, updateAdvisorArgs, [], {}, {}, program === configured?.program ? configured.setup : undefined);
+    const operatorArgs = withoutFlags(configured?.args ?? [], updateAdvisorReplacedFlags);
+    // setup remains tied to its configured executable
+    const command = composeLaunch(program, [], operatorArgs, {}, configured?.env, program === configured?.program ? configured.setup : undefined, updateAdvisorArgs);
     const label = updateAdvisorPendingLabel(targetSha);
     // the advisor is a modal flow, never part of a Place: its own uniquely named session every time
     const key = `advisor:${repository}:${label}`;

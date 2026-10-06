@@ -221,6 +221,53 @@ describe('LaunchService', () => {
     expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%5', '@rac_display_label', 'Update Advisor Starting v4 2222222']);
   });
 
+  // account selection survives both the host bridge and the local runner
+  it.each(['host', 'local'] as const)('keeps the configured Codex account for a %s update advisor', async transport => {
+    const root = await mkdtemp(join(tmpdir(), 'rac-advisor-account-'));
+    tempDirs.push(root);
+    // exercise executable overrides without changing the account configuration
+    process.env.RAC_CODEX_BIN = '/container/bin/codex';
+    process.env.RAC_HOST_CODEX_BIN = '/host/bin/codex';
+    // select the launch transport
+    if (transport === 'host') process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    else delete process.env.RAC_HOST_TMUX_DIR;
+    // return a pane for the advisor label
+    run.mockResolvedValue({ code: 0, stdout: '%5', stderr: '' });
+    const config = { adapters: { codex: { program: codexProgram, args: ['--profile', 'selected', '-c', 'model_provider="openai"', '--no-daemon'], env: { CODEX_HOME: '/accounts/selected' }, launchable: true } }, projects: [] };
+    const service = new LaunchService(config as never, undefined, undefined, undefined, undefined, undefined, undefined, undefined, root);
+
+    await expect(service.launchUpdateAdvisor('/repo', '2'.repeat(40))).resolves.toBe(true);
+
+    const launch = run.mock.calls[0]?.[1] as string[];
+    // inspect the actual host bootstrap or local descriptor
+    const bootstrap = transport === 'host' ? launch.at(-1)! : (JSON.parse(await readFile(launch.at(-1)!, 'utf8')) as { args: string[] }).args.at(-1)!;
+    expect(bootstrap).toContain('CODEX_HOME=/accounts/selected');
+    expect(bootstrap).toContain('--profile selected');
+    expect(bootstrap).toContain('model_provider="openai"');
+    expect(bootstrap).toContain('--no-daemon');
+    expect(bootstrap).toContain(transport === 'host' ? '/host/bin/codex' : '/container/bin/codex');
+    expect(bootstrap).toContain('--dangerously-bypass-approvals-and-sandbox --no-alt-screen');
+  });
+
+  // advisor-owned flags replace conflicting normal-agent options
+  it('retains account settings without duplicating advisor flags or changing its checkout', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    delete process.env.RAC_HOST_CODEX_BIN;
+    run.mockResolvedValue({ code: 0, stdout: '%5', stderr: '' });
+    const args = Object.freeze(['--profile=selected', '--sandbox', 'workspace-write', '-s', 'read-only', '-sread-only', '--ask-for-approval=on-request', '-a', 'never', '-anever', '--full-auto', '--approve-for-me', '--yolo', '--dangerously-bypass-approvals-and-sandbox', '--no-alt-screen', '--cd=/elsewhere', '-C', '/other', '-C=/elsewhere', '-C/elsewhere', '--worktree']);
+    const config = { adapters: { codex: { program: codexProgram, args, env: {}, launchable: true } }, projects: [] };
+    const service = new LaunchService(config as never);
+
+    await expect(service.launchUpdateAdvisor('/repo', '2'.repeat(40))).resolves.toBe(true);
+
+    const bootstrap = (run.mock.calls[0]?.[1] as string[]).at(-1)!;
+    expect(bootstrap).toContain(`${codexProgram} --profile=selected --dangerously-bypass-approvals-and-sandbox --no-alt-screen`);
+    expect(bootstrap).not.toContain('workspace-write');
+    expect(bootstrap).not.toContain('read-only');
+    expect(bootstrap).not.toContain('/elsewhere');
+    expect(bootstrap).not.toContain('/other');
+  });
+
   it('gives the host update advisor the configured codex setup, but not when RAC_HOST_CODEX_BIN overrides the program', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
