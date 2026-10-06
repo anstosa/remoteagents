@@ -427,7 +427,8 @@ export class DiscoveryService {
   // drop the Worktree and dashboard caches so the next read re-runs `git worktree list` and
   // rebuilds — called after a console add/remove and after a pin toggle. The epoch bump makes
   // any scan already in flight (which read the old pins) stale, so it cannot re-stamp the cache.
-  invalidateWorktrees(): void { this.worktreesRefreshedAt = 0; this.worktreesEpoch += 1; this.dashboardSnapshot = undefined; }
+  // also drops cached git metadata: every caller just changed a checkout's branch or status
+  invalidateWorktrees(): void { this.worktreesRefreshedAt = 0; this.worktreesEpoch += 1; this.dashboardSnapshot = undefined; this.gitMetadata.clear(); this.gitMetadataInFlight.clear(); }
 
   private async discoverWorktrees(): Promise<{ worktrees: Worktree[]; stale: Map<string, string[]>; pins: Record<string, boolean> }> {
     const pins = (await this.pinStore?.pins()) ?? {};
@@ -589,7 +590,8 @@ export class DiscoveryService {
       // coalesce matching repository scans
       if (active !== undefined) return active;
       const value = gitMeta(workspace, true).then(meta => {
-        this.gitMetadata.set(workspace, { refreshedAt: Date.now(), value: meta });
+        // a scan begun before invalidateWorktrees() read the old checkout; do not cache it
+        if (this.gitMetadataInFlight.get(workspace) === value) this.gitMetadata.set(workspace, { refreshedAt: Date.now(), value: meta });
         return meta;
       }).finally(() => {
         // release only the matching scan

@@ -1105,6 +1105,25 @@ describe('DiscoveryService Places', () => {
     }
   });
 
+  it("publishes an Agent's new branch on the first dashboard after invalidateWorktrees()", async () => {
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), 'rac-scratch-')));
+    try {
+      const checkout = join(scratch, 'tool');
+      execFileSync('/usr/bin/git', ['init', '--quiet', '--initial-branch', 'probe', checkout]);
+      execFileSync('/usr/bin/git', ['-C', checkout, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--quiet', '--allow-empty', '-m', 'init']);
+      const discovery = new DiscoveryService(socketFinder(), agentPanes(checkout) as never, processInspector(), undefined, undefined, [], { pins: async () => ({}) }, listImpl({}), scratch);
+      expect((await discovery.dashboard()).agents[0]).toMatchObject({ branch: 'probe' });
+
+      // a branch switch inside the git metadata cache window, as the PR fly-out does
+      execFileSync('/usr/bin/git', ['-C', checkout, 'switch', '--quiet', '-c', 'switched']);
+      discovery.invalidateWorktrees();
+
+      expect((await discovery.dashboard()).agents[0]).toMatchObject({ branch: 'switched' });
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
   it('lists directory-Project and Scratch Places with their Console-shell counts and pins', async () => {
     const tmux = paneLister([
       { paneId: '%1', sessionId: '$0', pid: 11, path: '/data/notes/2026', command: 'zsh', role: 'shell', title: '' },
