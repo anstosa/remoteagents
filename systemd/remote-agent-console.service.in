@@ -15,16 +15,13 @@ Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=20s
 
-# The console intentionally needs the operator's home, Git repositories,
-# process tree, and tmux sockets. Keep the remaining system access read-only.
-# /tmp must stay shared and writable: launch descriptors are written to
-# /tmp/remote-agent-console-<uid> and read back by the user's tmux server,
-# which runs outside this unit's mount namespace.
+# No ProtectSystem= or other namespacing: in a user unit it implies a private
+# user namespace where root-owned files appear owned by nobody, and ssh then
+# rejects /etc/ssh config, breaking every in-process `git fetch` over SSH.
+# /tmp must stay shared: launch descriptors are written to
+# /tmp/remote-agent-console-<uid> and read back by the user's tmux server.
 NoNewPrivileges=true
 PrivateTmp=false
-ProtectSystem=strict
-ProtectHome=false
-ReadWritePaths=@REPOSITORY@ @CODEX_HOME@ /tmp
 
 [Install]
 WantedBy=default.target

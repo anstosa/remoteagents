@@ -741,9 +741,9 @@ when anything is ambiguous or unwritable — a bare program name that resolves t
 shell alias or is not on `PATH`, worktree entries that disagree on the launch
 binary, a `launch` template placeholder, both `worktrees` and `projects` present,
 a corrupt `.data` file, or a target the server cannot write. Fix an unwritable
-target by adding its path to the systemd unit's `ReadWritePaths` or mounting it
-read-write under Docker, by moving the config somewhere writable and pointing
-`RAC_CONFIG` at it, or by running `pnpm config:migrate` as above. To undo a
+target by mounting it read-write under Docker, by moving the config somewhere
+writable and pointing `RAC_CONFIG` at it, or by running `pnpm config:migrate` as
+above. To undo a
 migration, restore each `*.pre-projects.bak` over its file and restart.
 
 The default server listener is `127.0.0.1:8787`; `/healthz` is loopback-only and reveals only `{ "ok": true }`. Do not put passwords, prompts, session cookies, CSRF tokens, or WebSocket tickets in configuration or logs.

@@ -235,7 +235,7 @@ export async function runMigration(deps: MigrationDeps): Promise<MigrationReport
   if (errors.length > 0) throw new MigrationError(errors);
   const changedFiles = planned.filter(entry => entry.changed).map(entry => entry.store.file);
   const unwritable = await unwritableTargets(deps, changedFiles);
-  if (unwritable.length > 0) throw new MigrationError([...unwritable, 'fix: add the path to systemd ReadWritePaths or mount it rw under Docker; or move the config somewhere writable and point RAC_CONFIG at it; or run `pnpm config:migrate` as a user who can write it']);
+  if (unwritable.length > 0) throw new MigrationError([...unwritable, 'fix: mount it rw under Docker; or move the config somewhere writable and point RAC_CONFIG at it; or run `pnpm config:migrate` as a user who can write it']);
   // backups first (config included), then data files, then the config last
   const backups: string[] = [];
   const configBackup = await backup(deps.configWritePath ?? deps.configPath, await readFile(deps.configPath, 'utf8'));

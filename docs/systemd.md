@@ -66,20 +66,15 @@ Container-only variables (`RAC_HOST_PROC`, `RAC_HOST_TMUX_DIR`,
 `RAC_HOST_TMUX_SOURCE`, and `RAC_HOST_UID`) must be omitted. The native server
 uses `/proc` and the current user's tmux socket automatically.
 
-The unit hardens the service with `ProtectSystem=strict`, so only the paths in
-`ReadWritePaths` are writable. `/tmp` is included because the server hands
-launch descriptors to tmux through `/tmp/remote-agent-console-<uid>`, and
-`PrivateTmp` stays off so the user's tmux server can read them. If you
-customize the unit, keep both settings; otherwise starting an agent fails with
+The unit does not use `ProtectSystem=` or other filesystem namespacing. In a
+user unit those options imply a private user namespace in which root-owned files
+appear owned by `nobody`, and ssh then refuses `/etc/ssh/ssh_config.d/*`
+(`Bad owner or permissions`), so the server's in-process `git fetch` for
+checking out a pull request fails. The service runs as you and already cannot
+write system paths. `PrivateTmp` stays off because the server hands launch
+descriptors to tmux through `/tmp/remote-agent-console-<uid>`; turning it on
+makes starting an agent fail with
 `ENOENT: no such file or directory, mkdir '/tmp/remote-agent-console-<uid>'`.
-
-The one-time `worktrees[]` → Projects migration (see
-[setup.md](./setup.md#migrating-from-worktrees)) rewrites the config file and
-the `.data` stores in place on first boot, so both must be inside
-`ReadWritePaths`. If the config lives outside the repo (a path you point
-`RAC_CONFIG` at), either add its directory to `ReadWritePaths` for that one boot
-or run `pnpm config:migrate "$RAC_CONFIG"` as your user before starting the
-service; the migration refuses to boot rather than start unmigrated.
 
 ## Install the user service
 

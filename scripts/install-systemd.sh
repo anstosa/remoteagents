@@ -19,9 +19,8 @@ if [[ -z "$node_binary" || ! -x "$node_binary" ]]; then
 fi
 node_binary="$(readlink -f "$node_binary")"
 # A mise (or asdf) shim is a symlink to the version manager itself, so the
-# resolved path is the manager binary rather than Node. Running it under
-# systemd's hardened sandbox fails when the manager writes to a read-only /tmp.
-# Ask the manager for the real Node executable instead.
+# resolved path is the manager binary rather than Node. Ask the manager for
+# the real Node executable instead.
 if [[ "$(basename "$node_binary")" != node* ]]; then
   if command -v mise >/dev/null 2>&1; then
     node_binary="$(mise which node)"
@@ -31,20 +30,18 @@ if [[ "$(basename "$node_binary")" != node* ]]; then
   fi
 fi
 
-codex_home="${CODEX_HOME:-$HOME/.codex}"
 executable_path="$(dirname "$node_binary"):$HOME/.local/share/mise/shims:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 escape_sed() {
   printf '%s' "$1" | sed 's/[&|]/\\&/g'
 }
 
-mkdir -p "$unit_directory" "$codex_home"
+mkdir -p "$unit_directory"
 sed \
   -e "s|@REPOSITORY@|$(escape_sed "$repository")|g" \
   -e "s|@ENVIRONMENT_FILE@|$(escape_sed "$environment_file")|g" \
   -e "s|@EXECUTABLE_PATH@|$(escape_sed "$executable_path")|g" \
   -e "s|@NODE@|$(escape_sed "$node_binary")|g" \
-  -e "s|@CODEX_HOME@|$(escape_sed "$codex_home")|g" \
   "$template" > "$unit_file"
 chmod 600 "$unit_file"
 
