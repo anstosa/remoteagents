@@ -461,7 +461,8 @@ describe('DiscoveryService dashboard', () => {
     const blocked = new Promise<void>(resolve => { releaseSecond = resolve; });
     const started = new Promise<void>(resolve => { startedSecond = resolve; });
     let calls = 0;
-    const pullRequests = {
+    // stateless PR responses need no cache invalidation
+    const pullRequests = { invalidateRepositories: () => {},
       // hold the second agent after the first agent has finished enrichment
       cachedPullRequest: async () => {
         calls += 1;
@@ -474,7 +475,7 @@ describe('DiscoveryService dashboard', () => {
     const service = new DiscoveryService(socketFinder(), paneLister([
       { paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Ready' },
       { paneId: '%2', sessionId: '$1', pid: 124, path: '/tmp', title: 'Ready' }
-    ]) as never, processInspector(), pullRequests as never);
+    ]) as never, processInspector(), pullRequests);
     try {
       const building = service.dashboard();
       await started;
@@ -644,6 +645,7 @@ describe('DiscoveryService dashboard', () => {
     expect(inspections).toBe(1);
   });
 
+  // force refreshes must bypass a still-valid dashboard snapshot
   it('forces a fresh dashboard for lifecycle revalidation', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     let title = 'Ready';
@@ -653,15 +655,21 @@ describe('DiscoveryService dashboard', () => {
     const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
-    const first = await service.dashboard();
-    title = '⠋ Working';
-    const cached = await service.dashboard();
-    const fresh = await service.dashboard(true);
+    // slow subprocesses must not accidentally expire the cache under test
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+    try {
+      const first = await service.dashboard();
+      title = '⠋ Working';
+      const cached = await service.dashboard();
+      const fresh = await service.dashboard(true);
 
-    expect(first.agents[0]?.title).toBe('Ready');
-    expect(cached.agents[0]?.title).toBe('Ready');
-    expect(fresh.agents[0]?.title).toBe('⠋ Working');
-    expect(listings).toBe(2);
+      expect(first.agents[0]?.title).toBe('Ready');
+      expect(cached.agents[0]?.title).toBe('Ready');
+      expect(fresh.agents[0]?.title).toBe('⠋ Working');
+      expect(listings).toBe(2);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('forces discovery after an older scan already in flight', async () => {
@@ -741,7 +749,8 @@ describe('DiscoveryService dashboard', () => {
     const finder = { find: async () => [socket] };
     const tmux = { markSessionPlace: async () => true, listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title }] };
     const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
-    const pullRequests = { cachedPullRequest: async () => {
+    // stateless PR responses need no cache invalidation
+    const pullRequests = { invalidateRepositories: () => {}, cachedPullRequest: async () => {
       pullRequestLookups += 1;
       // hold only the older dashboard after it captured Ready
       if (pullRequestLookups === 1) {
@@ -750,7 +759,7 @@ describe('DiscoveryService dashboard', () => {
       }
       return undefined;
     } };
-    const service = new DiscoveryService(finder, tmux as never, processes, pullRequests as never);
+    const service = new DiscoveryService(finder, tmux as never, processes, pullRequests);
 
     const older = service.dashboard(false, true);
     await firstLookupStarted;
@@ -804,10 +813,12 @@ describe('DiscoveryService dashboard', () => {
     expect(listings).toBe(2);
   });
 
+  // concurrent enrichment and the next cached read share one dashboard
   it('coalesces concurrent dashboard enrichment so slow polls cannot accumulate', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'rac-dashboard-'));
     let lookups = 0;
-    const pullRequests = {
+    // stateless PR responses need no cache invalidation
+    const pullRequests = { invalidateRepositories: () => {},
       cachedPullRequest: async () => {
         lookups += 1;
         await new Promise(resolve => setTimeout(resolve, 10));
@@ -815,8 +826,10 @@ describe('DiscoveryService dashboard', () => {
       }
     };
     const project = testProject({ id: 'slow', label: 'Slow', path: workspace });
-    const service = new DiscoveryService({ find: async () => [] }, { markSessionPlace: async () => true, listPanes: async () => [] } as never, { recognizeAgent: async () => undefined }, pullRequests as never, undefined, [project], undefined, listImpl({ [workspace]: [entry(workspace, 'main')] }));
+    const service = new DiscoveryService({ find: async () => [] }, { markSessionPlace: async () => true, listPanes: async () => [] } as never, { recognizeAgent: async () => undefined }, pullRequests, undefined, [project], undefined, listImpl({ [workspace]: [entry(workspace, 'main')] }));
 
+    // isolate coalescing from elapsed subprocess time
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
     try {
       const [first, second] = await Promise.all([service.dashboard(), service.dashboard()]);
       const third = await service.dashboard();
@@ -824,7 +837,7 @@ describe('DiscoveryService dashboard', () => {
       expect(first).toBe(second);
       expect(third).toBe(first);
       expect(lookups).toBe(1);
-    } finally { await rm(workspace, { recursive: true, force: true }); }
+    } finally { clock.mockRestore(); await rm(workspace, { recursive: true, force: true }); }
   });
 
   // keep git worktree discovery cached during live pane refreshes

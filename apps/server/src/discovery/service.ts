@@ -84,6 +84,10 @@ export async function gitUpstreamSummary(workspace: string, command: GitCommand 
   return { upstream: name, ahead, behind };
 }
 type GitMeta = { workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary };
+// retain one pending or completed root lookup until expiry
+type RootLookup = { expiresAt: number; value: Promise<string> };
+// discovery requires both PR reads and checkout invalidation
+type PullRequestLookup = Pick<PullRequestService, 'cachedPullRequest' | 'invalidateRepositories'>;
 // resolve one pane path to its repository root
 export async function workspaceRoot(path: string): Promise<string> {
   const canonical = await realpath(path).catch(() => path);
@@ -135,6 +139,9 @@ export class DiscoveryService {
   private readonly serverStartedAt = Date.now();
   private refreshedAt = 0;
   private refreshInFlight?: Promise<Agent[]>;
+  // pending scans and completed snapshots keep separate checkout generations
+  private refreshEpoch = -1;
+  private snapshotEpoch = -1;
   private socketSnapshot: SocketRef[] = [];
   private socketsRefreshedAt = 0;
   private socketRefreshInFlight?: Promise<SocketRef[]>;
@@ -155,6 +162,8 @@ export class DiscoveryService {
   private worktreesInFlightEpoch = -1;
   private readonly gitMetadata = new Map<string, { refreshedAt: number; value: GitMeta }>();
   private readonly gitMetadataInFlight = new Map<string, Promise<GitMeta>>();
+  // cache canonical roots by raw pane cwd so symlink changes expire too
+  private readonly workspaceRoots = new Map<string, RootLookup>();
   // expire PR comparisons with their metadata snapshot, including checkout invalidation
   private readonly gitPrComparisons = new WeakMap<GitMeta, Map<string, Promise<GitComparisonSummary | undefined>>>();
   // a workspace's common git dir (null = none); Projects are static, so repository
@@ -163,7 +172,8 @@ export class DiscoveryService {
   private readonly commonDirCache = new Map<string, string | null>();
   private static readonly refreshCacheMs = 2_000;
   private static readonly gitMetadataCacheMs = 30_000;
-  constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService(), private readonly adapters: AdapterConfigs = {}, private readonly projects: Project[] = [], private readonly pinStore?: Pick<WorktreeLaunchStore, 'pins'> & Partial<Pick<WorktreeLaunchStore, 'keys' | 'labels'>>, private readonly listWorktreesImpl: (path: string) => Promise<WorktreeEntry[] | undefined> = listWorktrees, private readonly scratchDirectory?: string) {}
+  // accept only the PR operations used by discovery
+  constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests: PullRequestLookup = new PullRequestService(), private readonly adapters: AdapterConfigs = {}, private readonly projects: Project[] = [], private readonly pinStore?: Pick<WorktreeLaunchStore, 'pins'> & Partial<Pick<WorktreeLaunchStore, 'keys' | 'labels'>>, private readonly listWorktreesImpl: (path: string) => Promise<WorktreeEntry[] | undefined> = listWorktrees, private readonly scratchDirectory?: string) {}
   // every configured Place over this Worktree set: the Worktrees, the directory Projects and the Scratch folder
   private async places(worktrees: readonly Worktree[]): Promise<Place[]> {
     this.scratchHomeValue ??= scratchHome(this.scratchDirectory, this.projects);
@@ -186,7 +196,7 @@ export class DiscoveryService {
     await Promise.all([...this.unmarkedSessions].map(async ([key, sessionPanes]) => {
       const agentHome = sessionPanes.map(pane => agentHomes.get(`${pane.socket.fingerprint}:${pane.paneId}`)).find(home => home !== undefined);
       const claimant = sessionPanes.find(pane => pane.role === 'shell') ?? sessionPanes.find(pane => pane.consoleManaged === true);
-      const root = agentHome ?? (claimant === undefined ? undefined : await workspaceRoot(claimant.path));
+      const root = agentHome ?? (claimant === undefined ? undefined : await this.cachedWorkspaceRoot(claimant.path));
       if (root === undefined) return;
       const place = placeForRoot(places, root);
       const { socket, sessionId } = sessionPanes[0]!;
@@ -215,17 +225,47 @@ export class DiscoveryService {
   }
   // read agent state, optionally bypassing cache or forcing a separate scan
   async refresh(force = false, fresh = false): Promise<Agent[]> {
-    // finish older scans before a forced read
-    if (force && this.refreshInFlight) await this.refreshInFlight;
+    // finish older scans before a forced or post-checkout read
+    if (this.refreshInFlight && (force || this.refreshEpoch !== this.worktreesEpoch)) await this.refreshInFlight;
     // reuse only ordinary fresh snapshots
-    if (!force && !fresh && Date.now() - this.refreshedAt < DiscoveryService.refreshCacheMs) return this.snapshot;
+    if (!force && !fresh && this.snapshotEpoch === this.worktreesEpoch && Date.now() - this.refreshedAt < DiscoveryService.refreshCacheMs) return this.snapshot;
     // coalesce matching live scans
     if (this.refreshInFlight) return this.refreshInFlight;
+    this.refreshEpoch = this.worktreesEpoch;
     this.refreshInFlight = this.discover(force).finally(() => { this.refreshInFlight = undefined; });
     return this.refreshInFlight;
   }
+  // share root resolution across panes without retaining stale checkout identities
+  private cachedWorkspaceRoot(path: string): Promise<string> {
+    const now = Date.now();
+    const cached = this.workspaceRoots.get(path);
+    // pending and settled lookups share the same promise
+    if (cached !== undefined && cached.expiresAt > now) return cached.value;
+    // discard expired paths when a pane visits a new or expired directory
+    for (const [key, entry] of this.workspaceRoots) {
+      // pending commands remain coalesced until they settle
+      if (entry.expiresAt <= now) this.workspaceRoots.delete(key);
+    }
+    const entry: RootLookup = {
+      expiresAt: Infinity,
+      // the cache window starts when canonicalization and git finish
+      value: workspaceRoot(path).then(root => {
+        entry.expiresAt = Date.now() + DiscoveryService.gitMetadataCacheMs;
+        return root;
+      }).catch(error => {
+        // a failed old generation must not delete a newer lookup
+        if (this.workspaceRoots.get(path) === entry) this.workspaceRoots.delete(path);
+        throw error;
+      })
+    };
+    this.workspaceRoots.set(path, entry);
+    return entry.value;
+  }
   // discover agents while reusing sockets unless the caller forces discovery
   private async discover(force = false): Promise<Agent[]> {
+    const epoch = this.worktreesEpoch;
+    // lifecycle-sensitive reads still revalidate roots, once per forced scan
+    if (force) this.workspaceRoots.clear();
     const sockets = await this.sockets(force);
     const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket)).map(pane => ({ ...pane, socket }))))).flat();
     const panePids = new Map<string, number>();
@@ -240,7 +280,7 @@ export class DiscoveryService {
         if (pane.reportedAttention !== undefined || pane.reportedSession !== undefined || pane.reportedSandboxed !== undefined || pane.reportedQuestion !== undefined) void this.tmux.unsetReportedState(pane.socket, pane.paneId).catch(() => {});
         return undefined;
       }
-      const home = await workspaceRoot(pane.path);
+      const home = await this.cachedWorkspaceRoot(pane.path);
       const id = `${pane.socket.fingerprint}:${pane.paneId}`;
       panePids.set(id, pane.pid);
       paneCwds.set(id, pane.path);
@@ -276,6 +316,7 @@ export class DiscoveryService {
       if (!panePids.has(id)) this.invalidateMessageQuestion(id);
     }
     this.refreshedAt = Date.now();
+    this.snapshotEpoch = epoch;
     this.generation++;
     return agents;
   }
@@ -420,8 +461,19 @@ export class DiscoveryService {
   // drop the Worktree and dashboard caches so the next read re-runs `git worktree list` and
   // rebuilds — called after a console add/remove and after a pin toggle. The epoch bump makes
   // any scan already in flight (which read the old pins) stale, so it cannot re-stamp the cache.
-  // also drops cached git metadata: every caller just changed a checkout's branch or status
-  invalidateWorktrees(): void { this.worktreesRefreshedAt = 0; this.worktreesEpoch += 1; this.dashboardSnapshot = undefined; this.gitMetadata.clear(); this.gitMetadataInFlight.clear(); }
+  // also drops checkout roots, origins and git metadata after branch or status changes
+  invalidateWorktrees(): void {
+    this.worktreesRefreshedAt = 0;
+    this.worktreesEpoch += 1;
+    this.refreshedAt = 0;
+    this.dashboardSnapshot = undefined;
+    this.dashboardRefreshInFlight = undefined;
+    this.gitMetadata.clear();
+    this.gitMetadataInFlight.clear();
+    this.workspaceRoots.clear();
+    this.commonDirCache.clear();
+    this.pullRequests.invalidateRepositories();
+  }
 
   private async discoverWorktrees(): Promise<{ worktrees: Worktree[]; stale: Map<string, string[]>; pins: Record<string, boolean> }> {
     const pins = (await this.pinStore?.pins()) ?? {};

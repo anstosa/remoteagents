@@ -10,6 +10,7 @@ type PullRequestChoiceCandidate = PullRequestChoice & { ownedByViewer: boolean }
 export type PullRequestChoice = { number: number; title: string; branch: string; headSha: string; headOnOrigin: boolean; draft: boolean; url: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
 export type OpenPullRequestChoices = { own: PullRequestChoice[]; others: PullRequestChoice[] };
 const cacheTtlMs = 60_000;
+const repositoryCacheTtlMs = 30_000;
 const failingCheckConclusions = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
 
 // identify rejected GitHub credentials
@@ -19,6 +20,7 @@ function githubAuthenticationFailure(error: unknown): boolean {
 
 export class PullRequestService {
   private readonly cache = new Map<string, { expiresAt: number; value?: PullRequestSummary; pending?: Promise<PullRequestSummary | undefined> }>();
+  private readonly repositories = new Map<string, { expiresAt?: number; pending: Promise<GithubRepository | undefined> }>();
   private token?: Promise<string | undefined>;
   private viewer?: Promise<string>;
   private readonly github: GithubClient;
@@ -96,6 +98,9 @@ export class PullRequestService {
     return repository === undefined ? undefined : `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/actions`;
   }
 
+  // discard dashboard origin lookups after checkout changes
+  invalidateRepositories(): void { this.repositories.clear(); }
+
   /**
    * Dashboard rendering must not wait on GitHub. It can use a previous URL,
    * start a refresh when needed, and pick up the result on its next poll.
@@ -106,7 +111,7 @@ export class PullRequestService {
 
   private async lookupCached(workspace: string, branch?: string): Promise<{ expiresAt: number; value?: PullRequestSummary; pending?: Promise<PullRequestSummary | undefined> } | undefined> {
     if (!branch) return undefined;
-    const repository = await this.repository(workspace);
+    const repository = await this.cachedRepository(workspace);
     if (repository === undefined) return undefined;
     const key = `${repository.owner}/${repository.name}:${branch}`;
     const cached = this.cache.get(key);
@@ -119,6 +124,31 @@ export class PullRequestService {
     const refreshing = { expiresAt: this.now() + cacheTtlMs, ...(cached?.value === undefined ? {} : { value: cached.value }), pending };
     this.cache.set(key, refreshing);
     return refreshing;
+  }
+
+  // reuse bounded origin discovery for dashboard refreshes
+  private async cachedRepository(workspace: string): Promise<GithubRepository | undefined> {
+    const now = this.now();
+    const cached = this.repositories.get(workspace);
+    // reuse completed and pending origin discovery
+    if (cached !== undefined && (cached.expiresAt === undefined || cached.expiresAt > now)) return await cached.pending;
+    // prune expired workspaces on cache misses
+    for (const [key, entry] of this.repositories) {
+      // remove completed expired lookups
+      if (entry.expiresAt !== undefined && entry.expiresAt <= now) this.repositories.delete(key);
+    }
+    const entry: { expiresAt?: number; pending: Promise<GithubRepository | undefined> } = { pending: this.repository(workspace) };
+    entry.pending = entry.pending.then((repository) => {
+      // expire only the current generation after completion
+      if (this.repositories.get(workspace) === entry) entry.expiresAt = this.now() + repositoryCacheTtlMs;
+      return repository;
+    }, (error: unknown) => {
+      // retry only the rejected current generation
+      if (this.repositories.get(workspace) === entry) this.repositories.delete(workspace);
+      throw error;
+    });
+    this.repositories.set(workspace, entry);
+    return await entry.pending;
   }
 
   private async repository(workspace: string): Promise<GithubRepository | undefined> {
