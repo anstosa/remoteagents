@@ -179,9 +179,11 @@ they never use sudo or fall back to container permissions. Missing host Node,
 UID parity, or proc/tmux/checkout mapping is reported as an unavailable bridge.
 
 Files starts at the selected Place's host directory and can navigate anywhere
-the host account can access. Filename clicks open the browser Code preview;
-row-body clicks select entries. The configured native editor remains restricted
-to paths relative to its Place. Deletes are permanent and require confirmation.
+the host account can access. Filename clicks prefer the configured editor and
+fall back to the browser Code preview when it is unavailable; row-body clicks
+select entries. Files can open outside-worktree files in the editor using their
+session-bound object capabilities. Raw editor paths from Code and review jumps
+remain relative to their Place. Deletes are permanent and require confirmation.
 Favorites persist per exact Place in `.data/file-favorites.json`; operation
 recovery records persist separately in `.data/file-operation-journal.json`.
 

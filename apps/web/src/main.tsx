@@ -5254,9 +5254,10 @@ const endConsoleShell = async (placeId: string, pane: WorktreePane, confirmed = 
   } catch { return false; }
   finally { endingConsoleShells.delete(key); }
 };
-// open a new Console shell at a Place, running the configured editor when `editor` (at a file and
-// line, relative to the Place folder, when given one): its pane id, or the reason it could not
-const createPlaceShell = async (placeId: string, editor: boolean | EditorTarget = false): Promise<{ paneId: string } | { error: string }> => {
+// keep full-host Files capabilities separate from relative Code and review paths
+type EditorShellTarget = EditorTarget | { objectToken: string };
+// open a console shell with an optional configured-editor target
+const createPlaceShell = async (placeId: string, editor: boolean | EditorShellTarget = false): Promise<{ paneId: string } | { error: string }> => {
   const operationKey = `shell-create:${placeId}`;
   // keep new shells outside workspace shutdown snapshots
   if (!beginPendingOperation(operationKey, placeItemKey(placeId))) return { error: 'This workspace is busy. Try again after its current operation finishes.' };
@@ -5295,13 +5296,23 @@ const requestTerminalFocus = (placeId: string, terminal: OpenTerminal) => {
   if (focus === undefined) pendingTerminalFocus.set(terminal.paneId, now + terminalRequestWindowMs);
   else focus();
 };
-// Open the configured editor at a file and line (relative to the Place folder) in a new Console
-// shell, shown as a focused Terminal panel of the Place — the jump from a diff line, in the Code
-// panel or the guided review; returns the error when the shell could not be made.
-const openEditorShell = async (placeId: string, target: EditorTarget): Promise<string | undefined> => {
+// open a relative editor jump or token-bound host file in a focused terminal
+const openEditorShell = async (placeId: string, target: EditorShellTarget): Promise<string | undefined> => {
   const created = await createPlaceShell(placeId, target);
   if (!('paneId' in created)) return created.error;
-  const shell = (await listPlacePanes(placeId))?.find(pane => pane.paneId === created.paneId);
+  let panes = await listPlacePanes(placeId);
+  let shell = panes?.find(pane => pane.paneId === created.paneId);
+  // allow a stale first listing without persisting a confirmed missing Files editor
+  if ('objectToken' in target) {
+    // retry only successful listings that still omit the newly created pane
+    for (let retry = 0; retry < 2 && panes !== undefined && shell === undefined; retry += 1) {
+      await new Promise(resolve => window.setTimeout(resolve, 100 * (retry + 1)));
+      panes = await listPlacePanes(placeId);
+      shell = panes?.find(pane => pane.paneId === created.paneId);
+    }
+    // repeated successful absence means Code is the usable fallback
+    if (panes !== undefined && shell === undefined) return 'The editor terminal is no longer available.';
+  }
   requestTerminalFocus(placeId, { paneId: created.paneId, name: shell === undefined ? 'editor' : terminalPaneLabel(shell) });
   return undefined;
 };
@@ -6034,13 +6045,15 @@ function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNa
   const showAgent = () => { pendingWorkspaceJumps.set(key, 'agent'); setAgentSplitHidden(key, false); };
   // open the Stack panel (on `selection`, when given) and bring it into view
   const openStackPanel = (selection?: StackSelection) => { stackPanel.openOn(selection); pendingWorkspaceJumps.set(key, 'stack'); };
-  // the Code panel's jump to a line in the configured editor, opened beside it as a Terminal panel
+  // share configured-editor terminals between Code jumps and full-host Files entries
   const editorConfigured = useContext(EditorConfiguredContext);
   const placeId = place.id;
-  const openInEditor = !editorConfigured || placeId === undefined ? undefined : async (target: EditorTarget) => {
+  const openInEditor = !editorConfigured || placeId === undefined ? undefined : async (target: EditorShellTarget): Promise<boolean> => {
     expansion.restore();
     const failure = await openEditorShell(placeId, target);
-    if (failure !== undefined) onOperationFeedback?.({ tone: 'error', message: 'The editor did not open', detail: failure });
+    // preserve editor failure feedback while allowing a Files preview fallback
+    if (failure !== undefined) onOperationFeedback?.({ tone: 'error', message: 'objectToken' in target ? 'The editor did not open; trying Code instead' : 'The editor did not open', detail: failure });
+    return failure === undefined;
   };
   return { place, browser, files, code, stackPanel, openStackPanel, terminals, carousel, setCarousel, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded, agentHidden, showAgent, openInEditor, viewKey: key };
 }
@@ -6091,11 +6104,13 @@ function Workspace({ workspace, output, empty, git, onAddToPrompt, onOpenWorktre
   const browserPane = browser.url === undefined || browser.homeUrl === undefined ? null : <ProjectBrowserPane url={browser.url} homeUrl={browser.homeUrl} proxied={browser.proxied} worktreeId={place.id} navigationRequest={browser.navigationRequest} onNavigate={browser.navigate} onClose={browser.close} />;
   const review = git === undefined || (git.onReview === undefined && git.reviewUnavailable === undefined) ? undefined : { onReview: git.onReview, open: git.review !== undefined, generating: git.review?.generating === true, unavailable: git.reviewUnavailable };
   const openInEditor = workspace.openInEditor;
-  // open one token-bound host file and reveal its code split
-  const openFilesEntry = (entry: FileEntry) => {
-    // require a place-scoped preview endpoint
+  // prefer the configured editor and retain Code as the file-open fallback
+  const openFilesEntry = async (entry: FileEntry) => {
+    // require one place for editor and preview routing
     if (place.id === undefined) return;
     expansion.restore();
+    // keep host paths behind the server-validated object capability
+    if (openInEditor !== undefined && await openInEditor({ objectToken: entry.objectToken })) return;
     const mounted = code.open;
     code.openFilePreview(entry.hostPath, `/api/worktrees/${encodeURIComponent(place.id)}/files/preview`, { body: { objectToken: entry.objectToken }, source: 'files' });
     // wait one frame only when the code split must mount first

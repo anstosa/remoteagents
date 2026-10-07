@@ -311,6 +311,24 @@ export class HostFilesService {
     return { ...preview, path: selected.path, size, truncated: preview.truncated || size > bytes.length };
   }
 
+  // resolve one current regular file capability into its canonical host editor path
+  async editorFile(place: HostFilesPlace, session: HostFilesSession, objectToken: string): Promise<string> {
+    const selected = await this.objectToken(place, session, objectToken);
+    // accept only regular files and symlinks whose targets can be proven regular
+    if (selected.identity.kind !== 'file' && selected.identity.kind !== 'symlink') throw new HostFilesError('unsupported_type', 'object type cannot be opened in the editor', 422);
+    // a direct file already carries one freshly revalidated canonical host path
+    if (selected.identity.kind === 'file') return selected.path;
+    const target = await this.options.backend.request({ kind: 'inspect', path: selected.path, followSymlink: true });
+    // reject directory and special-object symlink targets
+    if (target.kind !== 'file') throw new HostFilesError('unsupported_type', 'object type cannot be opened in the editor', 422);
+    await this.objectToken(place, session, objectToken);
+    const currentTarget = await this.options.backend.request({ kind: 'inspect', path: selected.path, followSymlink: true });
+    // reject retargeted or replaced symlink destinations
+    if (currentTarget.path !== target.path || !sameIdentity(currentTarget, target)) throw new HostFilesError('stale_object', 'selected object changed', 409);
+    await this.objectToken(place, session, objectToken);
+    return selected.path;
+  }
+
   // list durable favorites with current availability and fresh tokens
   async listFavorites(place: HostFilesPlace, session: HostFilesSession): Promise<{ favorites: FavoriteView[] }> {
     const records = await this.favorites.list(place.id);

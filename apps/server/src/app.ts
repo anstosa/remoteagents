@@ -88,6 +88,8 @@ import { AgentUpdateService, type AgentUpdateServiceLike } from './agent-updates
 import { HostFilesService } from './host-files/service.js';
 import { createRuntimeHostFiles } from './host-files/runtime.js';
 import { registerHostFilesRoutes } from './host-files/routes.js';
+import { HostFilesError } from './host-files/contracts.js';
+import { HostFilesTransportError } from './host-files/protocol.js';
 
 export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; pullRequestReviews?: PullRequestReviewService; reviewStore?: ReviewTourStore; reviewRunner?: ReviewRunner; workspaceFiles?: WorkspaceFileService; hostFiles?: HostFilesService; comparison?: ComparisonService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; accountSpend?: ApiKeySpendService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'>; scheduleBootAt?: Date; paneStream?: PaneStreamProvider };
 // buildApp decorates the returned instance with the Schedule scheduler, so index.ts can start it and
@@ -2617,19 +2619,35 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // open a Console shell at the Place: beside its live Agent, else the session holding its
   // Console shells, else a fresh console session named for the Place (spec, Console shells)
   app.post('/api/worktrees/:id/shells', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
-    controlled(request, true);
+    const browserSession = controlled(request, true);
     const place = await resolvePlace((request.params as { id: string }).id);
     if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
-    const { name, editor, file, line } = body(request);
+    const { name, editor, file, line, objectToken } = body(request);
     if (name !== undefined && (typeof name !== 'string' || name.length > 120 || name.includes('\0') || /[\r\n]/u.test(name))) return reply.code(400).send({ error: 'invalid terminal name' });
     if (editor !== undefined && typeof editor !== 'boolean') return reply.code(400).send({ error: 'invalid editor flag' });
+    // accept Files capabilities only for configured-editor launches
+    if (objectToken !== undefined && (editor !== true || typeof objectToken !== 'string')) return reply.code(400).send({ error: 'invalid editor file selection' });
+    // keep capability launches distinct from legacy Place-relative file and line launches
+    if (objectToken !== undefined && (file !== undefined || line !== undefined)) return reply.code(400).send({ error: 'invalid editor file selection' });
     // the Editor button: a shell that runs the configured editor first, named for its program
     if (editor === true && config.editor === undefined) return reply.code(400).send({ error: 'no editor is configured' });
     // the guided review's jump to a line: a file inside the Place, opened at that line
     if ((file !== undefined || line !== undefined) && editor !== true) return reply.code(400).send({ error: 'a file opens only in the editor' });
     if (file !== undefined && !isPlaceRelativeFile(file)) return reply.code(400).send({ error: 'invalid file' });
     if (line !== undefined && (file === undefined || !Number.isSafeInteger(line) || (line as number) < 1)) return reply.code(400).send({ error: 'invalid line' });
-    const command = editor === true ? editorCommand(config.editor ?? '', file as string | undefined, line as number | undefined) : '';
+    let selectedFile = file as string | undefined;
+    // resolve opaque Files authority only after authentication, control and input validation
+    if (typeof objectToken === 'string') {
+      try { selectedFile = await hostFiles.editorFile(place, browserSession, objectToken); }
+      catch (error) {
+        // preserve stable public Files failures without exposing backend details
+        if (error instanceof HostFilesError) return reply.code(error.statusCode).send({ error: error.message });
+        // collapse broker transport failures to the existing unavailable response
+        if (error instanceof HostFilesTransportError) return reply.code(503).send({ error: 'host files bridge is unavailable' });
+        throw error;
+      }
+    }
+    const command = editor === true ? editorCommand(config.editor ?? '', selectedFile, line as number | undefined) : '';
     const paneId = await launch.createConsoleShell(place, typeof name === 'string' ? name : command === '' ? '' : basename(command.split(/\s+/u)[0]!), command);
     if (paneId === undefined) return reply.code(500).send({ error: 'could not open a terminal' });
     await dashboardUpdates.refresh().catch(() => undefined);

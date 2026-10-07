@@ -144,7 +144,7 @@ function FavoriteMenuRow({ favorite, busy, onOpen, onAcknowledge }: { favorite: 
 }
 
 // the full host files panel for one place
-export function FilesPanel({ controller, onOpenFile }: { controller: FilesController; onOpenFile: (entry: FileEntry) => void }) {
+export function FilesPanel({ controller, onOpenFile }: { controller: FilesController; onOpenFile: (entry: FileEntry) => void | Promise<void> }) {
   const phone = usePhoneLayout();
   const expanded = usePanelExpand('files')?.expanded === true;
   const [location, setLocation] = useState(controller.listing?.path ?? '');
@@ -188,13 +188,13 @@ export function FilesPanel({ controller, onOpenFile }: { controller: FilesContro
   // dismiss stale menu scopes after refresh, loading or sort changes
   useEffect(() => { closeMenus(); }, [closeMenus, controller.listing, controller.loading, controller.sort.column, controller.sort.direction]);
 
-  // open a directory or previewable file from either list or favorites
+  // open a directory or regular file from either list or favorites
   const activate = (entry: FileEntry) => {
     closeMenus();
     // navigate current directory targets
     if (isDirectory(entry)) { void controller.navigate(entry.hostPath); return; }
-    // open only regular file targets in code
-    if (isPreviewable(entry)) onOpenFile(entry);
+    // let the workspace choose the configured editor or Code fallback
+    if (isPreviewable(entry)) void onOpenFile(entry);
   };
 
   // submit the editable absolute host path

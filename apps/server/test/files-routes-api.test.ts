@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { createHostFilesEngine } from '../src/host-files/engine.js';
+import { HostFilesTransportError } from '../src/host-files/protocol.js';
 import { HostFilesService } from '../src/host-files/service.js';
 import type { Place } from '../src/places/places.js';
 import { testConfig, testProject, testWorktree } from './helpers/config.js';
@@ -21,7 +22,7 @@ afterEach(async () => {
 const url = (placeId: string, suffix: string) => `/api/worktrees/${encodeURIComponent(placeId)}${suffix}`;
 
 // build the real HTTP/auth boundary with only discovery and filesystem roots injected
-async function start() {
+async function start(options: { editor?: string; createConsoleShell?: ReturnType<typeof vi.fn> } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'rac-files-api-'));
   const home = join(root, 'host-home'); const outside = join(root, 'outside');
   await mkdir(home); await mkdir(outside);
@@ -32,15 +33,16 @@ async function start() {
     { id: 'scratch:/container/place', kind: 'scratch', projectId: 'scratch', label: 'Scratch', home: '/container/place', hostPath: home }
   ];
   const service = new HostFilesService({ backend: createHostFilesEngine('api-generation', { journalFile: join(root, 'journal.json'), favoritesFile: join(root, 'favorites.json') }), tokenSecret: 'api-fixture-token-secret-long-enough' });
-  const app = await buildApp(testConfig({ projects: [testProject({ path: '/container/place', hostPath: home })] }), {
+  const createConsoleShell = options.createConsoleShell ?? vi.fn(async () => '%editor');
+  const app = await buildApp(testConfig({ projects: [testProject({ path: '/container/place', hostPath: home })], ...(options.editor === undefined ? {} : { editor: options.editor }) }), {
     auth: await testAuthService(), hostFiles: service,
     discovery: { worktreesNow: () => [worktree], place: async (id: string) => places.find(place => place.id === id), dashboard: async () => ({ generation: 1, agents: [], adapters: {}, projects: [], places: [] }), target: async () => undefined } as never,
     dashboardUpdates: { setLoader: () => {}, refresh: async () => undefined, close: () => {} } as never,
     tmux: {} as never,
-    launch: { agentHome: () => root, launchResolutions: async () => new Map() } as never
+    launch: { agentHome: () => root, launchResolutions: async () => new Map(), createConsoleShell } as never
   });
   fixtures.push({ root, app });
-  return { root, home, outside, app, worktree, places, headers: await authenticatedHeaders(app) };
+  return { root, home, outside, app, worktree, places, service, createConsoleShell, headers: await authenticatedHeaders(app) };
 }
 
 // poll a prepared operation only until its deterministic native job reaches terminal state
@@ -127,6 +129,82 @@ describe('Files Place routes', () => {
     expect(preview.json()).toMatchObject({ binary: false, content: 'outside preview' });
     const legacy = await f.app.inject({ method: 'POST', url: url(f.worktree.id, '/file-preview'), headers: f.headers, payload: { path: f.outside } });
     expect(legacy.statusCode).not.toBe(200);
+  });
+
+  // launch the configured host editor from exact Files capabilities inside or outside the Place
+  it('opens Files objects in the configured editor with shell-safe absolute host paths', async () => {
+    const f = await start({ editor: '/usr/local/bin/nvim -p' });
+    const unusualName = "it's;$(touch injected).txt"; const unusualPath = join(f.outside, unusualName);
+    await writeFile(unusualPath, 'outside');
+    const inside = await f.app.inject({ method: 'POST', url: url(f.worktree.id, '/files/list'), headers: f.headers, payload: {} });
+    const outside = await f.app.inject({ method: 'POST', url: url(f.worktree.id, '/files/list'), headers: f.headers, payload: { path: f.outside } });
+    const insideToken = inside.json().entries.find((entry: { name: string }) => entry.name === '.hidden').objectToken;
+    const outsideToken = outside.json().entries.find((entry: { name: string }) => entry.name === unusualName).objectToken;
+    const insideLaunch = await f.app.inject({ method: 'POST', url: url(f.worktree.id, '/shells'), headers: f.headers, payload: { editor: true, objectToken: insideToken } });
+    const outsideLaunch = await f.app.inject({ method: 'POST', url: url(f.worktree.id, '/shells'), headers: f.headers, payload: { editor: true, objectToken: outsideToken } });
+    expect(insideLaunch.statusCode).toBe(201);
+    expect(outsideLaunch.statusCode).toBe(201);
+    expect(f.createConsoleShell).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: f.worktree.id, hostPath: f.home }), 'nvim', `/usr/local/bin/nvim -p '${join(f.home, '.hidden')}'`);
+    expect(f.createConsoleShell).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: f.worktree.id, hostPath: f.home }), 'nvim', `/usr/local/bin/nvim -p '${unusualPath.replaceAll("'", "'\\''")}'`);
+  });
+
+  // reject mixed, unscoped, stale and unsupported editor selections before launching
+  it('validates Files editor capabilities without relaxing legacy raw file paths', async () => {
+    const f = await start({ editor: 'nvim' }); const directory = join(f.outside, 'folder'); await mkdir(directory);
+    const listed = await f.app.inject({ method: 'POST', url: url(f.worktree.id, '/files/list'), headers: f.headers, payload: { path: f.outside } });
+    const fileToken = listed.json().entries.find((entry: { name: string }) => entry.name === 'outside.txt').objectToken;
+    const directoryToken = listed.json().entries.find((entry: { name: string }) => entry.name === 'folder').objectToken;
+    const invalidPayloads = [
+      { editor: true, objectToken: 7 },
+      { objectToken: fileToken },
+      { editor: false, objectToken: fileToken },
+      { editor: true, objectToken: fileToken, file: 'outside.txt' },
+      { editor: true, objectToken: fileToken, line: 2 },
+      { editor: true, file: f.outside },
+    ];
+    // reject every malformed or mixed request consistently
+    for (const payload of invalidPayloads) {
+      const response = await f.app.inject({ method: 'POST', url: url(f.worktree.id, '/shells'), headers: f.headers, payload });
+      expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+    }
+    const wrongPurpose = await f.app.inject({ method: 'POST', url: url(f.worktree.id, '/shells'), headers: f.headers, payload: { editor: true, objectToken: listed.json().destinationDirectoryToken } });
+    const wrongPlace = await f.app.inject({ method: 'POST', url: url(f.places[0]!.id, '/shells'), headers: f.headers, payload: { editor: true, objectToken: fileToken } });
+    const unsupported = await f.app.inject({ method: 'POST', url: url(f.worktree.id, '/shells'), headers: f.headers, payload: { editor: true, objectToken: directoryToken } });
+    await rename(join(f.outside, 'outside.txt'), join(f.outside, 'old-outside.txt')); await writeFile(join(f.outside, 'outside.txt'), 'replacement');
+    const stale = await f.app.inject({ method: 'POST', url: url(f.worktree.id, '/shells'), headers: f.headers, payload: { editor: true, objectToken: fileToken } });
+    expect(wrongPurpose.statusCode).toBe(409);
+    expect(wrongPlace.statusCode).toBe(409);
+    expect(unsupported.statusCode).toBe(422);
+    expect(stale.statusCode).toBe(409);
+    expect(f.createConsoleShell).not.toHaveBeenCalled();
+  });
+
+  // fail closed before launch when the editor or Files bridge cannot serve the request
+  it('reports unavailable editor launches without exposing transport details', async () => {
+    const missing = await start();
+    const noEditor = await missing.app.inject({ method: 'POST', url: url(missing.worktree.id, '/shells'), headers: missing.headers, payload: { editor: true, objectToken: 'not-a-token' } });
+    expect(noEditor.statusCode).toBe(400);
+    expect(missing.createConsoleShell).not.toHaveBeenCalled();
+
+    const unavailable = await start({ editor: 'nvim' });
+    const editorFile = vi.spyOn(unavailable.service, 'editorFile').mockRejectedValue(new HostFilesTransportError('bridge_unavailable', '/private/broker/socket failed'));
+    const { 'x-csrf-token': _csrf, ...withoutCsrf } = unavailable.headers;
+    const unauthorized = await unavailable.app.inject({ method: 'POST', url: url(unavailable.worktree.id, '/shells'), headers: withoutCsrf, payload: { editor: true, objectToken: 'opaque-token' } });
+    expect(unauthorized.statusCode).toBe(403);
+    expect(editorFile).not.toHaveBeenCalled();
+    const bridge = await unavailable.app.inject({ method: 'POST', url: url(unavailable.worktree.id, '/shells'), headers: unavailable.headers, payload: { editor: true, objectToken: 'opaque-token' } });
+    expect(bridge.statusCode).toBe(503);
+    expect(bridge.json()).toEqual({ error: 'host files bridge is unavailable' });
+    expect(bridge.body).not.toContain('/private/broker/socket');
+    expect(unavailable.createConsoleShell).not.toHaveBeenCalled();
+
+    const launchFailed = vi.fn(async () => undefined);
+    const failed = await start({ editor: 'nvim', createConsoleShell: launchFailed });
+    const listed = await failed.app.inject({ method: 'POST', url: url(failed.worktree.id, '/files/list'), headers: failed.headers, payload: { path: failed.outside } });
+    const token = listed.json().entries[0].objectToken;
+    const response = await failed.app.inject({ method: 'POST', url: url(failed.worktree.id, '/shells'), headers: failed.headers, payload: { editor: true, objectToken: token } });
+    expect(response.statusCode).toBe(500);
+    expect(launchFailed).toHaveBeenCalledOnce();
   });
 
   // mutating and read-like POST endpoints both require Origin and CSRF protection

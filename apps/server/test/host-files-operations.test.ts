@@ -90,6 +90,45 @@ function deferred() {
 }
 
 describe('host Files service safety orchestration', () => {
+  // resolve editor capabilities only for current regular files in their exact request scope
+  it('resolves regular editor files while rejecting wrong scope, purpose, type and freshness', async () => {
+    let now = 1_800_000_000_000;
+    const f = await fixture({ now: () => now }); const directory = join(f.root, 'editor'); const file = join(directory, 'item.txt'); const pipe = join(directory, 'pipe');
+    await mkdir(directory); await writeFile(file, 'item'); await execute('mkfifo', [pipe]);
+    const listed = await f.service.list(place, session, directory);
+    const fileToken = listed.entries.find(entry => entry.name === 'item.txt')!.objectToken;
+    const pipeToken = listed.entries.find(entry => entry.name === 'pipe')!.objectToken;
+    await expect(f.service.editorFile(place, session, fileToken)).resolves.toBe(file);
+    await expect(f.service.editorFile({ ...place, id: 'other-place' }, session, fileToken)).rejects.toMatchObject({ code: 'stale_object', statusCode: 409 });
+    await expect(f.service.editorFile(place, { id: 'other-session' }, fileToken)).rejects.toMatchObject({ code: 'stale_object', statusCode: 409 });
+    await expect(f.service.editorFile(place, session, listed.destinationDirectoryToken)).rejects.toMatchObject({ code: 'stale_object', statusCode: 409 });
+    await expect(f.service.editorFile(place, session, listed.directoryEntry.objectToken)).rejects.toMatchObject({ code: 'unsupported_type', statusCode: 422 });
+    await expect(f.service.editorFile(place, session, pipeToken)).rejects.toMatchObject({ code: 'unsupported_type', statusCode: 422 });
+    await rename(file, join(directory, 'old-item.txt')); await writeFile(file, 'replacement');
+    await expect(f.service.editorFile(place, session, fileToken)).rejects.toMatchObject({ code: 'stale_object', statusCode: 409 });
+    const freshToken = (await f.service.list(place, session, directory)).entries.find(entry => entry.name === 'item.txt')!.objectToken;
+    now += 15 * 60_000 + 1;
+    await expect(f.service.editorFile(place, session, freshToken)).rejects.toMatchObject({ code: 'stale_object', statusCode: 409 });
+  });
+
+  // retain the clicked symlink path while proving its target remains one regular file
+  it('resolves regular-file symlinks for editors and rejects changed or non-file targets', async () => {
+    const f = await fixture(); const directory = join(f.root, 'editor-links'); const target = join(f.root, 'target.txt'); const link = join(directory, 'linked.txt');
+    await mkdir(directory); await writeFile(target, 'target'); await symlink(target, link);
+    const token = (await f.service.list(place, session, directory)).entries[0]!.objectToken;
+    await expect(f.service.editorFile(place, session, token)).resolves.toBe(link);
+    let resolutions = 0;
+    f.backend.afterRequest = async command => {
+      // replace the resolved target after the first identity snapshot
+      if (command.kind === 'inspect' && command.followSymlink && (resolutions += 1) === 1) { await rename(target, join(f.root, 'old-target.txt')); await writeFile(target, 'replacement'); }
+    };
+    await expect(f.service.editorFile(place, session, token)).rejects.toMatchObject({ code: 'stale_object', statusCode: 409 });
+    f.backend.afterRequest = undefined;
+    const folder = join(f.root, 'folder-target'); const folderLink = join(directory, 'folder-link'); await mkdir(folder); await symlink(folder, folderLink);
+    const folderToken = (await f.service.list(place, session, directory)).entries.find(entry => entry.name === 'folder-link')!.objectToken;
+    await expect(f.service.editorFile(place, session, folderToken)).rejects.toMatchObject({ code: 'unsupported_type', statusCode: 422 });
+  });
+
   // exchange exact row capabilities without adopting a replacement directory
   it('rejects replaced folder rows and unrelated scoped paths', async () => {
     const f = await fixture(); const parent = join(f.root, 'parent'); const folder = join(parent, 'folder');
