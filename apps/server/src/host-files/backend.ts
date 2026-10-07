@@ -244,7 +244,12 @@ export class HostBrokerBackend implements HostFilesBackend {
       await writeControlFrame(operation.socket, { type: 'request', mode: 'request', command }, signal);
       const response = await nextControl(operation.frames);
       // accept only result envelopes
-      if (isRecord(response) && response.type === 'result') return response.result as HostFilesCommandResult<T>;
+      if (isRecord(response) && response.type === 'result') {
+        const result = response.result;
+        // reject malformed omission metadata at the broker trust boundary
+        if (command.kind === 'list' && (!isRecord(result) || typeof result.inaccessibleEntries !== 'number' || !Number.isSafeInteger(result.inaccessibleEntries) || result.inaccessibleEntries < 0 || result.inaccessibleEntries > command.maxEntries)) throw new HostFilesTransportError('protocol_error', 'invalid broker directory listing');
+        return result as HostFilesCommandResult<T>;
+      }
       throw brokerError(response);
     } finally {
       operation.release();

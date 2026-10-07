@@ -170,6 +170,10 @@ export function FilesPanel({ controller, onOpenFile }: { controller: FilesContro
   const currentToken = controller.listing?.destinationDirectoryToken;
   const currentDirectory = controller.listing?.directoryEntry;
   const currentFavorite = currentDirectory?.favorite;
+  // retain partial listings while disclosing omitted children
+  const inaccessibleEntries = controller.listing === undefined ? 0 : controller.listing.inaccessibleEntries;
+  // avoid claiming a permission-limited folder is empty
+  const emptyMessage = inaccessibleEntries > 0 ? 'No accessible items to show.' : 'This folder is empty.';
 
   // close every files-owned flyout without changing selection
   const closeMenus = useCallback(() => {
@@ -517,7 +521,8 @@ export function FilesPanel({ controller, onOpenFile }: { controller: FilesContro
       <div className="files-mobile-sort" role="toolbar" aria-label="Sort files">{sortColumns.map(item => <button key={item.column} type="button" aria-label={`Sort by ${item.label}`} aria-pressed={controller.sort.column === item.column} onClick={() => controller.setSort(item.column)}>{item.label}{controller.sort.column === item.column && <span aria-hidden="true">{controller.sort.direction === 'ascending' ? ' ↑' : ' ↓'}</span>}</button>)}</div>
       <div className="files-grid" role="grid" aria-label={`Files in ${controller.listing?.path ?? 'Place home'}`} aria-busy={controller.loading} aria-multiselectable="true">
         <div className="files-grid-head" role="row">{sortColumns.map(item => <SortHeader key={item.column} column={item.column} label={item.label} activeColumn={controller.sort.column} direction={controller.sort.direction} onSort={controller.setSort} />)}<span role="columnheader"><span className="sr-only">Actions</span></span></div>
-        {controller.loading && controller.listing === undefined ? <p className="files-empty" role="status"><span className="spinner" />Loading files…</p> : controller.entries.length === 0 ? <p className="files-empty">This folder is empty.</p> : controller.entries.map(entry => {
+        {/* distinguish omitted children from a truly empty folder */}
+        {controller.loading && controller.listing === undefined ? <p className="files-empty" role="status"><span className="spinner" />Loading files…</p> : controller.entries.length === 0 ? <p className="files-empty">{emptyMessage}</p> : controller.entries.map(entry => {
           const selectedRow = controller.selection.tokens.has(entry.objectToken);
           return <div key={entry.objectToken} className={`files-row ${entry.kind}${selectedRow ? ' selected' : ''}`} role="row" aria-selected={selectedRow} tabIndex={0} title={entry.hostPath} onMouseDownCapture={preventShiftTextSelection} onClick={event => selectRow(entry, event)} onKeyDown={event => rowKey(entry, event)} onContextMenu={event => openEntryContext(entry, event)}>
             <span className="files-name-cell" role="gridcell"><FileIcon entry={entry} /><button className="files-name" type="button" title={entry.hostPath} disabled={!isDirectory(entry) && !isPreviewable(entry)} onClick={event => clickName(entry, event)}>{entry.name}</button>{entry.favorite !== undefined && <span className={`files-favorite-mark ${entry.favorite.state}`} aria-label={`Favorite: ${entry.favorite.state}`}>★</span>}</span>
@@ -526,6 +531,8 @@ export function FilesPanel({ controller, onOpenFile }: { controller: FilesContro
           </div>;
         })}
       </div>
+      {/* disclose partial directory metadata without hiding readable entries */}
+      {inaccessibleEntries > 0 && <p className="files-limit" role="status">{inaccessibleEntries} {inaccessibleEntries === 1 ? 'item' : 'items'} hidden because permission was denied.</p>}
       {controller.listing?.truncated && <p className="files-limit" role="status">This folder has more entries than can be shown.</p>}
     </div>
     {newOpen && <MenuSurface label="New file or folder" flyoutRef={newFlyout.flyoutRef} style={newFlyout.style} onDismiss={() => setNewOpen(false)}><MenuItem disabled={currentToken === undefined || busy} onSelect={() => void openCreate('create-file')}>New file</MenuItem><MenuItem disabled={currentToken === undefined || busy} onSelect={() => void openCreate('create-folder')}>New folder</MenuItem></MenuSurface>}

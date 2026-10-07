@@ -250,7 +250,7 @@ export class HostFilesService {
   get backend(): HostFilesBackend { return this.options.backend; }
 
   // list one canonical host directory and issue fresh session capabilities
-  async list(place: HostFilesPlace, session: HostFilesSession, path?: string, objectToken?: string): Promise<{ path: string; parent?: string; destinationDirectoryToken: string; directoryEntry: FileEntry; entries: FileEntry[]; truncated: boolean; limits: typeof hostFilesLimits }> {
+  async list(place: HostFilesPlace, session: HostFilesSession, path?: string, objectToken?: string): Promise<{ path: string; parent?: string; destinationDirectoryToken: string; directoryEntry: FileEntry; entries: FileEntry[]; inaccessibleEntries: number; truncated: boolean; limits: typeof hostFilesLimits }> {
     this.prune();
     const selected = objectToken === undefined ? undefined : await this.objectToken(place, session, objectToken);
     // prevent a scoped capability from authorizing an unrelated pathname
@@ -292,7 +292,7 @@ export class HostFilesService {
     }
     const directoryEntry = decorate(directory);
     const destinationDirectoryToken = this.tokens.issue({ purpose: 'destination-directory', sessionId: session.id, placeId: place.id, path: listed.path, identity: listed.directory });
-    return { path: listed.path, ...(listed.parent === undefined ? {} : { parent: listed.parent }), destinationDirectoryToken, directoryEntry, entries, truncated: listed.truncated, limits: hostFilesLimits };
+    return { path: listed.path, ...(listed.parent === undefined ? {} : { parent: listed.parent }), destinationDirectoryToken, directoryEntry, entries, inaccessibleEntries: listed.inaccessibleEntries, truncated: listed.truncated, limits: hostFilesLimits };
   }
 
   // open one bounded existing File-view preview outside any worktree boundary

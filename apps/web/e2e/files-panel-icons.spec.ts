@@ -60,7 +60,8 @@ async function installIconFixture(page: Page) {
   await page.route('**/api/worktrees/cora/files/list', route => route.fulfill({ json: {
     path: '/home/ubuntu/project', parent: '/home/ubuntu', destinationDirectoryToken: 'directory:/home/ubuntu/project',
     directoryEntry: { ...entries[0], name: 'project', hostPath: '/home/ubuntu/project', objectToken: 'current-directory-token' },
-    entries
+    entries,
+    inaccessibleEntries: 0
   } }));
   await page.route('**/api/worktrees/cora/file-favorites', route => route.fulfill({ json: { favorites: [
     { id: 'favorite-folder-0001', path: entries[0].hostPath, state: 'available', entry: entries[0] },

@@ -28,6 +28,7 @@ export type FilesList = {
   destinationDirectoryToken: string;
   directoryEntry: FileEntry;
   entries: FileEntry[];
+  inaccessibleEntries: number;
   favorites?: Favorite[];
   truncated?: boolean;
   limits?: Record<string, number>;
@@ -117,6 +118,7 @@ export function isFilesList(value: unknown): value is FilesList {
     && (candidate.parent === undefined || validPath(candidate.parent))
     && isFileEntry(candidate.directoryEntry) && candidate.directoryEntry.kind === 'directory' && candidate.directoryEntry.hostPath === candidate.path
     && Array.isArray(candidate.entries) && candidate.entries.length <= 10_000 && candidate.entries.every(isFileEntry)
+    && nonnegativeInteger(candidate.inaccessibleEntries) && Number(candidate.inaccessibleEntries) <= 10_000
     && (candidate.favorites === undefined || Array.isArray(candidate.favorites) && candidate.favorites.every(isFavorite))
     && (candidate.truncated === undefined || typeof candidate.truncated === 'boolean')
     && (candidate.limits === undefined || limits !== undefined && Object.keys(limits).length <= 32 && Object.values(limits).every(nonnegativeInteger));

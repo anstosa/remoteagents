@@ -29,6 +29,8 @@ export type HostFilesListResult = {
   directory: HostFileIdentity;
   entries: HostFileStat[];
   truncated: boolean;
+  // count child metadata denials without granting those objects capabilities
+  inaccessibleEntries: number;
 };
 export type HostFilesTreeEntry = { path: string; identity: HostFileIdentity; linkTarget?: string };
 export type HostFilesTreeManifest = { root: string; entries: HostFilesTreeEntry[]; totalBytes: number };

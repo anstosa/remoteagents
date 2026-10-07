@@ -116,7 +116,7 @@ export async function installFilesFixture(page: Page): Promise<FilesFixture> {
       });
       const currentFavorite = favorites.find(item => (item as { path: string }).path === currentPath) as { id: string; state: string } | undefined;
       const currentEntry = directoryEntry(currentPath);
-      return route.fulfill({ json: { path: currentPath, parent: currentPath === '/' ? undefined : currentPath.slice(0, currentPath.lastIndexOf('/')) || '/', destinationDirectoryToken: `directory:${currentPath}`, directoryEntry: currentFavorite === undefined ? currentEntry : { ...currentEntry, favorite: { id: currentFavorite.id, state: currentFavorite.state } }, entries: directory, limits: { maxEntries: 1000 } } });
+      return route.fulfill({ json: { path: currentPath, parent: currentPath === '/' ? undefined : currentPath.slice(0, currentPath.lastIndexOf('/')) || '/', destinationDirectoryToken: `directory:${currentPath}`, directoryEntry: currentFavorite === undefined ? currentEntry : { ...currentEntry, favorite: { id: currentFavorite.id, state: currentFavorite.state } }, entries: directory, inaccessibleEntries: 0, limits: { maxEntries: 1000 } } });
     }
     if (url.pathname === '/api/worktrees/cora/files/preview') {
       return route.fulfill({ json: { path: '/home/ubuntu/project/alpha.txt', size: 16, binary: false, truncated: false, content: 'outside root preview\n' } });

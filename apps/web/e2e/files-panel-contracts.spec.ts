@@ -31,14 +31,22 @@ test('file entry guard rejects malformed server metadata', () => {
 
 test('list guard rejects invalid capabilities paths and limits', () => {
   const directoryEntry = { ...validEntry(), name: '/', hostPath: '/', kind: 'directory' as const, permissions: 'drwxr-xr-x', mode: 0o40755 };
-  const list = { path: '/', destinationDirectoryToken: 'opaque-directory-token', directoryEntry, entries: [validEntry()], truncated: false, limits: { listEntries: 10_000 } };
+  const list = { path: '/', destinationDirectoryToken: 'opaque-directory-token', directoryEntry, entries: [validEntry()], inaccessibleEntries: 0, truncated: false, limits: { listEntries: 10_000 } };
   expect(isFilesList(list)).toBe(true);
+  expect(isFilesList({ ...list, inaccessibleEntries: 10_000 })).toBe(true);
+  const { inaccessibleEntries: _inaccessibleEntries, ...withoutInaccessibleEntries } = list;
+  expect(isFilesList(withoutInaccessibleEntries)).toBe(false);
+  expect(isFilesList({ ...list, inaccessibleEntries: null })).toBe(false);
   const { directoryEntry: _directoryEntry, ...withoutDirectoryEntry } = list;
   expect(isFilesList(withoutDirectoryEntry)).toBe(false);
   expect(isFilesList({ ...list, path: 'relative' })).toBe(false);
   expect(isFilesList({ ...list, destinationDirectoryToken: '' })).toBe(false);
   expect(isFilesList({ ...list, directoryEntry: { ...directoryEntry, hostPath: '/elsewhere' } })).toBe(false);
   expect(isFilesList({ ...list, directoryEntry: { ...directoryEntry, kind: 'file' } })).toBe(false);
+  expect(isFilesList({ ...list, inaccessibleEntries: -1 })).toBe(false);
+  expect(isFilesList({ ...list, inaccessibleEntries: 1.5 })).toBe(false);
+  expect(isFilesList({ ...list, inaccessibleEntries: 10_001 })).toBe(false);
+  expect(isFilesList({ ...list, inaccessibleEntries: '4' })).toBe(false);
   expect(isFilesList({ ...list, limits: { listEntries: -1 } })).toBe(false);
 });
 

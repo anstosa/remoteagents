@@ -249,6 +249,7 @@ function identity(size = 0): HostFileIdentity {
 class BrokerFixtureEngine implements HostFilesBackend {
   readonly uploads: Buffer[] = [];
   readonly requestSignals: AbortSignal[] = [];
+  listResult: unknown;
   readStarted = false;
   readDestroyed = false;
 
@@ -262,6 +263,8 @@ class BrokerFixtureEngine implements HostFilesBackend {
 
   // return one known inspect result or hold a cancel probe
   async request<T extends HostFilesCommand>(command: T, signal?: AbortSignal): Promise<HostFilesCommandResult<T>> {
+    // inject raw broker result metadata at the transport boundary
+    if (command.kind === 'list') return this.listResult as HostFilesCommandResult<T>;
     // preserve engine limit failures without dropping the generation
     if (command.kind === 'inspect' && command.path.endsWith('/limit')) throw new HostFilesError('limit_exceeded', 'metadata exceeds limit', 413);
     // preserve favorite recovery conflicts as intentional 409 responses
@@ -352,6 +355,32 @@ async function brokerFixture(binary = Buffer.from([0, 0xff, 0xfe, 0x41])): Promi
 }
 
 describe('host files broker protocol', () => {
+  // reject missing or malformed counts rather than silently reporting no hidden entries
+  it.each([undefined, null, -1, 0.5, 11, '4'])('rejects an invalid inaccessible-entry count %j', async inaccessibleEntries => {
+    const { backend, engine, broker } = await brokerFixture();
+    engine.listResult = { path: '/fixture', directory: { ...identity(), kind: 'directory' }, entries: [], truncated: false, inaccessibleEntries };
+    try {
+      await expect(backend.request({ kind: 'list', path: '/fixture', maxEntries: 10 })).rejects.toMatchObject({ code: 'protocol_error' });
+    } finally {
+      // stop only this isolated broker even after a failed assertion
+      await backend.close();
+      await broker;
+    }
+  });
+
+  // preserve both valid count bounds across the actual private socket
+  it.each([0, 10])('preserves a valid inaccessible-entry count %i', async inaccessibleEntries => {
+    const { backend, engine, broker } = await brokerFixture();
+    engine.listResult = { path: '/fixture', directory: { ...identity(), kind: 'directory' }, entries: [], truncated: false, inaccessibleEntries };
+    try {
+      expect((await backend.request({ kind: 'list', path: '/fixture', maxEntries: 10 })).inaccessibleEntries).toBe(inaccessibleEntries);
+    } finally {
+      // release the fixture controller before awaiting broker exit
+      await backend.close();
+      await broker;
+    }
+  });
+
   // preserve arbitrary bytes across fragmented and coalesced frames
   it('decodes NUL and non-UTF8 binary frames across arbitrary chunks', async () => {
     const first = encodeBrokerFrame(BrokerFrameKind.Binary, Buffer.from([0, 0xff, 1]));

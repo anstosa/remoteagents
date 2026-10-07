@@ -91,6 +91,9 @@ export function useFilesController(placeId: string | undefined, request: Request
   const [progress, setProgress] = useState<OperationResult>();
   const listRequest = useRef(0);
   const favoriteRequest = useRef(0);
+  // reject callbacks captured by another place
+  const activePlace = useRef(placeId);
+  activePlace.current = placeId;
   const sharedClipboard = useSyncExternalStore(subscribeClipboard, readClipboard, readClipboard);
   const error = navigationError ?? favoriteError;
 
@@ -110,8 +113,8 @@ export function useFilesController(placeId: string | undefined, request: Request
 
   // load server-saved favorites for the exact place
   const refreshFavorites = useCallback(async (): Promise<FilesError | undefined> => {
-    // skip orphan agents without a place
-    if (placeId === undefined) return;
+    // skip missing or superseded place callbacks
+    if (placeId === undefined || activePlace.current !== placeId) return;
     const id = ++favoriteRequest.current;
     const response = await request(`/api/worktrees/${encodeURIComponent(placeId)}/file-favorites`);
     const payload: unknown = await response.json().catch(() => undefined);
@@ -123,7 +126,7 @@ export function useFilesController(placeId: string | undefined, request: Request
         ? { code: 'invalid_response', message: 'The favorites response was invalid.' }
         : undefined;
     // ignore a superseded response from this place
-    if (favoriteRequest.current !== id) return undefined;
+    if (activePlace.current !== placeId || favoriteRequest.current !== id) return undefined;
     // retain the last valid menu while exposing refresh failure
     if (failure !== undefined) { setFavoriteError(failure); return failure; }
     // valid success responses always carry the narrowed array
@@ -135,8 +138,8 @@ export function useFilesController(placeId: string | undefined, request: Request
 
   // navigate only after receiving one valid canonical path-token pair
   const navigate = useCallback(async (path?: string): Promise<boolean> => {
-    // fail closed without a place route
-    if (placeId === undefined) return false;
+    // fail closed without the current place scope
+    if (placeId === undefined || activePlace.current !== placeId) return false;
     const id = ++listRequest.current;
     setLoading(true);
     setNavigationError(undefined);
@@ -145,11 +148,11 @@ export function useFilesController(placeId: string | undefined, request: Request
     // keep the last good directory after a failed navigation
     if (!response.ok || !isFilesList(payload)) {
       // ignore a replaced request
-      if (listRequest.current === id) { setLoading(false); setNavigationError(response.ok ? { code: 'invalid_response', message: 'The folder response was invalid.' } : filesError(payload, 'Unable to open this folder.')); }
+      if (activePlace.current === placeId && listRequest.current === id) { setLoading(false); setNavigationError(response.ok ? { code: 'invalid_response', message: 'The folder response was invalid.' } : filesError(payload, 'Unable to open this folder.')); }
       return false;
     }
     // ignore a stale navigation response
-    if (listRequest.current !== id) return false;
+    if (activePlace.current !== placeId || listRequest.current !== id) return false;
     const next = payload;
     setListing(next);
     setSelection(current => retainCurrentSelection(current, next.entries));

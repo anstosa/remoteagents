@@ -939,6 +939,7 @@ export class HostFilesEngine implements HostFilesBackend {
           const entries: HostFileStat[] = [];
           let metadataBytes = Buffer.byteLength(path) + 1024;
           let metadataTruncated = false;
+          let inaccessibleEntries = 0;
           // retain hidden names and cap metadata allocation
           for (const name of names.slice(0, command.maxEntries)) {
             abort(active);
@@ -950,11 +951,13 @@ export class HostFilesEngine implements HostFilesBackend {
               entries.push(entry);
             }
             catch (error) {
+              // protected child metadata must not hide an otherwise readable folder
+              if (error instanceof HostFilesError && error.code === 'permission_denied') { inaccessibleEntries += 1; continue; }
               // a concurrently removed entry does not hide the rest of the directory
               if (!(error instanceof HostFilesError) || error.code !== 'not_found') throw error;
             }
           }
-          return { path, ...(path === '/' ? {} : { parent: dirname(path) }), directory: await requireIdentity(path, directory), entries, truncated: metadataTruncated || names.length > command.maxEntries } as HostFilesCommandResult<T>;
+          return { path, ...(path === '/' ? {} : { parent: dirname(path) }), directory: await requireIdentity(path, directory), entries, inaccessibleEntries, truncated: metadataTruncated || names.length > command.maxEntries } as HostFilesCommandResult<T>;
         }
         // freeze recursive identities for server-owned manifests
         if (command.kind === 'snapshot') return await this.snapshot(command.path, command.maxEntries, command.maxBytes, active) as HostFilesCommandResult<T>;
