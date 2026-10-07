@@ -1167,6 +1167,21 @@ test('counts untriaged Findings per step and sends kept general Findings under G
   expect(prompts[0]).not.toMatch(/Unchecked constant|Lost value|Service naming/u);
 });
 
+test('keeps triaged general Findings inside the step column', async ({ page }) => {
+  const long = (title: string) => ({ severity: 'medium', title, body: `${title}. The lockfile fallback resolves npm 10 from the base image and the worker pins it.`, file: 'scripts/fallback-to-npm10-when-the-lockfile-was-written-by-npm12.sh' });
+  const general = [{ id: 'g-one', ...long('The fallback reinstalls npm on every run even when the image already has the pinned version') }, { id: 'g-two', ...long('Nothing checks that the pinned npm version still reads lockfiles written by npm twelve') }];
+  const { dialog } = await openTriageTour(page, { stored: { codeReview: { ...triageReview, general } } });
+  const narration = dialog.locator('.review-tour-narration');
+  const fits = () => narration.evaluate(element => element.scrollWidth <= element.clientWidth);
+  expect(await fits()).toBe(true);
+  const findings = dialog.getByRole('region', { name: 'General findings' });
+  await findings.getByRole('group', { name: /^Suggested comment: The fallback/u }).getByRole('button', { name: 'Dismiss' }).click();
+  expect(await fits()).toBe(true);
+  await findings.getByRole('group', { name: /^Suggested comment: Nothing checks/u }).getByRole('button', { name: 'Keep' }).click();
+  await findings.getByLabel(/^General note: Nothing checks/u).fill('Add a check that npm 10 reads an npm 12 lockfile.');
+  expect(await fits()).toBe(true);
+});
+
 test('counts the Findings not reviewed on the summary and jumps back to them', async ({ page }) => {
   const { dialog } = await openTriageTour(page);
   const diffPane = dialog.getByLabel('Relevant changes');

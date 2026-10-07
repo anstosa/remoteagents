@@ -2081,7 +2081,7 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 .review-tour-severity.high { color: var(--red); }
 .review-tour-severity.medium { color: var(--peach); }
 /* the general Findings, listed on the first step and the summary */
-.review-tour-general { display: grid; gap: .45rem; margin-bottom: .4rem; }
+.review-tour-general { display: grid; grid-template-columns: minmax(0, 1fr); gap: .45rem; margin-bottom: .4rem; }
 .review-tour-general > small { color: var(--mauve); font: 800 .65rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
 .review-tour-general .review-tour-suggestion { margin: 0; }
 .review-tour-summary .review-tour-general { margin-top: .9rem; }
