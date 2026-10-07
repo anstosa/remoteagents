@@ -15,9 +15,9 @@ export const agentKindLabel: Record<AgentKind, string> = { codex: 'Codex', omx: 
 export type AgentUpdateStatus = { kind: AgentKind; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string };
 type AgentLaunchSettings = { statuses: AgentUpdateStatus[]; updating?: AgentKind; errors: string[]; defaultAgent?: AgentKind; defaultPending: boolean; setDefaultAgent: (kind: AgentKind) => void; updateAgent: (kind: AgentKind) => void };
 export const AgentLaunchSettingsContext = createContext<AgentLaunchSettings | undefined>(undefined);
-// keep Codex account controls in the launcher without coupling this module to settings
-export type CodexAccountsMenu = { content: ReactNode; activeName?: string; onOpen: () => void; onClose: () => void };
-export const CodexAccountsMenuContext = createContext<CodexAccountsMenu | undefined>(undefined);
+// keep per-agent account controls in the launcher without coupling this module to settings
+export type AgentAccountsMenu = { menus: Partial<Record<AgentKind, { content: ReactNode; activeName?: string }>>; onOpen: () => void; onClose: () => void };
+export const AgentAccountsMenuContext = createContext<AgentAccountsMenu | undefined>(undefined);
 
 // The capability record the Dashboard publishes per registered kind (ADR 0002). The web
 // reads presence and reasons; it never re-derives capabilities. `sandbox*` stay undefined
@@ -86,13 +86,13 @@ function LaunchMenuEntries({ entries, divider = true }: { entries: readonly Laun
 // kinds that default to Sandboxed, a footnote when a remembered kind was skipped, and last any
 // `entries` the caller adds. `launchDisabled` holds every launch row back, leaving the entries.
 // opt into global management only from the toolbar
-export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], launchDisabled = false, showAgentSettings = false, accounts: providedAccounts, accountsView: controlledAccountsView, onAccountsViewChange }: { verb: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice: LaunchChoice) => void; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean; showAgentSettings?: boolean; accounts?: CodexAccountsMenu; accountsView?: boolean; onAccountsViewChange?: (visible: boolean) => void }) {
+export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], launchDisabled = false, showAgentSettings = false, accounts: providedAccounts, accountsView: controlledAccountsView, onAccountsViewChange }: { verb: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice: LaunchChoice) => void; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean; showAgentSettings?: boolean; accounts?: AgentAccountsMenu; accountsView?: AgentKind; onAccountsViewChange?: (kind: AgentKind | undefined) => void }) {
   const adapters = useContext(AdaptersContext);
   const sharedSettings = useContext(AgentLaunchSettingsContext);
   // reserve global agent details and controls for the toolbar
   const settings = showAgentSettings ? sharedSettings : undefined;
   const accounts = showAgentSettings ? providedAccounts : undefined;
-  const [localAccountsView, setLocalAccountsView] = useState(false);
+  const [localAccountsView, setLocalAccountsView] = useState<AgentKind>();
   // preserve the toolbar submenu across desktop and phone render paths
   const accountsView = controlledAccountsView ?? localAccountsView;
   const setAccountsView = onAccountsViewChange ?? setLocalAccountsView;
@@ -104,7 +104,8 @@ export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], la
     return accounts.onClose;
   }, [accounts?.onOpen, accounts?.onClose]);
   // return to the kind list without closing the launcher flyout
-  if (accountsView && accounts !== undefined) return <div className="launch-accounts-submenu" role="group" aria-label="Codex accounts"><button className="launch-submenu-back" type="button" onClick={() => setAccountsView(false)}>‹ Back to agents</button>{accounts.content}</div>;
+  const openAccounts = accountsView === undefined ? undefined : accounts?.menus[accountsView];
+  if (accountsView !== undefined && openAccounts !== undefined) return <div className="launch-accounts-submenu" role="group" aria-label={`${agentKindLabel[accountsView]} accounts`}><button className="launch-submenu-back" type="button" onClick={() => setAccountsView(undefined)}>‹ Back to agents</button>{openAccounts.content}</div>;
   const kinds = configuredKinds(adapters);
   if (kinds.length === 0) return <><p className="launch-menu-empty">No agents configured. Add an <code>adapters</code> entry to the console config to launch agents.</p><LaunchMenuEntries entries={entries} /></>;
   const unsandboxable = kinds.filter(kind => adapters?.[kind]?.launchable === true && defaultSandboxed(adapters?.[kind]));
@@ -120,13 +121,14 @@ export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], la
       const version = status?.currentVersion === undefined ? undefined : status.currentVersion.startsWith('v') ? status.currentVersion : `v${status.currentVersion}`;
       const latest = status?.latestVersion === undefined ? undefined : status.latestVersion.startsWith('v') ? status.latestVersion : `v${status.latestVersion}`;
       const versionLabel = status?.updateAvailable && version !== undefined && latest !== undefined ? `${version} → ${latest}` : version;
-      // identify the selected Codex account beside its installed version
-      const accountName = kind === 'codex' ? accounts?.activeName : undefined;
+      // identify the selected account beside its installed version
+      const kindAccounts = accounts?.menus[kind];
+      const accountName = kindAccounts?.activeName;
       return <div key={kind} role="group" aria-label={`${agentKindLabel[kind]} agent`} className="launch-agent-line"><button type="button" role="menuitem" className="launch-row" disabled={!capability.launchable || launchDisabled} title={capability.unavailableReason} onClick={() => onLaunch({ kind, sandboxed })}>
         <KindMark kind={kind} />
         <span className="launch-row-copy"><strong>{agentKindLabel[kind]}{resolved && <em> · {originCopy(resolution?.origin)}</em>}</strong>{(versionLabel !== undefined || accountName !== undefined) && <span className="launch-agent-details">{versionLabel !== undefined && <span className="launch-agent-version">{versionLabel}</span>}{accountName !== undefined && <span className="launch-agent-account" title={accountName}>{accountName}</span>}</span>}<small>{capability.launchable ? sandboxCopy(kind, capability, sandboxed) : capability.unavailableReason ?? 'Unavailable'}</small></span>
         {capability.launchable && sandboxed && <LockIcon />}
-      </button>{/* keep the codex submenu next to launch */}{kind === 'codex' && accounts !== undefined && <button type="button" role="menuitem" className="launch-agent-accounts" data-context-flyout aria-label="Codex accounts" aria-haspopup="menu" onClick={() => setAccountsView(true)}>Accounts <span aria-hidden="true">›</span></button>}{/* put update before the default star */}{status?.updateAvailable && <button type="button" role="menuitem" className="launch-agent-update" aria-label={`Update ${agentKindLabel[kind]} to ${status.latestVersion ?? 'latest'}`} disabled={settings?.updating !== undefined} onClick={() => settings?.updateAgent(kind)}>{settings?.updating === kind ? <><span className="spinner" />Updating…</> : 'Update'}</button>}{/* keep an unavailable persisted default visible */}{settings !== undefined && (capability.launchable || settings.defaultAgent === kind) && <button type="button" role="menuitemradio" className="launch-agent-default" aria-label={`Make ${agentKindLabel[kind]} default`} aria-checked={settings.defaultAgent === kind} title={settings.defaultAgent === kind ? 'Default agent' : `Make ${agentKindLabel[kind]} default`} disabled={!capability.launchable || settings.defaultAgent === kind || settings.defaultPending} onClick={() => settings.setDefaultAgent(kind)}>{settings.defaultAgent === kind ? '★' : '☆'}</button>}</div>;
+      </button>{/* keep the account submenu next to launch */}{kindAccounts !== undefined && <button type="button" role="menuitem" className="launch-agent-accounts" data-context-flyout aria-label={`${agentKindLabel[kind]} accounts`} aria-haspopup="menu" onClick={() => setAccountsView(kind)}>Accounts <span aria-hidden="true">›</span></button>}{/* put update before the default star */}{status?.updateAvailable && <button type="button" role="menuitem" className="launch-agent-update" aria-label={`Update ${agentKindLabel[kind]} to ${status.latestVersion ?? 'latest'}`} disabled={settings?.updating !== undefined} onClick={() => settings?.updateAgent(kind)}>{settings?.updating === kind ? <><span className="spinner" />Updating…</> : 'Update'}</button>}{/* keep an unavailable persisted default visible */}{settings !== undefined && (capability.launchable || settings.defaultAgent === kind) && <button type="button" role="menuitemradio" className="launch-agent-default" aria-label={`Make ${agentKindLabel[kind]} default`} aria-checked={settings.defaultAgent === kind} title={settings.defaultAgent === kind ? 'Default agent' : `Make ${agentKindLabel[kind]} default`} disabled={!capability.launchable || settings.defaultAgent === kind || settings.defaultPending} onClick={() => settings.setDefaultAgent(kind)}>{settings.defaultAgent === kind ? '★' : '☆'}</button>}</div>;
     })}
     {/* retain distinct version and operation errors */}{settings?.errors.map(error => <p key={error} className="launch-menu-error" role="alert">{error}</p>)}
     {unsandboxable.length > 0 && <><hr className="more-menu-divider" /><p className="launch-menu-heading launch-menu-subheading">Without sandbox — this launch only</p>{unsandboxable.map(kind => <button key={`${kind}-unsandboxed`} type="button" role="menuitem" className="launch-row launch-row-unsandboxed" disabled={launchDisabled} onClick={() => onLaunch({ kind, sandboxed: false })}><KindMark kind={kind} /><span className="launch-row-copy"><strong>{agentKindLabel[kind]}</strong><small>{sandboxCopy(kind, adapters?.[kind], false)}</small></span><UnlockIcon /></button>)}</>}
@@ -152,15 +154,15 @@ export type LaunchPrimary = { label: string; ariaLabel: string; onSelect: () => 
 // keep place actions compact and opt into toolbar management explicitly
 export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch, disabled = false, disabledReason, pending = false, compact = false, quiet = false, primary, entries = [], launchDisabled = false, placeActions = false, alwaysShowMenu = false, showAgentSettings = false }: { verb?: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice?: LaunchChoice) => void; disabled?: boolean; disabledReason?: string; pending?: boolean; compact?: boolean; quiet?: boolean; primary?: LaunchPrimary; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean; placeActions?: boolean; alwaysShowMenu?: boolean; showAgentSettings?: boolean }) {
   const adapters = useContext(AdaptersContext);
-  const accounts = useContext(CodexAccountsMenuContext);
+  const accounts = useContext(AgentAccountsMenuContext);
   const settings = useContext(AgentLaunchSettingsContext);
   // reserve update attention for the persistent toolbar Launch control
   const updatesAvailable = showAgentSettings && settings?.statuses.some(status => status.updateAvailable) === true;
   const phone = usePhoneLayout();
   const [open, setOpen] = useState(false);
-  const [accountsView, setAccountsView] = useState(false);
+  const [accountsView, setAccountsView] = useState<AgentKind>();
   // close both flyout pages for every dismissal path
-  const closeMenu = useCallback(() => { setOpen(false); setAccountsView(false); }, []);
+  const closeMenu = useCallback(() => { setOpen(false); setAccountsView(undefined); }, []);
   // remeasure the recreated flyout when the phone control replaces the desktop split
   const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(open, { align: phone ? 'center' : 'end' });
   // an outside press closes the menu, including one inside the "+" launcher flyout these

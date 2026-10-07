@@ -89,8 +89,8 @@ test('queries, repairs, switches, and adds ChatGPT accounts from the Codex launc
   await expect(work).toContainText('Work');
   await expect(personal).toContainText('100% consumed');
   await expect(personal).toContainText('7d limit');
-  await expect(personal.getByRole('progressbar', { name: '5h ChatGPT limit consumed' })).toHaveAttribute('value', '100');
-  await expect(personal.getByRole('progressbar', { name: '7d ChatGPT limit consumed' })).toHaveAttribute('value', '62');
+  await expect(personal.getByRole('progressbar', { name: '5h limit consumed' })).toHaveAttribute('value', '100');
+  await expect(personal.getByRole('progressbar', { name: '7d limit consumed' })).toHaveAttribute('value', '62');
   await expect(personal).toContainText('2 resets available');
   await expect(work).not.toContainText('resets available');
   const countdown = personal.locator('.chatgpt-limit-reset').first();
@@ -101,7 +101,7 @@ test('queries, repairs, switches, and adds ChatGPT accounts from the Codex launc
 
   const useReset = accountsMenu.getByRole('button', { name: 'Use reset for Personal' });
   await useReset.click();
-  await expect(personal.getByRole('progressbar', { name: '5h ChatGPT limit consumed' })).toHaveAttribute('value', '0');
+  await expect(personal.getByRole('progressbar', { name: '5h limit consumed' })).toHaveAttribute('value', '0');
   await expect(personal).toContainText('1 reset available');
   await expect(useReset).toHaveCount(0);
   await expect(accountsMenu.getByRole('status')).toContainText('Used one reset for Personal.');
