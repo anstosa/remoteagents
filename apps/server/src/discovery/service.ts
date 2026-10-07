@@ -84,15 +84,6 @@ export async function gitUpstreamSummary(workspace: string, command: GitCommand 
   return { upstream: name, ahead, behind };
 }
 type GitMeta = { workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary };
-// prefer the pull request's actual base
-async function gitPrComparisonForBase(meta: GitMeta, branch: string | undefined, baseBranch: string | undefined): Promise<GitComparisonSummary | undefined> {
-  // keep the local fallback without PR metadata
-  if (baseBranch === undefined) return meta.gitPrStatus;
-  const preferredBase = baseBranch.startsWith('origin/') || baseBranch.startsWith('refs/') ? baseBranch : `origin/${baseBranch}`;
-  // reuse matching comparisons
-  if (meta.gitPrStatus?.base === preferredBase) return meta.gitPrStatus;
-  return await gitPrComparison(meta.workspace, branch, meta.gitStatus, baseBranch, true);
-}
 // resolve one pane path to its repository root
 export async function workspaceRoot(path: string): Promise<string> {
   const canonical = await realpath(path).catch(() => path);
@@ -164,6 +155,8 @@ export class DiscoveryService {
   private worktreesInFlightEpoch = -1;
   private readonly gitMetadata = new Map<string, { refreshedAt: number; value: GitMeta }>();
   private readonly gitMetadataInFlight = new Map<string, Promise<GitMeta>>();
+  // expire PR comparisons with their metadata snapshot, including checkout invalidation
+  private readonly gitPrComparisons = new WeakMap<GitMeta, Map<string, Promise<GitComparisonSummary | undefined>>>();
   // a workspace's common git dir (null = none); Projects are static, so repository
   // membership never changes in a session — cache it so a persistent Scratch pane does
   // not re-spawn `git rev-parse` on every poll
@@ -575,6 +568,28 @@ export class DiscoveryService {
     return state;
   }
 
+  // cache the pull request's actual base without slowing live pane scans
+  private async gitPrComparisonForBase(meta: GitMeta, branch: string | undefined, baseBranch: string | undefined): Promise<GitComparisonSummary | undefined> {
+    // keep the local fallback without PR metadata
+    if (baseBranch === undefined) return meta.gitPrStatus;
+    const preferredBase = baseBranch.startsWith('origin/') || baseBranch.startsWith('refs/') ? baseBranch : `origin/${baseBranch}`;
+    // reuse matching comparisons
+    if (meta.gitPrStatus?.base === preferredBase) return meta.gitPrStatus;
+    const comparisons = this.gitPrComparisons.get(meta) ?? new Map<string, Promise<GitComparisonSummary | undefined>>();
+    this.gitPrComparisons.set(meta, comparisons);
+    const key = JSON.stringify([branch, preferredBase]);
+    const cached = comparisons.get(key);
+    // share both pending and completed comparisons across agents and dashboard polls
+    if (cached !== undefined) return cached;
+    // unavailable bases stay cached until the next metadata snapshot; thrown errors retry
+    const value = gitPrComparison(meta.workspace, branch, meta.gitStatus, preferredBase, true).catch(error => {
+      comparisons.delete(key);
+      throw error;
+    });
+    comparisons.set(key, value);
+    return value;
+  }
+
   // enrich live agent state with independently cached worktree metadata
   private async buildDashboard(force = false, freshAgents = false): Promise<Dashboard> {
     const discovered = await this.refresh(force, freshAgents);
@@ -628,7 +643,7 @@ export class DiscoveryService {
       messageQuestionStates.set(agent.id, question === undefined ? this.agentMessageQuestion(agent) : { hasQuestion: false });
       const branch = meta.branch ?? agent.branch;
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, branch);
-      const gitPrStatus = await gitPrComparisonForBase(meta, branch, pullRequest?.baseBranch);
+      const gitPrStatus = await this.gitPrComparisonForBase(meta, branch, pullRequest?.baseBranch);
       const details = worktree === undefined
         ? { ...agent, branch, ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }) }
         : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), home: worktree.identity, projectId: worktree.projectId, worktreeId: worktree.id, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl, projectProxied: worktree.projectPort !== undefined }) };
@@ -652,7 +667,7 @@ export class DiscoveryService {
       if (activeWorktreeIds.has(worktree.id)) return base;
       const meta = await metadataFor(worktree.identity);
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, meta.branch);
-      const gitPrStatus = await gitPrComparisonForBase(meta, meta.branch, pullRequest?.baseBranch);
+      const gitPrStatus = await this.gitPrComparisonForBase(meta, meta.branch, pullRequest?.baseBranch);
       return { ...base, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), ...(pullRequest === undefined ? {} : { pullRequest }) };
     }));
     const byProject = new Map<string, DashboardWorktree[]>();
