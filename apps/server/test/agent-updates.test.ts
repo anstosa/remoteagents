@@ -138,6 +138,42 @@ describe('agent updates', () => {
     expect(runner.mock.calls.map(call => call[0])).toEqual(['current', 'latest', 'update', 'current', 'latest']);
   });
 
+  // allow slow downloads without leaving hung installers unbounded
+  it.each([
+    { installMs: 8 * 60_000, terminal: 'complete' },
+    { installMs: 16 * 60_000, terminal: 'failed' }
+  ])('bounds an installer taking $installMs ms', async ({ installMs, terminal }) => {
+    vi.useFakeTimers();
+    let installed = '1.0.0';
+    // model the runner's deadline without starting a real installer
+    const runner = vi.fn<AgentUpdateRunner>(async (command, timeoutMs) => {
+      // keep version checks independent of the slow download
+      if (command !== 'update') return { code: 0, output: command === 'current' ? installed : '1.1.0' };
+      await new Promise(resolve => setTimeout(resolve, Math.min(installMs, timeoutMs)));
+      // preserve the old installation when the runner times out
+      if (installMs > timeoutMs) return { code: -1, output: '' };
+      installed = '1.1.0';
+      return { code: 0, output: 'installed' };
+    });
+    try {
+      const service = new AgentUpdateService(configured(), '/home/test', runner);
+      const started = service.startUpdate('codex');
+      // require the background job used by the browser
+      if (started.outcome !== 'started') throw new Error('expected a started update');
+      await vi.advanceTimersByTimeAsync(5 * 60_000 + 1);
+      expect(service.updateStatus('codex', started.job.id)?.state).toBe('running');
+      expect(service.startUpdate('codex')).toEqual(started);
+
+      await vi.advanceTimersByTimeAsync(Math.min(installMs, 15 * 60_000) - (5 * 60_000 + 1));
+      expect(service.updateStatus('codex', started.job.id)?.state).toBe(terminal);
+      expect(installed).toBe(terminal === 'complete' ? '1.1.0' : '1.0.0');
+      expect(runner.mock.calls.filter(([command]) => command === 'update')).toHaveLength(1);
+    } finally {
+      await vi.runAllTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
   it('serializes updates and reports command failures safely', async () => {
     let release = () => {};
     const gate = new Promise<void>(resolve => { release = resolve; });

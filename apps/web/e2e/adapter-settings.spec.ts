@@ -426,7 +426,8 @@ test('polls queued Codex and OMX updates through completion', async ({ page }) =
   await expect(codexUpdate).toBeDisabled();
   await expect(omxUpdate).toBeDisabled();
   const codexPolls = polls.codex;
-  await page.clock.fastForward(126_000);
+  // outlast the former seven-minute browser deadline
+  await page.clock.fastForward(8 * 60_000);
   await expect.poll(() => polls.codex).toBeGreaterThan(codexPolls);
   await expect(codexUpdate).toContainText('Updating…');
   await expect(codexUpdate).toBeDisabled();
@@ -562,7 +563,7 @@ test('rejects stale and mismatched agent update jobs', async ({ page }) => {
 });
 
 // stop polling one uncertain job after the bounded wait
-test('stops transient agent update polling at the seven-minute deadline', async ({ page }) => {
+test('stops transient agent update polling at the seventeen-minute deadline', async ({ page }) => {
   const adapters = { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } };
   await openSettings(page, adapters, { open: false, agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
   const menu = await openAgentMenu(page);
@@ -591,7 +592,7 @@ test('stops transient agent update polling at the seven-minute deadline', async 
   await expect(update).toContainText('Updating…');
   await page.clock.runFor(1_001);
   await expect.poll(() => polls).toBeGreaterThan(0);
-  await page.clock.fastForward(420_000);
+  await page.clock.fastForward(17 * 60_000);
   await expect(menu.getByRole('alert')).toHaveText(unknownStatus);
   await expect(update).toBeEnabled();
   expect(posts).toBe(1);

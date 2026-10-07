@@ -104,7 +104,7 @@ describe('agent update API', () => {
     expect(started.statusCode).toBe(202);
     const job = started.json<{ update: AgentUpdateJob }>().update;
     expect(job).toMatchObject({ kind: 'codex', state: 'running' });
-    expect(runner).toHaveBeenCalledWith('update', 5 * 60_000);
+    expect(runner).toHaveBeenCalledWith('update', 15 * 60_000);
 
     const denied = await app.inject({ method: 'GET', url: `/api/agents/codex/update/${job.id}`, headers: { host: testHost } });
     const running = await app.inject({ method: 'GET', url: `/api/agents/codex/update/${job.id}`, headers: readHeaders });

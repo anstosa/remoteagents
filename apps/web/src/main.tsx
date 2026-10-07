@@ -9463,7 +9463,7 @@ function App() {
     if (!isAgentUpdateJob(payload?.update) || payload.update.kind !== kind) return { error: unknownStatus };
     let job = payload.update;
     const id = job.id;
-    const deadline = Date.now() + 7 * 60_000;
+    const deadline = Date.now() + 17 * 60_000;
     // outlast the bounded installer and version checks without retrying the mutation
     while (true) {
       // apply only a validated terminal result

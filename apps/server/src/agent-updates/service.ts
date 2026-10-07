@@ -10,7 +10,8 @@ import { serverCheckout, serverCheckoutOnHost } from '../workspaces/server-check
 
 // allow registry latency while keeping version checks bounded
 const statusTimeoutMs = 30_000;
-const updateTimeoutMs = 5 * 60_000;
+// large agent downloads can exceed five minutes; keep the browser wait above this budget
+const updateTimeoutMs = 15 * 60_000;
 const cacheTtlMs = 15 * 60_000;
 const failedCacheTtlMs = 60_000;
 const maxOutputBytes = 16 * 1024;
