@@ -34,7 +34,8 @@ RUN printf '%s\n' 'Acquire::http::Pipeline-Depth "0";' 'Acquire::http::No-Cache 
 
 WORKDIR /app
 COPY --from=build /opt/rac-server ./server
-COPY --from=build /build/apps/web/dist ./web/dist
+# keep copied public assets readable under restrictive checkout permissions
+COPY --from=build --chown=node:node /build/apps/web/dist ./web/dist
 COPY --from=build /build/node_modules /opt/rac-dev/node_modules
 COPY --from=build /build/apps/server/node_modules /opt/rac-dev/apps/server/node_modules
 

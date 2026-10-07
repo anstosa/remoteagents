@@ -601,7 +601,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
 // panel as a peer of the Comparison. A text file renders through the same diff library (a
 // `{type:'file'}` item) so it gets real syntax highlighting; an image (including the agent `/tmp`
 // screenshot bridge), a binary file, and the over-cap truncation notice are plain non-library views.
-// "‹ Changes" returns to the Comparison the panel would otherwise show; the close button dismisses it.
+// the back action returns to the source panel or comparison
 function FileView({ filePreview, options, style, expanded, onBack, onClose, onOpenInEditor }: { filePreview: FilePreviewView; options: PanelOptions; style: CSSProperties; expanded: boolean; onBack: () => void; onClose: () => void; onOpenInEditor?: (target: EditorTarget) => void }) {
   const selectionActions = useSelectionActions();
   const { path, state, preview } = filePreview;
@@ -615,6 +615,7 @@ function FileView({ filePreview, options, style, expanded, onBack, onClose, onOp
   // the header's editor button opens the selected line, else the top; only a path inside the Place
   // can be opened (a response file may name one elsewhere, such as a `/tmp` screenshot)
   const [selection, setSelection] = useState<CodeViewLineSelection | null>(null);
+  const backLabel = filePreview.source === 'files' ? 'Files' : 'Changes';
   const renderHeaderMetadata = () => {
     if (onOpenInEditor === undefined || !isPlaceRelativePath(path)) return null;
     return <EditorJumpButton file={path} line={selection === null ? 1 : Math.min(selection.range.start, selection.range.end)} onOpen={onOpenInEditor} />;
@@ -622,7 +623,7 @@ function FileView({ filePreview, options, style, expanded, onBack, onClose, onOp
   return (
     <section onAuxClickCapture={event => closeOnMiddleClick(event, onClose)} className={`code-pane code-pane-file${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes" onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => codeContextMenu(event, selectionActions)}>
       <PanelHeader panelKey="code" label="code panel" title={<nav className="code-pane-crumbs" aria-label="Location">
-          <button type="button" className="code-pane-crumb-back" onClick={onBack}>‹ Changes</button>
+          <button type="button" className="code-pane-crumb-back" onClick={onBack}>‹ {backLabel}</button>
           <span className="code-pane-crumb-sep" aria-hidden="true">/</span>
           <span className="code-pane-crumb-current" title={path}>{basename(path)}</span>
         </nav>}

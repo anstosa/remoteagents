@@ -156,6 +156,7 @@ assumptions:
 | `HOST_TMUX_BIN` | Host tmux executable or wrapper mounted into the container | `/usr/bin/tmux` |
 | `HOST_TMUX_DIR` | Host tmux socket directory | `$HOME/.local/state/tmux/tmux-$HOST_UID` |
 | `HOST_UID` | UID owning the host tmux server | `1000` |
+| `RAC_HOST_NODE_BIN` | Absolute host Node.js executable for the Files broker | Required for bridged Files |
 | `RAC_HOST_CODEX_BIN` | Host-visible Codex executable used by the update advisor | `adapters.codex.program` |
 | `RAC_HOST_INTERACTIVE_SHELL` | Absolute zsh, bash, or fish path executed by the host tmux server | `/usr/bin/zsh` |
 | `RAC_HOST_PATH` | Complete PATH exported before host agent and stack commands | `/usr/local/bin:/usr/bin:/bin` |
@@ -166,6 +167,23 @@ protocol as the host server. On hosts whose tmux binary needs incompatible
 runtime libraries, point `HOST_TMUX_BIN` at an installation-local wrapper and
 add its binary and library mounts to the ignored override. The tracked image no
 longer assumes Homebrew, an x86-64 loader, or a particular host library layout.
+
+### Full-host Files access
+
+Set `RAC_HOST_NODE_BIN` in the ignored `.env` to the absolute executable printed
+by `command -v node` on the host. The Files panel uses a private host-user broker
+launched through tmux, rather than limiting browsing to container bind mounts.
+The container's numeric UID must match `HOST_UID` (the image defaults to 1000).
+Filesystem operations inherit the host tmux account's supplementary groups;
+they never use sudo or fall back to container permissions. Missing host Node,
+UID parity, or proc/tmux/checkout mapping is reported as an unavailable bridge.
+
+Files starts at the selected Place's host directory and can navigate anywhere
+the host account can access. Filename clicks open the browser Code preview;
+row-body clicks select entries. The configured native editor remains restricted
+to paths relative to its Place. Deletes are permanent and require confirmation.
+Favorites persist per exact Place in `.data/file-favorites.json`; operation
+recovery records persist separately in `.data/file-operation-journal.json`.
 
 Mount the complete host `${HOME}/.codex` directory, not only `auth.json`. Codex
 replaces credentials atomically during refreshes and account changes; a

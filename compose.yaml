@@ -26,6 +26,9 @@ services:
       RAC_QUEUED_PROMPTS_FILE: /workspace/.data/queued-prompts.json
       RAC_TEMP_PREVIEWS_DIR: /workspace/.data/temp-previews
       RAC_NOTES_FILE: /workspace/.data/notes.json
+      # persist exact-place favorites and identity-bound operation recovery
+      RAC_FILE_FAVORITES_FILE: /workspace/.data/file-favorites.json
+      RAC_FILE_OPERATION_JOURNAL: /workspace/.data/file-operation-journal.json
       # retired at boot (Conversations replaced bookmarks); kept so the one-time retirement finds the mounted file
       RAC_BOOKMARKS_FILE: /workspace/.data/bookmarks.json
       RAC_REVIEW_TOURS_FILE: /workspace/.data/review-tours.json

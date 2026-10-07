@@ -41,6 +41,9 @@ import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
 import { AdaptersContext, AgentLaunchSettingsContext, CodexAccountsMenuContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, defaultSandboxed, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, originCopy, sandboxCopy, type AdapterCapabilities, type AgentKind, type AgentUpdateStatus, type LaunchMenuEntry, type LaunchResolution, type LaunchChoice } from './launch-profile.js';
 import { ScheduleEditor, defaultScheduleCron, lastRunNeedsAttention, scheduleInvalid, type Schedule, type ScheduleAdapterOption, type ScheduleSetBody, type ScheduleTarget, type ScheduleTargetOption } from './schedule-editor.js';
 import { useBrowserPermissionBroker } from './browser-permissions.js';
+import { FilesPanel } from './files-panel/files-panel.js';
+import { saveFilesOpen, useFilesController } from './files-panel/controller.js';
+import type { FileEntry } from './files-panel/contracts.js';
 import './styles.css';
 
 // preserve both middle-click and context-menu presses
@@ -615,9 +618,16 @@ type ConsoleConnectionListener = (reachable: boolean) => void;
 const consoleConnectionListeners = new Set<ConsoleConnectionListener>();
 const unavailableStatuses = new Set([502, 503, 520, 521, 522, 523, 524, 525, 526, 527, 530]);
 let consoleReachable = true;
+let consoleReachabilityRevision = 0;
+let consoleHealthCheck: Promise<boolean> | undefined;
+// publish connectivity without allowing older probes to override a successful response
 const setConsoleReachable = (reachable: boolean) => {
+  // every definitive observation supersedes outstanding failure checks
+  consoleReachabilityRevision += 1;
+  // notify only connection transitions
   if (reachable === consoleReachable) return;
   consoleReachable = reachable;
+  // update mounted connection observers
   consoleConnectionListeners.forEach(listener => listener(reachable));
 };
 const subscribeToConsoleConnection = (listener: ConsoleConnectionListener) => {
@@ -626,14 +636,31 @@ const subscribeToConsoleConnection = (listener: ConsoleConnectionListener) => {
     consoleConnectionListeners.delete(listener);
   };
 };
+// distinguish an unavailable operation from an unavailable console
+const confirmConsoleReachability = () => {
+  // share one bounded probe across concurrent failed requests
+  if (consoleHealthCheck !== undefined) return;
+  const revision = consoleReachabilityRevision;
+  consoleHealthCheck = fetch('/healthz', { cache: 'no-store', signal: AbortSignal.timeout(4_000) })
+    .then(response => response.ok, () => false)
+    .finally(() => { consoleHealthCheck = undefined; });
+  // preserve responses and errors while checking connectivity in the background
+  void consoleHealthCheck.then(reachable => {
+    // ignore a check superseded by newer definitive connectivity evidence
+    if (revision !== consoleReachabilityRevision) return;
+    setConsoleReachable(reachable);
+  });
+};
+// observe console health without promoting operation failures into global outages
 const consoleFetch = async (url: string, init: RequestInit = {}) => {
   try {
     const response = await fetch(url, init);
-    setConsoleReachable(!unavailableStatuses.has(response.status));
+    // confirm gateway-like statuses before blocking the interface
+    if (unavailableStatuses.has(response.status)) confirmConsoleReachability();
+    else setConsoleReachable(true);
     return response;
   } catch (error) {
-    // A caller-owned timeout or cancellation only says that operation took too
-    // long. It does not mean the console or tunnel is unreachable.
+    // caller-owned cancellation does not indicate a connection failure
     if (!init.signal?.aborted) setConsoleReachable(false);
     throw error;
   }
@@ -4913,15 +4940,25 @@ type TerminalColumn = { key: string; label: string; node: ReactElement<TerminalC
 type SplitSizes = Record<string, number>;
 type SplitStyle = React.CSSProperties & { '--agent-split': string; '--note-split': string; '--browser-split': string; '--split-cols': string };
 type SplitDrag = { pointerId: number; startX: number; left: string; right: string; leftWidth: number; rightWidth: number; sizes: SplitSizes; resized?: SplitSizes };
-// the fixed panels' selectors; a Terminal column carries its pane id as `data-panel-key`
-const splitPanelSelector = (key: string): string => key === 'agent' ? '.log-output' : key === 'note' ? '.note-pane' : key === 'browser' ? '.browser-pane' : key === 'code' ? '.code-pane' : key === 'stack' ? '.stack-pane' : `.terminal-pane[data-panel-key="${key}"]`;
+type FixedSplitPanelKey = 'agent' | 'note' | 'browser' | 'files' | 'code' | 'stack';
+type SplitPanelKind = FixedSplitPanelKey | 'terminal';
+// keep fixed split identity in one typed source of truth
+const fixedSplitPanels: { [Key in FixedSplitPanelKey]: { selector: string; kind: Key; title: string } } = {
+  agent: { selector: '.log-output', kind: 'agent', title: 'Agent output' },
+  note: { selector: '.note-pane', kind: 'note', title: 'Note' },
+  browser: { selector: '.browser-pane', kind: 'browser', title: 'Project browser' },
+  files: { selector: '.files-pane', kind: 'files', title: 'Files' },
+  code: { selector: '.code-pane', kind: 'code', title: 'Code changes' },
+  stack: { selector: '.stack-pane', kind: 'stack', title: 'Stack' }
+};
+// return fixed metadata without treating terminal ids as object keys
+const fixedSplitPanel = (key: string) => Object.prototype.hasOwnProperty.call(fixedSplitPanels, key) ? fixedSplitPanels[key as FixedSplitPanelKey] : undefined;
+// use pane ids only for terminal selectors
+const splitPanelSelector = (key: string): string => fixedSplitPanel(key)?.selector ?? `.terminal-pane[data-panel-key="${key}"]`;
 const browserMobileWidth = 390;
 const minimumSplitPanelWidth = browserMobileWidth;
-// the panel kind for a key: the fixed panels are themselves, every Terminal is "terminal".
-// Drives the mobile view class, the phone dot's tint and a resizer's aria-label alike.
-const splitPanelKind = (key: string): string => key === 'agent' || key === 'note' || key === 'browser' || key === 'code' || key === 'stack' ? key : 'terminal';
-// name the fixed splits in the phone chooser
-const splitPanelTitles: Record<string, string> = { agent: 'Agent output', note: 'Note', browser: 'Project browser', code: 'Code changes', stack: 'Stack' };
+// classify unknown keys as terminal panes
+const splitPanelKind = (key: string): SplitPanelKind => fixedSplitPanel(key)?.kind ?? 'terminal';
 // scope split layouts to one browser client and workspace composition
 const splitSizesKey = (worktreeId: string, signature: string) => `rac.split-sizes:${worktreeId}:${signature}`;
 // one panel weight is valid when finite, positive and not absurd
@@ -4952,23 +4989,30 @@ const CodePanel = lazy(() => import('./code-panel/code-panel.js'));
 // Render one Worktree's open Code panel from its controller (callers gate on `controller.open`, so
 // this is only mounted while open). The lazy chunk resolves behind a lightweight fallback so the
 // split does not jump.
-function CodePane({ controller, prAvailable, branch, review, onOpenInEditor }: { controller: CodePanelController; prAvailable: boolean; branch?: string; review?: CodePanelReview; onOpenInEditor?: (target: EditorTarget) => void }) {
+function CodePane({ controller, prAvailable, branch, review, onOpenInEditor, onReturnToFiles }: { controller: CodePanelController; prAvailable: boolean; branch?: string; review?: CodePanelReview; onOpenInEditor?: (target: EditorTarget) => void; onReturnToFiles?: () => void }) {
+  // return transient host-file previews to files
+  const closeFile = () => {
+    const fromFiles = controller.filePreview?.source === 'files';
+    controller.closeFilePreview();
+    // restore files only for its explicit source
+    if (fromFiles) onReturnToFiles?.();
+  };
   return <Suspense fallback={<section className="code-pane" role="region" aria-label="Code changes"><p className="code-pane-status">Loading changes…</p></section>}>
-    <CodePanel mode={controller.mode} state={controller.state} patch={controller.patch} selectedPath={controller.selectedPath} filePreview={controller.filePreview} prAvailable={prAvailable} branch={branch} review={review} loadFile={controller.loadFile} onSelectFile={controller.selectFile} onClearFile={controller.clearFile} onSetMode={controller.setMode} onCloseFile={controller.closeFilePreview} onClose={controller.close} onRetry={controller.refresh} {...(onOpenInEditor === undefined ? {} : { onOpenInEditor })} />
+    <CodePanel mode={controller.mode} state={controller.state} patch={controller.patch} selectedPath={controller.selectedPath} filePreview={controller.filePreview} prAvailable={prAvailable} branch={branch} review={review} loadFile={controller.loadFile} onSelectFile={controller.selectFile} onClearFile={controller.clearFile} onSetMode={controller.setMode} onCloseFile={closeFile} onClose={controller.close} onRetry={controller.refresh} {...(onOpenInEditor === undefined ? {} : { onOpenInEditor })} />
   </Suspense>;
 }
-// render ordered resizable output panels: the agent (when one runs or is starting), any Terminals,
-// then note, browser, code and stack; with none open it shows `empty`
+// render every ordered resizable panel
 // `expansion` is the Workspace's expanded panel; a split without a Workspace keeps its own.
 // On a phone the panels sit in a swipe carousel, one per screen; `onCarousel` hears its panels and
 // the one in view, for the toolbar's dots.
-function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, stack, terminals, terminalSelectionActions, onCarousel, initialPanelsReady, expansion: workspaceExpansion }: { worktreeId?: string; output?: ReactNode; empty?: ReactNode; note?: ReactNode; browser?: ReactNode; code?: ReactNode; stack?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onCarousel?: (carousel: PanelCarousel) => void; initialPanelsReady?: boolean; expansion?: PanelExpansion }) {
+function ResizableLogSplit({ worktreeId, output, empty, note, browser, files, code, stack, terminals, terminalSelectionActions, onCarousel, initialPanelsReady, expansion: workspaceExpansion }: { worktreeId?: string; output?: ReactNode; empty?: ReactNode; note?: ReactNode; browser?: ReactNode; files?: ReactNode; code?: ReactNode; stack?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onCarousel?: (carousel: PanelCarousel) => void; initialPanelsReady?: boolean; expansion?: PanelExpansion }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const ownExpansion = usePanelExpansion();
   const expansion = workspaceExpansion ?? ownExpansion;
   const dragRef = useRef<SplitDrag | undefined>(undefined);
   const hasNote = note !== undefined && note !== null;
   const hasBrowser = browser !== undefined && browser !== null;
+  const hasFiles = files !== undefined && files !== null;
   const hasCode = code !== undefined && code !== null;
   const hasStack = stack !== undefined && stack !== null;
   const termCols = terminals ?? [];
@@ -4980,6 +5024,7 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, sta
     ...termCols.map(col => ({ key: col.key, node: col.node })),
     ...(hasNote ? [{ key: 'note', node: note }] : []),
     ...(hasBrowser ? [{ key: 'browser', node: browser }] : []),
+    ...(hasFiles ? [{ key: 'files', node: files }] : []),
     ...(hasCode ? [{ key: 'code', node: code }] : []),
     ...(hasStack ? [{ key: 'stack', node: stack }] : [])
   ];
@@ -5061,7 +5106,7 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, sta
   const carouselPanels: CarouselPanel[] = columns.map(column => {
     const kind = splitPanelKind(column.key);
     const termLabel = termCols.find(col => col.key === column.key)?.label.trim();
-    const title = splitPanelTitles[kind] ?? `Terminal ${termLabel || termCols.findIndex(col => col.key === column.key) + 1}`;
+    const title = fixedSplitPanel(column.key)?.title ?? `Terminal ${termLabel || termCols.findIndex(col => col.key === column.key) + 1}`;
     const label = `Show ${title.charAt(0).toLowerCase()}${title.slice(1)}`;
     return { key: column.key, kind, title, label };
   });
@@ -5121,7 +5166,7 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, sta
     return index === 0 ? [node] : [resizer(columns[index - 1].key, column.key), node];
   });
   const mobileView = carousel.visibleKey !== undefined ? ` mobile-${splitPanelKind(carousel.visibleKey)}-view` : '';
-  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasAgent ? '' : ' no-agent'}${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasStack ? ' has-stack' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown} onPointerDownCapture={preserveMiddleClickPress} onMouseDownCapture={preserveMiddleClickPress} onPointerDown={startContentSwipe} onPointerUp={contentSwipe.onPointerUp} onPointerCancel={contentSwipe.onPointerCancel} onTouchStart={startContentTouchSwipe} onTouchEnd={contentSwipe.onTouchEnd} onTouchCancel={contentSwipe.onTouchCancel} onClickCapture={contentSwipe.onClickCapture}>{columns.length === 0 ? empty : laidOut}</div></PanelExpandContext.Provider>;
+  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasAgent ? '' : ' no-agent'}${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasFiles ? ' has-files' : ''}${hasCode ? ' has-code' : ''}${hasStack ? ' has-stack' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown} onPointerDownCapture={preserveMiddleClickPress} onMouseDownCapture={preserveMiddleClickPress} onPointerDown={startContentSwipe} onPointerUp={contentSwipe.onPointerUp} onPointerCancel={contentSwipe.onPointerCancel} onTouchStart={startContentTouchSwipe} onTouchEnd={contentSwipe.onTouchEnd} onTouchCancel={contentSwipe.onTouchCancel} onClickCapture={contentSwipe.onClickCapture}>{columns.length === 0 ? empty : laidOut}</div></PanelExpandContext.Provider>;
 }
 
 // One pane of a Worktree the picker can show as a Terminal (the wire shape of
@@ -5159,12 +5204,13 @@ const saveTerminals = (worktreeId: string | undefined, open: OpenTerminal[]) => 
   try { localStorage.setItem(worktreeTerminalsKey(worktreeId), JSON.stringify(open.slice(0, maxOpenTerminals).map(terminal => ({ paneId: terminal.paneId, name: clampTerminalName(terminal.name) })))); }
   catch { /* browser storage is optional */ }
 };
-// forget the panels a Place last had open on this device (Terminals, browser, note), so its
+// forget the panels a Place last had open on this device, so its
 // Workspace opens empty
 const forgetOpenPanels = (placeId: string) => {
   saveTerminals(placeId, []);
   saveBrowserSplit(placeId, false);
   saveStackPanel(placeId, false);
+  saveFilesOpen(placeId, false);
   clearWorktreeNoteView(placeId);
 };
 // a Place's live panes, or undefined when they could not be listed
@@ -5924,12 +5970,13 @@ type WorkspacePlace = { id?: string; worktreeId?: string; path?: string; stack?:
 // What the Place's notes need from the Agent there (or, with no Agent, how a note's Run launches one).
 type WorkspaceNotesOptions = { agentWorking?: boolean; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean; onPromptHistoryChanged?: () => void | Promise<void>; promptHistory?: PromptHistoryEntry[]; schedulePrefill?: SchedulePrefill; onLaunchAndRun?: (noteId: string) => Promise<boolean>; launchRunLabel?: string };
 
-// The Place-scoped panel state behind one tab: browser, Code panel, Terminals, notes, conversations
+// keep all place-scoped panel state behind one tab
 // and git expansion. The tab's card holds it, so it outlives a switch between the Agents there;
 // the agent panel's composer drives the same browser and Terminals, and the Workspace renders it.
 function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNavigateWorktree, onOperationFeedback }: { agentId?: string; noteOptions: WorkspaceNotesOptions; onNavigateWorktree?: (worktreeId: string) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
   const browser = useProjectBrowser(place.projectUrl, place.id, place.projectProxied);
   const code = useCodePanel(place.worktreeId, request, comparisonChangeSignal(place.gitStatus, place.gitPrStatus, place.attention));
+  const files = useFilesController(place.id, request);
   const stackPanel = useStackPanel(place.worktreeId);
   const terminals = useTerminalViews(place.id, onOperationFeedback);
   // keep the toolbar dots aligned with the visible phone panel
@@ -5964,6 +6011,7 @@ function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNa
         // close only a visible note
         if (placeNotes.active) placeNotes.close();
         browser.close();
+        files.close();
         code.close();
         stackPanel.close();
         terminals.closeAll();
@@ -5994,7 +6042,7 @@ function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNa
     const failure = await openEditorShell(placeId, target);
     if (failure !== undefined) onOperationFeedback?.({ tone: 'error', message: 'The editor did not open', detail: failure });
   };
-  return { place, browser, code, stackPanel, openStackPanel, terminals, carousel, setCarousel, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded, agentHidden, showAgent, openInEditor, viewKey: key };
+  return { place, browser, files, code, stackPanel, openStackPanel, terminals, carousel, setCarousel, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded, agentHidden, showAgent, openInEditor, viewKey: key };
 }
 type WorkspaceState = ReturnType<typeof useWorkspace>;
 // The git actions only an Agent offers (push, fixup, guided review); an agentless Workspace passes
@@ -6014,7 +6062,7 @@ function WorkspaceGitStatus({ workspace, actions, onToggle }: { workspace: Works
 // shows `empty` instead. With no agent panel the Workspace is idle.
 // `onOpenWorktreeStack` is a used process's Open in the Stack panel, which switches to its Worktree.
 function Workspace({ workspace, output, empty, git, onAddToPrompt, onOpenWorktreeStack }: { workspace: WorkspaceState; output?: ReactNode; empty?: ReactNode; git?: WorkspaceGitActions; onAddToPrompt?: (text: string) => void; onOpenWorktreeStack?: (worktreeId: string) => void }) {
-  const { place, browser, code, stackPanel, notes, expansion } = workspace;
+  const { place, browser, files, code, stackPanel, notes, expansion } = workspace;
   const projects = useContext(ProjectsContext);
   const visibleOutput = workspace.agentHidden ? undefined : output;
   const idle = visibleOutput === undefined || visibleOutput === null;
@@ -6043,12 +6091,23 @@ function Workspace({ workspace, output, empty, git, onAddToPrompt, onOpenWorktre
   const browserPane = browser.url === undefined || browser.homeUrl === undefined ? null : <ProjectBrowserPane url={browser.url} homeUrl={browser.homeUrl} proxied={browser.proxied} worktreeId={place.id} navigationRequest={browser.navigationRequest} onNavigate={browser.navigate} onClose={browser.close} />;
   const review = git === undefined || (git.onReview === undefined && git.reviewUnavailable === undefined) ? undefined : { onReview: git.onReview, open: git.review !== undefined, generating: git.review?.generating === true, unavailable: git.reviewUnavailable };
   const openInEditor = workspace.openInEditor;
-  const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} branch={place.branch} review={review} {...(openInEditor === undefined ? {} : { onOpenInEditor: (target: EditorTarget) => void openInEditor(target) })} /> : null;
+  // open one token-bound host file and reveal its code split
+  const openFilesEntry = (entry: FileEntry) => {
+    // require a place-scoped preview endpoint
+    if (place.id === undefined) return;
+    expansion.restore();
+    const mounted = code.open;
+    code.openFilePreview(entry.hostPath, `/api/worktrees/${encodeURIComponent(place.id)}/files/preview`, { body: { objectToken: entry.objectToken }, source: 'files' });
+    // wait one frame only when the code split must mount first
+    if (mounted) workspace.carousel?.show('code'); else window.requestAnimationFrame(() => workspace.carousel?.show('code'));
+  };
+  const filesPane = files.open && place.id !== undefined ? <FilesPanel controller={files} onOpenFile={openFilesEntry} /> : null;
+  const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} branch={place.branch} review={review} onReturnToFiles={() => { expansion.restore(); workspace.carousel?.show('files'); }} {...(openInEditor === undefined ? {} : { onOpenInEditor: (target: EditorTarget) => void openInEditor(target) })} /> : null;
   const stackName = stackPlaceName(place.worktreeId, projects);
   const placeId = place.id;
   // the Stack panel shows only for a Worktree whose stack has processes to show
   const stackPane = !stackPanel.open || place.worktreeId === undefined || (place.stack?.processes?.length ?? 0) === 0 ? null : <StackPanel worktreeId={place.worktreeId} title={stackName === undefined ? 'this worktree' : `${stackName.project} / ${stackName.worktree}`} stack={place.stack} selection={stackPanel.selection} onSelect={stackPanel.select} onClose={stackPanel.close} handlers={stackHandlers(place.worktreeId)} onOpenWorktree={onOpenWorktreeStack} onOpenTerminal={placeId === undefined ? undefined : (paneId, name) => { /* on a phone an already-open panel is scrolled to; a new one comes into view as it opens */ workspace.carousel?.show(paneId); requestTerminalFocus(placeId, { paneId, name }); }} readOutput={processOutput} />;
-  return <SelectionActionsContext.Provider value={selectionActions}><section className="log-shell" data-workspace-key={workspace.viewKey}><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={visibleOutput} empty={empty} note={notes.pane} browser={browserPane} code={codePane} stack={stackPane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onCarousel={workspace.setCarousel} initialPanelsReady={notes.initialNotesLoaded} /></div><ClientSettingsPane /></section></SelectionActionsContext.Provider>;
+  return <SelectionActionsContext.Provider value={selectionActions}><section className="log-shell" data-workspace-key={workspace.viewKey}><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={visibleOutput} empty={empty} note={notes.pane} browser={browserPane} files={filesPane} code={codePane} stack={stackPane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onCarousel={workspace.setCarousel} initialPanelsReady={notes.initialNotesLoaded} /></div><ClientSettingsPane /></section></SelectionActionsContext.Provider>;
 }
 
 type LogProps = { id: string; onTurnOff?: () => void; embedded?: boolean; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined, overflow: boolean) => void; header?: (connection: string) => ReactNode; composer?: ReactNode; notes?: WorktreeNotes; onAddToPrompt?: (text: string) => void; onOpenUrl?: (url: string) => boolean; onOpenFile?: (path: string) => void; processingLabel?: string; processingDetail?: string };
@@ -6579,7 +6638,7 @@ function RemoveBranchDialog({ worktreeId, branch, onClose, onDeleted }: { worktr
 
 // the Workspace toolbar's remaining Place actions: panels, folder pin, GitHub Actions and removal
 type PlaceMenuProps = { agentId?: string; worktreeId?: string; git?: boolean; pinned?: boolean; onTogglePin?: () => void; onRemoveWorktree?: () => void; removeDisabledReason?: string };
-// A panel the ⋮ opens on a phone, where it leaves the toolbar (Browser, Code).
+// a panel the phone menu opens after it leaves the direct toolbar
 type PlaceMenuPanel = { key: string; label: string; icon: ReactNode; title: string; disabled?: boolean; onSelect: () => void };
 
 // the toolbar's ⋮ keeps folder pin and worktree removal; GitHub Actions follows the current Place
@@ -6640,7 +6699,7 @@ function PlaceMenu({ agentId, worktreeId, git = false, pinned, onTogglePin, onRe
 
 // render the Workspace of a Place where Agents run: the Place's panels and toolbar, with the agent
 // panel showing the Agent chosen in its switcher. Only the agent panel follows the switcher; the
-// Terminals, notes, browser and code belong to the Place and stay open across a switch.
+// place panels stay open across an agent switch
 // The Agent a guided review binds to (its start, its stored tour and where its change request is
 // sent): the shown Agent, unless that is a Review run's own, which is read-only and closes with its
 // run; then another Agent of the same Worktree, if one runs there.
@@ -7015,7 +7074,7 @@ const GlobalLaunchContext = createContext<ToolbarLaunch | undefined>(undefined);
 
 // The Workspace toolbar beneath the tab row: the current Workspace's controls, laid out the same
 // with and without an Agent. Persistent Launch leads at the far left, followed by panel
-// buttons, Place status and actions. On a phone, Browser and Code move into the ⋮, and
+// buttons, place status and actions; secondary phone panels move into the ⋮, and
 // the carousel's position dots sit in the middle. `onOpenWorktreeStack` is a Process notice's
 // Open, which switches to another Worktree with its stack menu open.
 function WorkspaceToolbar({ workspace, hasAgent = false, launch, onOpenWorktreeStack, conversations, git, onGitToggle, cleanupControl, menu }: { workspace?: WorkspaceState; hasAgent?: boolean; launch?: ToolbarLaunch; onOpenWorktreeStack?: (worktreeId: string) => void; conversations?: ReactNode; git?: WorkspaceGitActions; onGitToggle?: () => void; cleanupControl?: ReactNode; menu?: PlaceMenuProps }) {
@@ -7031,11 +7090,12 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, onOpenWorktreeS
   // a Worktree shows its git status, a directory-Project or Scratch Place its path; an Agent the
   // dashboard placed nowhere (no Place id) still shows the git status discovery found for it
   const hasGit = worktreeId !== undefined || (place?.id === undefined && (place?.branch !== undefined || place?.gitStatus !== undefined));
-  // on a phone the ⋮ opens Browser and Code, or brings an open one into view
+  // on a phone the ⋮ opens secondary panels or brings an open one into view
   const menuPanels: PlaceMenuPanel[] = [];
   if (phone && workspace !== undefined) {
-    const { browser, code, carousel } = workspace;
+    const { browser, files, code, carousel } = workspace;
     if (browser.homeUrl !== undefined) menuPanels.push({ key: 'browser', label: 'Browser', icon: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{browserGlyph}</svg>, title: 'Show the project in the browser panel', onSelect: () => browser.open ? carousel?.show('browser') : browser.toggle() });
+    if (place?.id !== undefined) menuPanels.push({ key: 'files', label: 'Files', icon: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{filesGlyph}</svg>, title: 'Show the host Files panel', onSelect: () => files.open ? carousel?.show('files') : files.show() });
     if (worktreeId !== undefined && (place?.stack?.processes?.length ?? 0) > 0) menuPanels.push({ key: 'stack', label: 'Stack', icon: <StackIcon path={stackGlyphs.panel} className="more-menu-icon" />, title: 'Show the Stack panel', onSelect: () => workspace.openStackPanel() });
     if (worktreeId !== undefined) menuPanels.push({ key: 'code', label: 'Code', icon: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{codeGlyph}</svg>, title: 'Show the working changes in the Code panel', onSelect: () => code.open ? carousel?.show('code') : code.openChanges('working') });
   }
@@ -7047,6 +7107,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, onOpenWorktreeS
     {workspace?.terminals.control}
     {workspace?.notes.control}
     {workspace !== undefined && !phone && <BrowserToggle browser={workspace.browser} />}
+    {workspace !== undefined && !phone && place?.id !== undefined && <FilesToggle files={workspace.files} />}
     {workspace !== undefined && !phone && worktreeId !== undefined && <CodeToggle code={workspace.code} />}
     {phone && !settingsSplit?.open && workspace?.carousel !== undefined && workspace.carousel.panels.length > 1 ? <PanelDots carousel={workspace.carousel} /> : <span className="toolbar-spacer" aria-hidden="true" />}
     {cleanupControl}
@@ -7056,8 +7117,9 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, onOpenWorktreeS
   </div></section>;
 }
 
-// the Browser and Code glyphs, shared by the toolbar buttons and their phone ⋮ rows
+// panel glyphs shared by toolbar buttons and phone rows
 const browserGlyph = <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></>;
+const filesGlyph = <><path d="M3 7h7l2 2h9v10H3z" /><path d="M3 7V5h7l2 2" /></>;
 const codeGlyph = <path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" />;
 
 // The toolbar's Browser button: it opens and closes the Place's browser panel, tinted while open.
@@ -7065,6 +7127,11 @@ const codeGlyph = <path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" />;
 function BrowserToggle({ browser }: { browser: WorkspaceState['browser'] }) {
   if (browser.homeUrl === undefined) return null;
   return <button type="button" className={`toolbar-button browser-toggle${browser.open ? ' panel-open' : ''}`} aria-label="Browser" aria-pressed={browser.open} title={browser.open ? 'Close the browser panel' : 'Open the project in the browser panel'} onClick={browser.toggle}><svg viewBox="0 0 24 24" aria-hidden="true">{browserGlyph}</svg><span className="toolbar-label">Browser</span></button>;
+}
+
+// open the retained host filesystem panel
+function FilesToggle({ files }: { files: WorkspaceState['files'] }) {
+  return <button type="button" className={`toolbar-button files-toggle${files.open ? ' panel-open' : ''}`} aria-label="Files" aria-pressed={files.open} title={files.open ? 'Close the Files panel' : 'Open the host Files panel'} onClick={files.toggle}><svg viewBox="0 0 24 24" aria-hidden="true">{filesGlyph}</svg><span className="toolbar-label">Files</span></button>;
 }
 
 // The toolbar's Code button: it opens the Worktree's working changes in the Code panel, or closes it.
@@ -7135,7 +7202,7 @@ function WorktreeCard({ worktree, tabBar, renderNotifications, cleanupControl, t
   // prefer the explicitly selected pending agent
   const launchKind = pendingWorktreeLaunches.get(worktree.id)?.kind ?? worktree.launch?.kind;
   const presentation = inactiveWorktreePresentation(worktree.label, launchKind, { startingNewTask, restarting, turningOff, launching });
-  // The Workspace works with no live Agent: Terminals, notes, browser and code all open here.
+  // keep place panels available without an agent
   const workspace = useWorkspace({ ...worktree, worktreeId: worktree.id }, { noteOptions: { schedulePrefill, onLaunchAndRun: noteId => launchAndRun(noteId), launchRunLabel: `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${worktree.label}` }, onNavigateWorktree, onOperationFeedback });
   const [error, setError] = useState('');
   useEffect(() => {
@@ -7304,7 +7371,7 @@ function PlaceShellsAndPin({ place, noun = 'folder', onTogglePin }: { place: { l
   return <>{shellCount > 0 && <span className="launcher-shells" title={shellsLabel} aria-label={shellsLabel}><LauncherRowIcon name="terminal" />{shellCount}</span>}<button type="button" className={`launcher-icon launcher-pin${place.pinned ? ' pinned' : ''}`} aria-pressed={place.pinned} aria-label={`${place.pinned ? 'Unpin' : 'Pin'} ${place.label}`} title={`${place.pinned ? 'Unpin' : 'Pin'} ${noun}`} onClick={onTogglePin}><LauncherRowIcon name="pin" /></button></>;
 }
 
-// render a directory-Project or Scratch Place with no Agent: its Workspace (Terminals, notes)
+// render an agentless directory project or scratch place
 // beside an idle placeholder, and the toolbar with its folder pin in the ⋮ and, unless the Place is an
 // ad-hoc Scratch folder the console cannot launch into, a Launch button
 function PlaceCard({ place, tabBar, cleanupControl, transient = false, launchDisabled, launch, onLaunched, onTogglePin, onOperationFeedback, schedulePrefill }: { place: Place; tabBar: ReactNode; cleanupControl?: ReactNode; transient?: boolean; launchDisabled: boolean; launch?: PlaceLaunch; onLaunched: (agentId: string, place: Pick<Place, 'id' | 'label'>, operationKey: string) => void; onTogglePin: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; schedulePrefill?: SchedulePrefill }) {

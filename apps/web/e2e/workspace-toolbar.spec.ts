@@ -89,14 +89,14 @@ test('renders the same toolbar for a Worktree with and without an Agent', async 
   // with an Agent, Launch is the plain split: the kind mark and the verb
   await page.getByRole('tab', { name: /^Cora/u }).click();
   await expect(toolbar(page).locator('.launch-split.quiet .launch-primary')).toHaveText(/^\W*Launch$/u);
-  expect(await controlNames(page)).toEqual(['Launch Claude', 'Choose agent', 'Open a terminal', 'Notes (1)', 'Browser', 'Code', 'Review 2 cleanup targets', 'Git status: feature/workspace-toolbar; 3 changes (1 staged file, 2 unstaged files)', 'Stack controls: healthy', 'More options']);
+  expect(await controlNames(page)).toEqual(['Launch Claude', 'Choose agent', 'Open a terminal', 'Notes (1)', 'Browser', 'Files', 'Code', 'Review 2 cleanup targets', 'Git status: feature/workspace-toolbar; 3 changes (1 staged file, 2 unstaged files)', 'Stack controls: healthy', 'More options']);
 
   // with none, Launch is the labelled primary, and the Conversations button stands in for the
   // agent panel that would carry it; the rest is unchanged
   await page.getByRole('tab', { name: /^Idle/u }).click();
   await expect(toolbar(page).locator('.launch-split:not(.quiet) .launch-primary')).toHaveText(/^\W*Launch Claude$/u);
   const idleNames = await controlNames(page);
-  expect(idleNames.filter(name => !name.startsWith('Conversations'))).toEqual(['Launch Claude', 'Choose agent', 'Open a terminal', 'Notes (0)', 'Code', 'Review 2 cleanup targets', 'Git status: idle; clean', 'More options']);
+  expect(idleNames.filter(name => !name.startsWith('Conversations'))).toEqual(['Launch Claude', 'Choose agent', 'Open a terminal', 'Notes (0)', 'Files', 'Code', 'Review 2 cleanup targets', 'Git status: idle; clean', 'More options']);
   // the agentless view's own power and pin controls are gone
   await expect(page.getByRole('button', { name: 'Worktree power options' })).toHaveCount(0);
   await expect(page.locator('.place-pin')).toHaveCount(0);
@@ -147,6 +147,7 @@ test('a Place without git shows its path instead of Code, git and stack', async 
     await expect(toolbar(page).locator('.project-stack-trigger')).toHaveCount(0);
     // the panel buttons stay, but with no project URL there is no Browser button
     await expect(toolbar(page).getByRole('button', { name: 'Open a terminal' })).toBeVisible();
+    await expect(toolbar(page).getByRole('button', { name: 'Files' })).toBeVisible();
     await expect(toolbar(page).getByRole('button', { name: 'Browser' })).toHaveCount(0);
     await expect(toolbar(page).getByRole('button', { name: /^Launch/u }).first()).toBeEnabled();
     // the ⋮ holds only the folder pin without a git checkout
@@ -174,7 +175,7 @@ test('panel buttons tint while their panel is open', async ({ page }) => {
   await notes.click();
   await page.getByRole('button', { name: 'Plan', exact: true }).click();
   await expect(notes).toHaveClass(/\bpanel-open\b/u);
-  for (const name of ['Browser', 'Code']) {
+  for (const name of ['Browser', 'Files', 'Code']) {
     const button = toolbar(page).getByRole('button', { name, exact: true });
     await expect(button).not.toHaveClass(/\bpanel-open\b/u);
     await button.click();
@@ -182,6 +183,7 @@ test('panel buttons tint while their panel is open', async ({ page }) => {
     await expect(button).toHaveClass(/\bpanel-open\b/u);
   }
   await expect(page.locator('.browser-pane')).toBeVisible();
+  await expect(page.locator('.files-pane')).toBeVisible();
   await expect(page.locator('.code-pane')).toBeVisible();
   await toolbar(page).getByRole('button', { name: 'Code', exact: true }).click();
   await expect(page.locator('.code-pane')).toHaveCount(0);

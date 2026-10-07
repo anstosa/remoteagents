@@ -94,7 +94,7 @@ export type PreviewImage = { mediaType: 'image/gif' | 'image/jpeg' | 'image/png'
 export type FilePreview = { path: string; size: number; truncated: boolean } & ({ binary: true; image?: PreviewImage } | { binary: false; content: string });
 // The panel's File view: the path a response file or terminal link opened, the fetch lifecycle, and
 // the payload once ready. A peer of the Comparison — a panel shows Changes or one File, not both.
-export type FilePreviewView = { path: string; state: CodePanelState; preview?: FilePreview };
+export type FilePreviewView = { path: string; state: CodePanelState; preview?: FilePreview; source?: 'files' };
 
 const previewMediaTypes = new Set<PreviewImage['mediaType']>(['image/gif', 'image/jpeg', 'image/png', 'image/webp']);
 const isPreviewImage = (value: unknown): value is PreviewImage =>
@@ -134,7 +134,7 @@ export type CodePanelController = {
   openChanges(mode: CodePanelMode, path?: string): void;
   // open (or refocus) the panel on one file, fetched from the given preview endpoint (agent-keyed for
   // an agent-context file so the `/tmp` screenshot bridge works, worktree-keyed otherwise)
-  openFilePreview(path: string, previewUrl: string): void;
+  openFilePreview(path: string, previewUrl: string, options?: { body?: unknown; source?: 'files' }): void;
   // leave the File view, revealing the Comparison the panel would otherwise show
   closeFilePreview(): void;
   // switch the Comparison in place (the panel-header Working / All PR toggle); refetches
@@ -262,32 +262,31 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
     saveCodeOpen(worktreeId, true);
   }, [worktreeId]);
 
-  // Open (or refocus) the panel on one file, fetched from `previewUrl` — the agent-keyed file-preview
-  // endpoint for an agent-context file (so the `/tmp` screenshot bridge works) or the worktree-keyed
-  // one otherwise. The Comparison the panel would otherwise show keeps loading underneath, so the
-  // File view's "‹ Changes" back button reveals it without a further round trip. A request-id guard
-  // drops a replaced or closed preview, mirroring the Comparison fetch. Unlike opening Changes, a File
-  // preview is transient like the dialog it replaces — it does not persist the open flag, so a reload
-  // does not resurrect a panel opened only to glance at a file.
-  const openFilePreview = useCallback((path: string, previewUrl: string) => {
+  // open a transient file from a legacy path body or an explicit token body
+  const openFilePreview = useCallback((path: string, previewUrl: string, options?: { body?: unknown; source?: 'files' }) => {
     const id = ++previewRequest.current;
-    setFilePreview({ path, state: 'loading' });
+    setFilePreview({ path, state: 'loading', ...(options?.source === undefined ? {} : { source: options.source }) });
     setOpen(true);
     void (async () => {
       try {
-        const response = await request(previewUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) });
+        const response = await request(previewUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(options?.body ?? { path }) });
         if (!response.ok) throw new Error('preview unavailable');
         const payload: unknown = await response.json();
         if (!isFilePreview(payload)) throw new Error('invalid preview');
         if (previewRequest.current !== id) return;
-        setFilePreview({ path: payload.path, state: 'ready', preview: payload });
+        setFilePreview({ path: payload.path, state: 'ready', preview: payload, ...(options?.source === undefined ? {} : { source: options.source }) });
       } catch {
-        if (previewRequest.current === id) setFilePreview({ path, state: 'error' });
+        if (previewRequest.current === id) setFilePreview({ path, state: 'error', ...(options?.source === undefined ? {} : { source: options.source }) });
       }
     })();
-  }, [worktreeId, request]);
+  }, [request]);
 
-  const closeFilePreview = useCallback(() => { previewRequest.current += 1; setFilePreview(undefined); }, []);
+  const closeFilePreview = useCallback(() => {
+    previewRequest.current += 1;
+    // close transient files previews unless changes was retained
+    if (filePreview?.source === 'files' && !savedCodeOpen(worktreeId)) setOpen(false);
+    setFilePreview(undefined);
+  }, [filePreview?.source, worktreeId]);
 
   // the panel-header Working / All PR toggle; keep any selected file so the reviewer stays on it
   const setMode = useCallback((next: CodePanelMode) => setModeState(next), []);

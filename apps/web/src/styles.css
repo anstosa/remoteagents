@@ -302,11 +302,11 @@ html.software-keyboard-open .tabs { display: none; }
 .empty-workspace-warning { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: .4rem; margin: 0; padding: .5rem .6rem; border: 1px solid color-mix(in srgb, var(--yellow) 50%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--yellow) 8%, transparent); color: var(--yellow); font-size: .76rem; }
 .empty-workspace-warning button { padding: .2rem .55rem; border: 1px solid var(--yellow); border-radius: var(--control-radius); background: transparent; color: var(--yellow); font: inherit; font-weight: 800; cursor: pointer; }
 /* leave terminal and Code compositions to the generic grid without outranking the phone override */
-.log-split.has-note:not(.has-browser):where(:not(.has-terminals, .has-code, .has-stack, .no-agent)), .log-split.has-browser:not(.has-note):where(:not(.has-terminals, .has-code, .has-stack, .no-agent)) { grid-template-rows: repeat(2, minmax(8rem, 1fr)); }
-.log-split.has-note.has-browser:where(:not(.has-terminals, .has-code, .has-stack, .no-agent)) { grid-template-rows: repeat(3, minmax(8rem, 1fr)); }
+.log-split.has-note:not(.has-browser):where(:not(.has-terminals, .has-files, .has-code, .has-stack, .no-agent)), .log-split.has-browser:not(.has-note):where(:not(.has-terminals, .has-files, .has-code, .has-stack, .no-agent)) { grid-template-rows: repeat(2, minmax(8rem, 1fr)); }
+.log-split.has-note.has-browser:where(:not(.has-terminals, .has-files, .has-code, .has-stack, .no-agent)) { grid-template-rows: repeat(3, minmax(8rem, 1fr)); }
 /* Terminals, Code or no agent panel make the split a list of panels; in a portrait area they stack
    as rows, in a wide area they become columns (below), and on a phone one panel shows at a time. */
-.log-split.has-terminals, .log-split.has-code, .log-split.has-stack, .log-split.no-agent { grid-template: none; grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; grid-auto-rows: minmax(8rem, 1fr); }
+.log-split.has-terminals, .log-split.has-files, .log-split.has-code, .log-split.has-stack, .log-split.no-agent { grid-template: none; grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; grid-auto-rows: minmax(8rem, 1fr); }
 .split-resizer { display: none; }
 .log-output { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 .log-output.expanded { width: 100%; height: 100%; }
@@ -357,8 +357,8 @@ html.software-keyboard-open .tabs { display: none; }
 /* let any supplemental split fill the output area without unmounting siblings (a phone expands
    into full screen instead, below; `not` leaves no gap at fractional widths past 768px) */
 @media not all and (max-width: 768px) {
-  .log-split:has(> :is(.log-output, .note-pane, .browser-pane, .code-pane, .stack-pane, .terminal-pane).expanded) { display: block; }
-  .log-split:has(> :is(.log-output, .note-pane, .browser-pane, .code-pane, .stack-pane, .terminal-pane).expanded) > :not(.expanded) { display: none; }
+  .log-split:has(> :is(.log-output, .note-pane, .browser-pane, .files-pane, .code-pane, .stack-pane, .terminal-pane).expanded) { display: block; }
+  .log-split:has(> :is(.log-output, .note-pane, .browser-pane, .files-pane, .code-pane, .stack-pane, .terminal-pane).expanded) > :not(.expanded) { display: none; }
 }
 :is(.log-output, .agent-output)::after { position: absolute; inset: 0; z-index: 30; box-sizing: border-box; border: 3px solid transparent; content: ''; pointer-events: none; }
 :is(.log-output.input-active, .agent-panel.input-active > .agent-output)::after { border-color: var(--sky); box-shadow: inset 0 0 1.4rem #00000066, inset 0 0 1.35rem color-mix(in srgb, var(--sky) 34%, transparent); }
@@ -608,6 +608,7 @@ html.software-keyboard-open .tabs { display: none; }
 :root { --panel-header-clearance: 2.95rem; }
 .note-pane { --panel-accent: var(--yellow); }
 .browser-pane { --panel-accent: var(--blue); }
+.files-pane { --panel-accent: var(--sky); }
 .code-pane { --panel-accent: var(--mauve); }
 .stack-pane { --panel-accent: var(--teal); }
 .terminal-pane { --panel-accent: var(--green); }
@@ -659,6 +660,96 @@ html.software-keyboard-open .tabs { display: none; }
 .note-save-status.error { color: var(--red); }
 .note-action-status { color: var(--green); font: 700 .66rem var(--font-mono); white-space: nowrap; }
 .note-action-status.error { color: var(--red); }
+
+/* host files panel */
+.files-pane { position: relative; z-index: 1; display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); overflow: hidden; border-top: 1px solid color-mix(in srgb, var(--sky) 52%, var(--surface-1)); background: linear-gradient(160deg, color-mix(in srgb, var(--mantle) 97%, var(--sky) 3%), var(--crust)); }
+.files-pane.expanded { width: 100%; height: 100%; border: 0; }
+.files-address-form { flex: 1 1 12rem; width: 0; overflow: hidden; padding: 0; border-color: color-mix(in srgb, var(--sky) 52%, var(--surface-1)); }
+.files-address-form:focus-within { border-color: var(--sky); }
+.files-address { width: 100%; min-width: 0; align-self: stretch; padding: .2rem .65rem; border: 0; background: transparent; color: var(--text); font: .72rem var(--font-mono); outline: 0; -webkit-touch-callout: none; }
+.files-address:disabled { color: var(--overlay-1); }
+.files-parent-action { color: var(--sky); }
+/* reflect the current folder independently of the open favorites flyout */
+.files-favorites-action[data-current-favorite='true'] .panel-header-icon { fill: currentColor; }
+.files-content { display: flex; min-width: 0; min-height: 0; flex-direction: column; gap: .4rem; overflow: hidden; padding: var(--panel-header-clearance) .55rem .55rem; }
+.files-alert, .files-notice, .files-upload-status, .files-limit { margin: 0; padding: .35rem .5rem; border: 1px solid color-mix(in srgb, var(--red) 50%, var(--surface-1)); border-radius: var(--control-radius); color: var(--red); font: 600 .66rem var(--font-mono); }
+.files-notice.status, .files-upload-status, .files-limit { border-color: color-mix(in srgb, var(--sky) 45%, var(--surface-1)); color: var(--sky); }
+.files-progress { display: flex; align-items: center; gap: .5rem; color: var(--subtext-0); font: 600 .65rem var(--font-mono); }
+.files-progress progress { flex: 1 1 auto; accent-color: var(--sky); }
+.files-mobile-sort { display: none; }
+.files-grid { flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--base) 78%, transparent); }
+.files-grid-head, .files-row { display: grid; min-width: 44rem; grid-template-columns: minmax(12rem, 2fr) minmax(7rem, .7fr) minmax(8rem, .8fr) minmax(10rem, 1fr) minmax(5rem, .5fr) 2.35rem; align-items: center; }
+.files-grid-head { position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--surface-1); background: color-mix(in srgb, var(--crust) 97%, var(--mantle)); color: var(--overlay-1); font: 800 .58rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+.files-grid-head > span, .files-row > span { min-width: 0; padding: .38rem .45rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-grid-head > span { height: 100%; padding: 0; }
+.files-grid-head button { display: flex; width: 100%; height: 100%; min-height: 2rem; align-items: center; justify-content: space-between; gap: .35rem; padding: .38rem .45rem; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; }
+.files-grid-head button:not(:disabled):hover { background: var(--surface-0); color: var(--text); }
+.files-row { border-bottom: 1px solid color-mix(in srgb, var(--surface-0) 75%, transparent); color: var(--subtext-0); font: .68rem var(--font-mono); cursor: default; outline-offset: -2px; }
+.files-row:last-child { border-bottom: 0; }
+.files-row:hover { background: color-mix(in srgb, var(--sky) 7%, transparent); }
+.files-row.selected { background: color-mix(in srgb, var(--sky) 17%, var(--surface-0)); box-shadow: inset 3px 0 var(--sky); color: var(--text); }
+.files-name-cell { display: flex; align-items: center; gap: .35rem; }
+/* preserve VS Code's thin outlines without loading an icon font */
+.files-kind { display: inline-block; flex: 0 0 1rem; width: 1rem; height: 1rem; color: inherit; background-color: currentColor; mask-repeat: no-repeat; mask-position: center; mask-size: contain; -webkit-mask-repeat: no-repeat; -webkit-mask-position: center; -webkit-mask-size: contain; }
+.files-name { min-width: 0; overflow: hidden; padding: 0; border: 0; background: transparent; box-shadow: none; color: var(--text); font: inherit; font-weight: 700; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.files-name:not(:disabled):hover { color: var(--sky); text-decoration: underline; }
+.files-name:disabled { color: var(--overlay-1); opacity: 1; }
+.files-favorite-mark { margin-left: auto; color: var(--yellow); font-size: .65rem; }
+.files-favorite-mark.replaced, .files-favorite-mark.unavailable { color: var(--red); }
+.files-row > .files-row-actions { display: grid; padding: .16rem; place-items: center; overflow: visible; }
+.files-row-actions button { display: grid; width: 1.8rem; height: 1.8rem; padding: 0; place-items: center; border: 1px solid transparent; border-radius: var(--control-radius); background: transparent; box-shadow: none; color: var(--overlay-1); font-size: 1rem; line-height: 1; }
+.files-row-actions button:not(:disabled):hover, .files-row-actions button[aria-expanded='true'] { border-color: var(--sky); background: var(--surface-0); color: var(--text); }
+.files-empty { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: .4rem; min-height: 8rem; color: var(--overlay-1); font: 600 .7rem var(--font-mono); }
+.files-context-anchor { position: fixed; z-index: -1; width: 1px; height: 1px; pointer-events: none; }
+.more-menu.files-menu { display: grid; width: max-content; min-width: 12rem; max-width: min(22rem, calc(100vw - 1rem)); max-height: min(var(--flyout-available-height, calc(100vh - 1rem)), calc(100vh - 1rem)); gap: .08rem; overflow: auto; }
+.more-menu.files-menu > button, .files-favorite-menu-row > button { display: flex; min-height: 2.2rem; align-items: center; gap: .45rem; padding: .45rem .7rem; border-radius: calc(var(--control-radius) - .12rem); text-align: left; }
+.more-menu.files-menu .files-menu-danger { color: var(--red); }
+.files-favorite-menu-row { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; border-radius: calc(var(--control-radius) - .12rem); }
+.files-favorite-menu-row.replaced, .files-favorite-menu-row.unavailable { background: color-mix(in srgb, var(--yellow) 7%, transparent); }
+.files-favorite-menu-row .files-favorite-open { grid-column: 1 / -1; min-width: 0; max-width: 20rem; }
+.files-favorite-menu-row .files-favorite-open > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-favorite-menu-row .files-favorite-open small { margin-left: auto; color: var(--yellow); font-size: .56rem; }
+.files-favorite-menu-row > button:not(.files-favorite-open) { min-height: 1.8rem; padding-top: .25rem; padding-bottom: .25rem; color: var(--overlay-1); font-size: .62rem; }
+.files-dialog > div { display: grid; width: min(38rem, 100%); gap: .75rem; }
+.files-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: .5rem; }
+.files-dialog header small { color: var(--sky); font: 800 .56rem var(--font-mono); letter-spacing: .12em; }
+.files-dialog header h2 { margin: .12rem 0 0; font-size: 1rem; }
+.files-dialog header button { display: grid; width: 2rem; height: 2rem; place-items: center; border: 0; background: transparent; color: var(--subtext-0); }
+.files-dialog footer { display: flex; justify-content: flex-end; gap: .4rem; }
+.files-dialog footer button { min-width: 5.5rem; padding: .4rem .65rem; }
+.files-dialog footer .files-danger { border-color: var(--red); background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+.files-name-form, .files-name-form label { display: grid; gap: .35rem; }
+.files-name-form label { color: var(--subtext-0); font: 700 .68rem var(--font-mono); }
+.files-name-form input { width: 100%; padding: .45rem .55rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: var(--mantle); color: var(--text); }
+.files-dialog-error { margin: 0; color: var(--red); font-size: .7rem; }
+.files-confirm-list { max-height: 12rem; margin: 0; overflow: auto; padding: .45rem .7rem .45rem 1.8rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); color: var(--subtext-0); font: .68rem var(--font-mono); }
+.files-conflicts { display: grid; max-height: min(55vh, 24rem); gap: .5rem; overflow: auto; }
+.files-conflicts fieldset { display: flex; flex-wrap: wrap; gap: .45rem; margin: 0; padding: .55rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); }
+.files-conflicts legend { display: grid; width: 100%; gap: .1rem; padding: 0 .2rem; }
+.files-conflicts legend strong { color: var(--text); font: 700 .72rem var(--font-mono); }
+.files-conflicts legend span { color: var(--subtext-0); font-size: .65rem; }
+.files-conflicts label { display: flex; align-items: center; gap: .25rem; color: var(--subtext-1); font-size: .7rem; }
+
+@media (max-width: 768px) {
+  .files-content { padding-right: .4rem; padding-left: .4rem; }
+  .files-mobile-sort { display: flex; min-width: 0; gap: .2rem; overflow-x: auto; scrollbar-width: thin; }
+  .files-mobile-sort button { flex: 0 0 auto; min-height: 1.8rem; padding: .2rem .45rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; box-shadow: none; color: var(--overlay-1); font: 700 .58rem var(--font-mono); }
+  .files-mobile-sort button[aria-pressed='true'] { border-color: var(--sky); color: var(--text); }
+  .files-grid { border-right: 0; border-left: 0; border-radius: 0; }
+  .files-grid-head { display: none; }
+  .files-row { min-width: 0; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto auto auto; padding: .32rem .4rem; }
+  .files-row > span { padding: .15rem .25rem; }
+  .files-row > span:nth-child(2) { grid-column: 1; grid-row: 2; }
+  .files-row > span:nth-child(3), .files-row > span:nth-child(4), .files-row > span:nth-child(5) { color: var(--overlay-1); font-size: .58rem; }
+  .files-row > span:nth-child(3) { grid-column: 1; grid-row: 3; }
+  /* retain modification dates in a compact third metadata line */
+  .files-row > span:nth-child(4) { grid-column: 1 / -1; grid-row: 4; }
+  .files-row > span:nth-child(4)::before { content: "Modified: "; color: var(--subtext-0); }
+  .files-row > span:nth-child(5) { grid-column: 2; grid-row: 2; text-align: right; }
+  .files-row > .files-row-actions { grid-column: 2; grid-row: 1; }
+  .files-dialog { align-items: end; padding: 0; }
+  .files-dialog > div { width: 100%; max-height: min(88dvh, var(--app-height, 100dvh)); border-right: 0; border-bottom: 0; border-left: 0; border-radius: .8rem .8rem 0 0; padding-bottom: calc(1rem + env(safe-area-inset-bottom)); }
+}
 /* keep confirmed deletion protection visible without blocking editing */
 .note-lock-error { margin: .4rem .55rem; color: var(--red); font-size: .75rem; }
 .note-pane textarea { width: 100%; min-height: 0; overflow: auto; resize: none; border: 0; border-radius: 0; padding: .8rem var(--edge); background: transparent; font-size: var(--output-font-size); line-height: 1.45; outline-offset: -2px; }
@@ -883,28 +974,29 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .code-pane-file-collapse[aria-expanded='true'] svg { transform: rotate(90deg); }
 @keyframes note-pane-appear { from { opacity: 0; } to { opacity: 1; } }
 @container output-area (min-aspect-ratio: 1 / 1) {
-  .log-split.has-note:not(.has-browser):not(.has-terminals):not(.has-code):not(.has-stack):not(.no-agent) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)); }
-  .log-split.has-browser:not(.has-note):not(.has-terminals):not(.has-code):not(.has-stack):not(.no-agent) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
-  .log-split.has-note.has-browser:not(.has-terminals):not(.has-code):not(.has-stack):not(.no-agent) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
+  .log-split.has-note:not(.has-browser):not(.has-terminals):not(.has-files):not(.has-code):not(.has-stack):not(.no-agent) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)); }
+  .log-split.has-browser:not(.has-note):not(.has-terminals):not(.has-files):not(.has-code):not(.has-stack):not(.no-agent) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
+  .log-split.has-note.has-browser:not(.has-terminals):not(.has-files):not(.has-code):not(.has-stack):not(.no-agent) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
   /* With one or more Terminals, a Code panel or no agent panel the split is a generic list of
      columns (agent, terminals, note, browser, code), each `minmax(390px, <weight>fr)`, built in JS
      as `--split-cols`. */
-  .log-split.has-terminals, .log-split.has-code, .log-split.has-stack, .log-split.no-agent { grid-template: minmax(0, 1fr) / var(--split-cols); }
+  .log-split.has-terminals, .log-split.has-files, .log-split.has-code, .log-split.has-stack, .log-split.no-agent { grid-template: minmax(0, 1fr) / var(--split-cols); }
   /* remove the hidden browser divider's track when fixing the mobile preview width */
   .log-split:is(.has-terminals, .no-agent):has(> .browser-pane.mobile:not(.expanded)) { --browser-split-cols: var(--split-pane-min-width); }
-  .log-split.has-browser:not(.has-note):not(.has-terminals):not(.no-agent):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) var(--split-pane-min-width); }
-  .log-split.has-note.has-browser:not(.has-terminals):not(.no-agent):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) var(--split-pane-min-width); }
+  .log-split.has-browser:not(.has-note):not(.has-terminals):not(.has-files):not(.no-agent):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) var(--split-pane-min-width); }
+  .log-split.has-note.has-browser:not(.has-terminals):not(.has-files):not(.no-agent):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) var(--split-pane-min-width); }
   .split-resizer { position: relative; z-index: 5; display: block; width: .45rem; min-width: .45rem; height: 100%; cursor: col-resize; touch-action: none; outline: 0; }
   .split-resizer::after { position: absolute; inset: 0 calc(50% - .5px); background: var(--surface-1); content: ''; transition: background .12s ease, box-shadow .12s ease; }
   .split-resizer:is(:hover, :focus-visible)::after { background: var(--blue); box-shadow: 0 0 .5rem color-mix(in srgb, var(--blue) 48%, transparent); }
   .log-split:has(> .browser-pane.mobile:not(.expanded)) > .browser-resizer { display: none; }
-  .note-pane, .browser-pane, .code-pane, .stack-pane { border-top: 0; border-left: 1px solid color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); box-shadow: inset 1px 0 color-mix(in srgb, var(--text) 4%, transparent); }
+  .note-pane, .browser-pane, .files-pane, .code-pane, .stack-pane { border-top: 0; border-left: 1px solid color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); box-shadow: inset 1px 0 color-mix(in srgb, var(--text) 4%, transparent); }
   /* editing keeps the note accent on top when the keyboard makes the split wide */
   .note-pane.editing:not(.expanded) { border-top: 1px solid color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); border-left: 0; box-shadow: inset 0 1px color-mix(in srgb, var(--text) 4%, transparent); }
   .browser-pane { border-left-color: color-mix(in srgb, var(--blue) 58%, var(--surface-1)); }
+  .files-pane { border-left-color: color-mix(in srgb, var(--sky) 58%, var(--surface-1)); }
   .code-pane { border-left-color: color-mix(in srgb, var(--mauve) 52%, var(--surface-1)); }
   .stack-pane { border-left-color: color-mix(in srgb, var(--teal) 52%, var(--surface-1)); }
-  :is(.note-pane, .browser-pane, .terminal-pane).expanded { border: 0; }
+  :is(.note-pane, .browser-pane, .files-pane, .terminal-pane).expanded { border: 0; }
   .terminal-pane { border-left: 1px solid color-mix(in srgb, var(--green) 46%, var(--surface-1)); box-shadow: inset 1px 0 color-mix(in srgb, var(--text) 4%, transparent); }
 }
 @media (max-width: 768px) {
@@ -913,11 +1005,11 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .browser-frame-shell.desktop iframe { width: var(--browser-desktop-width, 980px); height: var(--browser-desktop-height, 100%); transform: scale(var(--browser-desktop-scale, 1)); transform-origin: top left; }
   /* A phone shows one panel per screen: the split is a horizontal swipe carousel that snaps to
      each panel in turn (the toolbar's dots show where it is). */
-  .log-split:has(> :is(.log-output, .note-pane, .browser-pane, .code-pane, .stack-pane, .terminal-pane)) { display: flex; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scroll-snap-type: x mandatory; scrollbar-width: none; }
+  .log-split:has(> :is(.log-output, .note-pane, .browser-pane, .files-pane, .code-pane, .stack-pane, .terminal-pane)) { display: flex; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scroll-snap-type: x mandatory; scrollbar-width: none; }
   /* let horizontal swipes over note content reach the panel carousel */
   .note-pane :is(.note-markdown, textarea) { touch-action: pan-y; }
   .log-split::-webkit-scrollbar { display: none; }
-  .log-split > :is(.log-output, .note-pane, .browser-pane, .code-pane, .stack-pane, .terminal-pane) { flex: 0 0 100%; width: 100%; min-width: 0; height: 100%; scroll-snap-align: start; scroll-snap-stop: always; }
+  .log-split > :is(.log-output, .note-pane, .browser-pane, .files-pane, .code-pane, .stack-pane, .terminal-pane) { flex: 0 0 100%; width: 100%; min-width: 0; height: 100%; scroll-snap-align: start; scroll-snap-stop: always; }
   .log-split > .split-resizer { display: none; }
   /* an expanded panel keeps its own footer while the tab row and toolbar fold away */
   .agent-view:has(.log-split > .expanded) > :is(nav.tabs, section.workspace-toolbar) { display: none; }
@@ -925,9 +1017,9 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .log-split > :is(.log-output, .terminal-pane).expanded > :is(.agent-composer, .mobile-terminal-keys) { padding-bottom: .375rem; }
 }
 /* preserve output width above software keyboards */
-html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-code, .has-stack, .has-terminals) { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
-html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-code, .has-stack, .has-terminals) > :is(.note-pane, .browser-pane, .code-pane, .stack-pane, .terminal-pane, .split-resizer) { display: none; }
-html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-code, .has-stack, .has-terminals) > .log-output { display: grid; }
+html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-files, .has-code, .has-stack, .has-terminals) { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-files, .has-code, .has-stack, .has-terminals) > :is(.note-pane, .browser-pane, .files-pane, .code-pane, .stack-pane, .terminal-pane, .split-resizer) { display: none; }
+html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-files, .has-code, .has-stack, .has-terminals) > .log-output { display: grid; }
 /* keep the entire static bottom bar behind any open software keyboard */
 html.software-keyboard-open .agent-view > .workspace-toolbar { display: none; }
 /* retain the keyboard gutter for split panes and pending session prompts */
@@ -1124,6 +1216,7 @@ html.software-keyboard-open :is(.log, .log-split) > :is(.log-output, .terminal-p
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .terminal-picker-toggle { --toolbar-accent: var(--green); }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .notes-toggle { --toolbar-accent: var(--yellow); }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .browser-toggle { --toolbar-accent: var(--blue); }
+:is(.workspace-toolbar-actions, .empty-workspace-actions) .files-toggle { --toolbar-accent: var(--sky); }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .code-toggle { --toolbar-accent: var(--mauve); }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .toolbar-button.panel-open { border-color: color-mix(in srgb, var(--toolbar-accent) 70%, var(--surface-1)); background: color-mix(in srgb, var(--toolbar-accent) 12%, var(--mantle)); color: var(--toolbar-accent); }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) :is(.more, .toolbar-button):disabled { opacity: .45; }
@@ -1170,6 +1263,7 @@ button > .flyout-caret { --caret-mask: url("data:image/svg+xml,%3Csvg xmlns='htt
 :is(.panel-dots, .panel-split-menu) .terminal-dot { --dot-color: var(--green); }
 :is(.panel-dots, .panel-split-menu) .note-dot { --dot-color: var(--yellow); }
 :is(.panel-dots, .panel-split-menu) .browser-dot { --dot-color: var(--blue); }
+:is(.panel-dots, .panel-split-menu) .files-dot { --dot-color: var(--sky); }
 :is(.panel-dots, .panel-split-menu) .code-dot { --dot-color: var(--mauve); }
 :is(.panel-dots, .panel-split-menu) .stack-dot { --dot-color: var(--teal); }
 /* list open splits by title and mark the one currently in view */

@@ -35,6 +35,7 @@ pull-request state without losing the terminal-native workflow underneath.
 | **Conversations and notes** | Name, list and resume each agent's own Conversations from the console, and keep autosaved Markdown notes with reusable file attachments beside output. Both are shared automatically across a Project's worktrees. |
 | **Guided review** | Generate an AI-narrated tour of active Working or All PR implementation changes, visit or skip each logical step, and send consolidated feedback to the agent. |
 | **Operations** | Install as a browser app, enable notifications, review stale runtime cleanup targets, and deploy with Docker Compose plus an optional Cloudflare Tunnel. |
+| **Files** | Browse the ordinary host account's filesystem from any Place, open browser Code previews, manage files with explicit delete/conflict confirmation, download files or ZIPs, and save favorites per exact Place. |
 | **Conversational control** | Connect ChatGPT through scoped remote MCP or use the built-in OpenAI Realtime voice dialog to inspect and direct the same agents. |
 
 ### Review implementation changes
@@ -65,6 +66,32 @@ Notes are persistent, autosaved, and rendered as Markdown. On wider screens
 they share the output area; on narrow screens the layout adapts vertically.
 
 ![Live agent output beside a Markdown worktree note](docs/images/worktree-notes.png)
+
+### Browse and manage files
+
+Open **Files** from the desktop Workspace toolbar or the mobile three-dot menu.
+It starts at the selected Place's host folder and can navigate outside it.
+Click a filename to open Code immediately, or click the rest of its row to
+select it. Ctrl/Command toggles selection and Shift selects a range; mobile row
+taps toggle multiple entries. Rows include owner, permissions, modification
+time, and readable size. Sort any metadata column; Name starts ascending with
+directories first. The titlebar path field follows navigation and accepts an
+absolute path with Enter.
+
+The upper-right controls contain Parent, New, Upload, and Favorites. Row
+three-dot menus act only on that row. Right-click a selected row to act on the
+selection, an unselected row to act on that item, or unused space to act on the
+current directory. These menus provide rename, copy/cut/paste, and file or ZIP
+downloads. Deletes are permanent and require confirmation; collisions require
+**Replace**, **Skip**, or **Keep both**. Favorites persist on the server for
+each exact Place, independently of other worktrees in its Project. Docker's
+full-host Files access requires the private host-user broker described in the
+[Docker guide](docs/docker.md#full-host-files-access).
+
+Listings show up to 10,000 entries. Recursive operations and downloads are
+bounded to 10,000 objects and 1 GiB; uploads allow up to 100 files, 1 GiB per
+file and 2 GiB per batch. Code previews read up to 5 MiB. Operations report
+explicit limit errors and identify any partially completed work.
 
 <details>
 <summary><strong>Mobile layout</strong></summary>
