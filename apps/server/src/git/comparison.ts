@@ -215,6 +215,75 @@ export async function comparisonAgainst(workspace: string, candidates: string[],
   return undefined;
 }
 
+// ---- Commit log -----------------------------------------------------------------------------
+
+// one commit an All PR Comparison spans: `pushed` when the branch's upstream already has it, and
+// `changes` against its first parent (a merge commit lists none)
+export type GitCommit = { sha: string; subject: string; body: string; author: string; authoredAt: string; merge: boolean; pushed: boolean; changes: GitStatusChange[] };
+export type CommitLog = { base: string; commits: GitCommit[]; truncated: boolean };
+const objectId = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+
+// parse `git log -z --format=%H%x00%P%x00%an%x00%aI%x00%s%x00%b`: six fields per commit
+export function parseCommitLog(output: string) {
+  const fields = output.split('\0');
+  const entries: { sha: string; parents: string[]; author: string; authoredAt: string; subject: string; body: string }[] = [];
+  for (let index = 0; index + 5 < fields.length; index += 6) {
+    const [sha, parents, author, authoredAt, subject, body] = fields.slice(index, index + 6) as [string, string, string, string, string, string];
+    entries.push({ sha: sha.trim(), parents: parents.split(' ').filter(Boolean), author, authoredAt, subject, body: body.trim() });
+  }
+  return entries;
+}
+
+// split `git log -z --format=%H` output carrying a name-status or numstat diff into each commit's
+// records, NUL-joined so the Comparison parsers read them unchanged. A record always starts with a
+// status (`M`, `R100`) or numstat (`3\t1\t…`) token, so a bare object id in that position is the
+// next commit's header; the paths that follow are consumed by count, never inspected.
+export function commitDiffRecords(output: string, format: 'name-status' | 'numstat'): Map<string, string> {
+  const tokens = output.split('\0');
+  const records = new Map<string, string[]>();
+  let current: string[] | undefined;
+  for (let index = 0; index < tokens.length; index += 1) {
+    // the first record after a header is newline-prefixed
+    const token = tokens[index]!.replace(/^\n/u, '');
+    if (!token) continue;
+    if (objectId.test(token)) { current = []; records.set(token, current); continue; }
+    // a rename or copy carries its origin and destination paths
+    const paths = format === 'name-status' ? (/^[RC]/u.test(token) ? 2 : 1) : (token.endsWith('\t') ? 2 : 0);
+    current?.push(token, ...tokens.slice(index + 1, index + 1 + paths));
+    index += paths;
+  }
+  return new Map([...records].map(([sha, record]) => [sha, record.join('\0')]));
+}
+
+// the commits between the All PR merge base (the first candidate that resolves) and HEAD, newest
+// first, at most `limit` of them
+export async function commitLog(workspace: string, candidates: string[], limit = 200): Promise<CommitLog | undefined> {
+  for (const candidate of new Set(candidates)) {
+    const mergeBase = await run(git, ['-C', workspace, 'merge-base', 'HEAD', candidate]);
+    if (mergeBase.code !== 0 || mergeBase.stdout.trim() === '') continue;
+    const range = `${mergeBase.stdout.trim()}..HEAD`;
+    const log = (...args: string[]) => run(git, ['--no-optional-locks', '-C', workspace, 'log', '-z', `--max-count=${limit + 1}`, ...args, range, '--']);
+    const [meta, names, lines, unpushed] = await Promise.all([
+      log('--format=%H%x00%P%x00%an%x00%aI%x00%s%x00%b'),
+      log('--format=%H', '--name-status', '--find-renames'),
+      log('--format=%H', '--numstat', '--find-renames'),
+      // fails without an upstream, which leaves every commit unpushed
+      run(git, ['-C', workspace, 'rev-list', range, '^@{upstream}', '--'])
+    ]);
+    if (meta.code !== 0 || names.code !== 0 || lines.code !== 0) return undefined;
+    const nameRecords = commitDiffRecords(names.stdout, 'name-status');
+    const lineRecords = commitDiffRecords(lines.stdout, 'numstat');
+    const local = unpushed.code === 0 ? new Set(unpushed.stdout.split('\n')) : undefined;
+    const entries = parseCommitLog(meta.stdout);
+    const commits = entries.slice(0, limit).map(({ sha, parents, author, authoredAt, subject, body }) => ({
+      sha, subject, body, author, authoredAt, merge: parents.length > 1, pushed: local !== undefined && !local.has(sha),
+      changes: gitComparisonSummary(candidate, nameRecords.get(sha) ?? '', lineRecords.get(sha) ?? '').changes ?? []
+    }));
+    return { base: candidate, commits, truncated: entries.length > limit };
+  }
+  return undefined;
+}
+
 // ---- Working-tree status --------------------------------------------------------------------
 
 // parse `git status --porcelain`; with `lineStats`, enrich additions/deletions from numstat

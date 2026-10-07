@@ -1,7 +1,7 @@
 import type { Worktree } from '../domain/models.js';
 import {
-  addUntrackedLineStats, captureComparisonPatch, fileAtRevision, prComparisonCandidates, resolveComparison,
-  type ComparisonFailure, type ComparisonKind, type ComparisonPatch,
+  addUntrackedLineStats, captureComparisonPatch, commitLog, fileAtRevision, prComparisonCandidates, resolveComparison,
+  type CommitLog, type ComparisonFailure, type ComparisonKind, type ComparisonPatch,
   type PatchLimits, type RevisionFile
 } from './comparison.js';
 
@@ -67,16 +67,24 @@ export class ComparisonService {
     return { ok: true, path, ...(base === undefined ? {} : { base }), ...(working === undefined ? {} : { working }) };
   }
 
+  // the commits the All PR Comparison spans, each with its own Changes
+  async commits(worktree: Worktree): Promise<CommitLog | undefined> {
+    return commitLog(worktree.identity, await this.prCandidates(worktree));
+  }
+
   // resolve a Comparison for one worktree; Working folds HEAD vs the working tree, All PR compares
   // the resolved merge target (falling back to the full base-candidate ladder). lineStats is always
   // on so an edit inside a size-capped file still moves the fingerprint.
   private async resolve(worktree: Worktree, kind: ComparisonKind) {
     if (kind !== 'pr') return resolveComparison(worktree.identity, kind, [], { lineStats: true });
+    return resolveComparison(worktree.identity, kind, await this.prCandidates(worktree), { lineStats: true });
+  }
+
+  // the resolved base is already a full ref label — pass it straight through (like the Review tour),
+  // never back through the candidate ladder, which would re-prefix a non-origin base such as
+  // `upstream/trunk`. Fall back to the full ladder only when no base was resolved.
+  private async prCandidates(worktree: Worktree): Promise<string[]> {
     const preferred = await this.preferredBase(worktree.id);
-    // the resolved base is already a full ref label — pass it straight through (like the Review tour),
-    // never back through the candidate ladder, which would re-prefix a non-origin base such as
-    // `upstream/trunk`. Fall back to the full ladder only when no base was resolved.
-    const candidates = preferred !== undefined ? [preferred] : await prComparisonCandidates(worktree.identity, worktree.branch, undefined, false);
-    return resolveComparison(worktree.identity, kind, candidates, { lineStats: true });
+    return preferred !== undefined ? [preferred] : await prComparisonCandidates(worktree.identity, worktree.branch, undefined, false);
   }
 }

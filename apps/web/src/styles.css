@@ -477,6 +477,39 @@ html.software-keyboard-open .tabs { display: none; }
 .git-lines-added { color: var(--green); }
 .git-lines-deleted { color: var(--red); }
 .git-status-file-lines.unavailable { color: var(--overlay-0); font-size: .62rem; }
+/* All PR files grouped by the commit that changed them */
+.git-status-grouping { display: flex; align-items: center; gap: .4rem; }
+.git-status-grouping .git-status-mode { margin-left: auto; }
+.git-status-grouping .git-status-mode button { min-height: 1.85rem; padding: .2rem .55rem; font-size: .6rem; }
+.git-status-grouping-actions { display: flex; gap: .35rem; }
+.git-status-grouping-actions button { min-height: 1.85rem; padding: .3rem .55rem; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .05rem); background: transparent; box-shadow: none; color: var(--subtext-0); font-size: .66rem; font-weight: 700; }
+.git-status-grouping-actions button:not(:disabled):hover { border-color: var(--blue); color: var(--blue); filter: none; }
+.git-commit-section { display: grid; min-width: 0; padding-bottom: .4rem; border: 1px solid var(--surface-0); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 55%, transparent); }
+.git-commit-section.collapsed { padding-bottom: 0; }
+.git-commit-section.uncommitted { border-style: dashed; border-color: color-mix(in srgb, var(--green) 35%, var(--surface-0)); }
+.git-commit-section.merge { opacity: .75; }
+.git-commit-head { display: grid; grid-template-columns: .8rem minmax(0, 1fr) auto; gap: .45rem; align-items: start; padding: .4rem .5rem; cursor: pointer; }
+.git-commit-head > .git-status-file-lines { font-size: .78rem; }
+.git-commit-caret { padding: 0; border: 0; background: transparent; box-shadow: none; color: var(--overlay-1); font-size: .7rem; line-height: 1.4; transition: transform .1s; }
+.git-commit-section.collapsed .git-commit-caret { transform: rotate(-90deg); }
+.git-commit-title { display: grid; min-width: 0; gap: .12rem; }
+.git-commit-subject { color: var(--text); font-size: .72rem; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+.git-commit-section.merge .git-commit-subject { color: var(--overlay-2); font-weight: 500; }
+.git-commit-meta { color: var(--overlay-1); font-size: .6rem; }
+.git-commit-sha { color: var(--peach); font: inherit; }
+.git-commit-badge { display: inline-block; margin-left: .4rem; padding: 0 .3rem; border: 1px solid; border-radius: .2rem; font-size: .55rem; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; vertical-align: .05rem; }
+.git-commit-badge.local { border-color: color-mix(in srgb, var(--yellow) 55%, transparent); color: var(--yellow); }
+.git-commit-badge.fixup { border-color: color-mix(in srgb, var(--red) 55%, transparent); color: var(--red); }
+.git-commit-badge.merge { border-color: var(--surface-2); color: var(--overlay-1); }
+.git-commit-message-toggle { display: inline-flex; margin-left: .4rem; padding: .1rem .2rem; border: 1px solid var(--surface-1); border-radius: .2rem; background: transparent; box-shadow: none; color: var(--overlay-1); vertical-align: middle; }
+.git-commit-message-toggle:not(:disabled):hover, .git-commit-message-toggle[aria-pressed="true"] { border-color: var(--blue); color: var(--blue); filter: none; }
+.git-commit-message-toggle svg { width: .75rem; height: .75rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+@media (pointer: coarse) { .git-commit-message-toggle { padding: .3rem .45rem; } }
+.git-commit-message { margin: 0 .5rem .35rem 1.75rem; padding: .35rem .5rem; border-left: 2px solid var(--surface-1); color: var(--subtext-1); font-size: .64rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.git-commit-section > .git-status-file-list { padding: 0 .5rem 0 1.75rem; }
+/* a fixed removed-lines column flush right, so a commit's totals and its file rows share both columns */
+.git-commit-section .git-status-file-lines { width: auto; grid-template-columns: auto 3.5rem; }
+.git-commit-section .git-status-file-lines > :last-child { text-align: right; }
 .git-worktree-state { flex: none; }
 .git-status-summary.clean .git-worktree-state { color: var(--green); }
 .git-status-summary.dirty .git-worktree-state { color: var(--yellow); }

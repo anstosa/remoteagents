@@ -2243,7 +2243,8 @@ describe('comparison API', () => {
         ? { ok: true, path, working: { path, size: 4, binary: false, truncated: false, content: 'new\n' } }
         : path === 'unresolved.ts'
           ? { ok: false, reason: 'no_base' }
-          : { ok: false, reason: 'not_in_comparison' }
+          : { ok: false, reason: 'not_in_comparison' },
+    commits: async () => ({ base: 'origin/main', truncated: false, commits: [{ sha: 'a'.repeat(40), subject: 'Add', body: '', author: 'A', authoredAt: '2026-10-06T12:00:00-07:00', merge: false, pushed: true, changes: [{ code: 'A ', path: 'a.ts' }] }] })
   };
 
   async function comparisonApp() {
@@ -2277,6 +2278,19 @@ describe('comparison API', () => {
       expect(invalidKind.statusCode).toBe(400);
       expect(missingWorktree.statusCode).toBe(404);
       expect(noBase.statusCode).toBe(404);
+      expect(unauthenticated.statusCode).toBe(401);
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('serves the commit log of a worktree and requires the worktree', async () => {
+    const { app, headers } = await comparisonApp();
+    try {
+      const log = await app.inject({ method: 'GET', url: '/api/worktrees/cora/commits', headers });
+      const missingWorktree = await app.inject({ method: 'GET', url: '/api/worktrees/missing/commits', headers });
+      const unauthenticated = await app.inject({ method: 'GET', url: '/api/worktrees/cora/commits', headers: { host: 'agents.example.com', origin: 'https://agents.example.com' } });
+      expect(log.statusCode).toBe(200);
+      expect(log.json()).toMatchObject({ base: 'origin/main', truncated: false, commits: [{ subject: 'Add', pushed: true, changes: [{ code: 'A ', path: 'a.ts' }] }] });
+      expect(missingWorktree.statusCode).toBe(404);
       expect(unauthenticated.statusCode).toBe(401);
     } finally { await app.close(); }
   }, 15_000);

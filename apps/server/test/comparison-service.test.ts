@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { ComparisonService, type PreferredBaseResolver } from '../src/git/comparison-service.js';
+import { commitLog } from '../src/git/comparison.js';
 import type { Worktree } from '../src/domain/models.js';
 
 const execute = promisify(execFile);
@@ -155,6 +156,51 @@ describe('ComparisonService patch', () => {
     // untracked entries are copied into an All PR Comparison, yet the enrichment still moves the fingerprint
     expect(before.patch.files.find(file => file.change.path === 'huge.txt')?.capped).toBe(true);
     expect(after.patch.fingerprint).not.toBe(before.patch.fingerprint);
+  });
+});
+
+describe('ComparisonService commits', () => {
+  it('lists the All PR commits newest first with their own Changes, merges, and pushed state', async () => {
+    const root = await featureRepo();
+    await git(root, 'add', '.');
+    await git(root, 'commit', '-m', 'second', '-m', 'Why the second\ncommit exists.');
+    // an upstream that has the first feature commit only
+    await git(root, 'branch', 'published', 'HEAD~1');
+    await git(root, 'branch', '--set-upstream-to=published');
+    // merging a side branch adds a merge commit and the side branch's own commit
+    await git(root, 'switch', '-c', 'side', 'HEAD~1');
+    await writeFile(join(root, 'side.ts'), 'side\n');
+    await git(root, 'add', 'side.ts');
+    await git(root, 'commit', '-m', 'side work');
+    await git(root, 'switch', 'feature');
+    await git(root, 'merge', '--no-ff', '-m', 'merge side', 'side');
+    const log = await new ComparisonService(baseMain).commits(worktree(root));
+    expect(log?.base).toBe('main');
+    expect(log?.truncated).toBe(false);
+    const bySubject = new Map(log?.commits.map(commit => [commit.subject, commit]));
+    expect(log?.commits[0]?.subject).toBe('merge side');
+    expect(bySubject.get('merge side')).toMatchObject({ merge: true, pushed: false, changes: [] });
+    expect(bySubject.get('second')).toMatchObject({ merge: false, pushed: false, body: 'Why the second\ncommit exists.', author: 'Compare Fixture' });
+    expect(bySubject.get('second')?.changes.map(change => [change.code, change.path, change.additions, change.deletions]).sort()).toEqual([['A ', 'note.txt', 1, 0], ['M ', 'src/a.ts', 1, 0]]);
+    expect(bySubject.get('side work')?.changes.map(change => change.path)).toEqual(['side.ts']);
+    const feature = bySubject.get('feature');
+    expect(feature?.pushed).toBe(true);
+    expect(feature?.sha).toMatch(/^[0-9a-f]{40}$/u);
+    expect(feature?.changes.map(change => [change.code, change.path, change.originalPath]).sort()).toEqual([['A ', 'added.ts', undefined], ['D ', 'gone.ts', undefined], ['M ', 'src/a.ts', undefined], ['R ', 'renamed.ts', 'old.ts']]);
+    expect(feature?.changes.find(change => change.path === 'renamed.ts')).toMatchObject({ additions: 1, deletions: 0 });
+  });
+
+  it('caps the log and leaves every commit unpushed without an upstream', async () => {
+    const root = await featureRepo();
+    await git(root, 'commit', '--allow-empty', '-m', 'empty');
+    const log = await commitLog(root, ['main'], 1);
+    expect(log?.truncated).toBe(true);
+    expect(log?.commits.map(commit => [commit.subject, commit.pushed, commit.changes])).toEqual([['empty', false, []]]);
+  });
+
+  it('is unavailable when no base resolves', async () => {
+    const root = await featureRepo();
+    expect(await new ComparisonService(noBase).commits(worktree(root))).toBeUndefined();
   });
 });
 

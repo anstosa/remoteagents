@@ -1435,6 +1435,18 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // an unresolvable base, conflicted tree, or unavailable worktree has no Comparison to show
     return result.ok ? { kind: result.kind, ...result.patch } : reply.code(404).send({ error: 'comparison unavailable' });
   });
+  // the commits an All PR Comparison spans, newest first, each with its own Changes; feeds the
+  // branch fly-out's By commit grouping
+  app.get('/api/worktrees/:id/commits', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request);
+    const { id } = request.params as { id: string };
+    const worktree = configuredWorktree(id);
+    // require a configured workspace
+    if (worktree === undefined) return await nonWorktreeReply(id, reply);
+    const log = await comparison.commits(worktree);
+    // no resolvable merge base, or git could not read the history
+    return log ?? reply.code(404).send({ error: 'commits unavailable' });
+  });
   // one changed file's contents at the Comparison base and at the working tree, feeding context
   // expansion / full-context mode; the path is allow-listed to the Comparison's Changes
   app.post('/api/worktrees/:id/comparison/file', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (request, reply) => {

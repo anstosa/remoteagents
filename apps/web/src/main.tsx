@@ -5723,7 +5723,47 @@ function GitLineSummary({ additions, deletions, className }: { additions: number
 function GitChangeGroup({ label, changes, onOpenFile }: { label: string; changes: GitStatusChange[]; onOpenFile: (path: string) => void }) {
   if (changes.length === 0) return null;
   const totals = gitLineTotals(changes);
-  return <span className="git-status-group" role="group" aria-label={`${label} files`}><span className="git-status-group-header"><strong>{label}</strong><span>{gitCountLabel(changes.length, 'file')}</span><GitLineSummary {...totals} className="git-status-group-lines" /></span><span className="git-status-file-list">{changes.map((change, index) => <button className={`git-status-file ${gitChangeState(change.code)}`} type="button" aria-label={`View changes to ${change.path}`} title={`View changes to ${change.path}`} key={`${change.code}:${change.path}:${index}`} onClick={() => onOpenFile(change.path)}><span className="git-status-file-code" aria-hidden="true">{change.code}</span><span className="git-status-file-path">{change.originalPath === undefined ? change.path : `${change.originalPath} → ${change.path}`}</span>{change.additions === undefined || change.deletions === undefined ? <span className="git-status-file-lines unavailable">binary</span> : <GitLineSummary additions={change.additions} deletions={change.deletions} className="git-status-file-lines" />}</button>)}</span></span>;
+  return <span className="git-status-group" role="group" aria-label={`${label} files`}><span className="git-status-group-header"><strong>{label}</strong><span>{gitCountLabel(changes.length, 'file')}</span><GitLineSummary {...totals} className="git-status-group-lines" /></span><GitChangeList changes={changes} onOpenFile={onOpenFile} /></span>;
+}
+// render clickable changed-file rows
+function GitChangeList({ changes, onOpenFile }: { changes: GitStatusChange[]; onOpenFile: (path: string) => void }) {
+  return <span className="git-status-file-list">{changes.map((change, index) => <button className={`git-status-file ${gitChangeState(change.code)}`} type="button" aria-label={`View changes to ${change.path}`} title={`View changes to ${change.path}`} key={`${change.code}:${change.path}:${index}`} onClick={() => onOpenFile(change.path)}><span className="git-status-file-code" aria-hidden="true">{change.code}</span><span className="git-status-file-path">{change.originalPath === undefined ? change.path : `${change.originalPath} → ${change.path}`}</span>{change.additions === undefined || change.deletions === undefined ? <span className="git-status-file-lines unavailable">binary</span> : <GitLineSummary additions={change.additions} deletions={change.deletions} className="git-status-file-lines" />}</button>)}</span>;
+}
+
+// The commits an All PR Comparison spans, newest first, from GET /api/worktrees/:id/commits
+type GitCommit = { sha: string; subject: string; body: string; author: string; authoredAt: string; merge: boolean; pushed: boolean; changes: GitStatusChange[] };
+type GitCommitLog = { base: string; commits: GitCommit[]; truncated: boolean };
+const isGitCommitLog = (value: unknown): value is GitCommitLog => value !== null && typeof value === 'object'
+  && typeof (value as GitCommitLog).base === 'string' && typeof (value as GitCommitLog).truncated === 'boolean' && Array.isArray((value as GitCommitLog).commits)
+  && (value as GitCommitLog).commits.every(commit => commit !== null && typeof commit === 'object' && typeof commit.sha === 'string' && typeof commit.subject === 'string' && typeof commit.body === 'string' && typeof commit.authoredAt === 'string' && typeof commit.merge === 'boolean' && typeof commit.pushed === 'boolean' && Array.isArray(commit.changes));
+type GitChangeGrouping = 'kind' | 'commit';
+const gitChangeGroupingKey = 'rac.git-change-grouping';
+const savedGitChangeGrouping = (): GitChangeGrouping => { try { return localStorage.getItem(gitChangeGroupingKey) === 'commit' ? 'commit' : 'kind'; } catch { return 'kind'; } };
+// git bodies are hard-wrapped near 72 columns; rejoin each paragraph so a narrow fly-out wraps it naturally
+const reflowCommitBody = (body: string) => body.split(/\n{2,}/u).map(paragraph => paragraph.replace(/\n(?![-*] )/gu, ' ')).join('\n\n');
+const uncommittedSectionKey = 'uncommitted';
+// render one collapsible commit (or the uncommitted changes) with its files
+function GitCommitSection({ title, meta, changes, collapsed, onToggle, body, messageOpen, onToggleMessage, onOpenFile, className = '' }: { title: React.ReactNode; meta: React.ReactNode; changes: GitStatusChange[]; collapsed: boolean; onToggle: () => void; body?: string; messageOpen?: boolean; onToggleMessage?: () => void; onOpenFile: (path: string) => void; className?: string }) {
+  const totals = gitLineTotals(changes);
+  return <section className={`git-commit-section ${className}${collapsed ? ' collapsed' : ''}`}>
+    {/* the whole header toggles; the caret is its keyboard control */}
+    <div className="git-commit-head" onClick={onToggle}><button className="git-commit-caret" type="button" aria-expanded={!collapsed} aria-label={collapsed ? 'Expand' : 'Collapse'} onClick={event => { event.stopPropagation(); onToggle(); }}>▾</button><span className="git-commit-title"><span className="git-commit-subject">{title}</span><span className="git-commit-meta">{meta}{!collapsed && body && onToggleMessage !== undefined && <button className="git-commit-message-toggle" type="button" aria-pressed={messageOpen} aria-label={`${messageOpen ? 'Hide' : 'Show'} commit message`} title={`${messageOpen ? 'Hide' : 'Show'} commit message`} onClick={event => { event.stopPropagation(); onToggleMessage(); }}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h7" /></svg></button>}</span></span>{changes.length > 0 && <GitLineSummary {...totals} className="git-status-file-lines" />}</div>
+    {!collapsed && messageOpen && body && <p className="git-commit-message">{reflowCommitBody(body)}</p>}
+    {!collapsed && changes.length > 0 && <GitChangeList changes={changes} onOpenFile={onOpenFile} />}
+  </section>;
+}
+// render the All PR files grouped under the commit that changed them, uncommitted changes first
+function GitCommitSections({ log, error, uncommitted, collapsed, onToggle, messages, onToggleMessage, onOpenFile }: { log?: GitCommitLog; error?: string; uncommitted: GitStatusChange[]; collapsed: (key: string, merge?: boolean) => boolean; onToggle: (key: string, merge?: boolean) => void; messages: ReadonlySet<string>; onToggleMessage: (sha: string) => void; onOpenFile: (path: string, mode: CodePanelMode) => void }) {
+  return <>
+    {uncommitted.length > 0 && <GitCommitSection className="uncommitted" title="Uncommitted changes" meta={gitCountLabel(uncommitted.length, 'file')} changes={uncommitted} collapsed={collapsed(uncommittedSectionKey)} onToggle={() => onToggle(uncommittedSectionKey)} onOpenFile={path => onOpenFile(path, 'working')} />}
+    {log?.commits.map(commit => <GitCommitSection key={commit.sha} className={commit.merge ? 'merge' : ''}
+      title={<>{commit.subject}{!commit.pushed && <span className="git-commit-badge local" title="Not on the upstream branch yet">local</span>}{/^(?:fixup|squash|amend)! /u.test(commit.subject) && <span className="git-commit-badge fixup" title="Folded into its target by an autosquash rebase">fixup</span>}{commit.merge && <span className="git-commit-badge merge">merge</span>}</>}
+      meta={<><code className="git-commit-sha" title={commit.sha}>{commit.sha.slice(0, 7)}</code>{` · ${relativeAge(Date.parse(commit.authoredAt))}${commit.merge ? '' : ` · ${gitCountLabel(commit.changes.length, 'file')}`}`}</>}
+      changes={commit.changes} body={commit.body} collapsed={collapsed(commit.sha, commit.merge)} onToggle={() => onToggle(commit.sha, commit.merge)} messageOpen={messages.has(commit.sha)} onToggleMessage={() => onToggleMessage(commit.sha)} onOpenFile={path => onOpenFile(path, 'pr')} />)}
+    {log !== undefined && log.commits.length === 0 && uncommitted.length === 0 && <span className="git-status-empty">No PR changes</span>}
+    {log?.truncated && <span className="git-status-empty">Showing the newest {gitNumberLabel(log.commits.length)} commits.</span>}
+    {log === undefined && <span className="git-status-empty" role={error === undefined ? 'status' : 'alert'}>{error ?? 'Loading commits…'}</span>}
+  </>;
 }
 // render working changes, current pr controls, and repository switchers
 function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, onFixup, expanded = false, onToggle, onOpenFile, onViewChanges, onReview, review, reviewUnavailable, pushAction = defaultPushAction, pushPending = false, onPush, onSelectTarget, onOperationFeedback }: { id?: string; worktreeId?: string; branch?: string; summary?: GitStatusSummary; prSummary?: GitComparisonSummary; pullRequest?: PullRequestSummary; onFixup?: () => Promise<boolean>; expanded?: boolean; onToggle?: () => void; onOpenFile: (path: string, mode: CodePanelMode) => void; onViewChanges?: (mode: CodePanelMode) => void; onReview?: (scope: ReviewScope) => void; review?: ReviewTourIndicator; reviewUnavailable?: string; pushAction?: PromptAction; pushPending?: boolean; onPush?: () => Promise<boolean>; onSelectTarget?: (target: DashboardTarget) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
@@ -5742,12 +5782,50 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
   const [movingPr, setMovingPr] = useState<number>();
   const [switchingBranch, setSwitchingBranch] = useState<string>();
   const [movingBranch, setMovingBranch] = useState<string>();
+  const [grouping, setGrouping] = useState<GitChangeGrouping>(savedGitChangeGrouping);
+  const [commitLog, setCommitLog] = useState<GitCommitLog>();
+  const [commitLogError, setCommitLogError] = useState<string>();
+  // sections the user opened or closed; the rest keep their default (a merge starts collapsed)
+  const [sectionOverrides, setSectionOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const [openMessages, setOpenMessages] = useState<ReadonlySet<string>>(new Set());
   const repositoryTabVisible = expanded && tab !== 'working';
+  const byCommit = mode === 'pr' && grouping === 'commit' && worktreeId !== undefined;
   // default new branches to all pr changes
   useEffect(() => {
     setTab('working');
     setMode(prSummary === undefined ? 'working' : 'pr');
+    setCommitLog(undefined);
+    setSectionOverrides(new Map());
+    setOpenMessages(new Set());
   }, [branch]);
+  // load the commit log while By commit shows, and again whenever the git status moves
+  useEffect(() => {
+    if (!expanded || !byCommit || worktreeId === undefined) return;
+    const controller = new AbortController();
+    void request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commits`, { signal: controller.signal }).then(async response => {
+      const payload: unknown = response.ok ? await response.json().catch(() => undefined) : undefined;
+      if (isGitCommitLog(payload)) {
+        setCommitLog(payload);
+        setCommitLogError(undefined);
+      } else setCommitLogError('Commits unavailable');
+    }).catch(() => {
+      // ignore a closed flyout or a superseded load
+      if (!controller.signal.aborted) setCommitLogError('Commits unavailable');
+    });
+    return () => controller.abort();
+  }, [expanded, byCommit, worktreeId, summary, prSummary]);
+  const sectionCollapsed = (key: string, merge = false) => sectionOverrides.get(key) ?? merge;
+  const toggleSection = (key: string, merge = false) => setSectionOverrides(current => new Map(current).set(key, !(current.get(key) ?? merge)));
+  const setAllSections = (collapsed: boolean) => setSectionOverrides(new Map([uncommittedSectionKey, ...(commitLog?.commits.map(commit => commit.sha) ?? [])].map(key => [key, collapsed])));
+  const toggleMessage = (sha: string) => setOpenMessages(current => {
+    const next = new Set(current);
+    if (!next.delete(sha)) next.add(sha);
+    return next;
+  });
+  const chooseGrouping = (next: GitChangeGrouping) => {
+    setGrouping(next);
+    try { localStorage.setItem(gitChangeGroupingKey, next); } catch { /* the choice still holds for this fly-out */ }
+  };
   // keep the selected view available
   useEffect(() => {
     // fall back when comparison disappears
@@ -5874,7 +5952,7 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
     ? details
     : prSummary === undefined
       ? []
-      : [`Compared with ${prSummary.base}`, gitCountLabel(prSummary.files, 'file'), `+${gitNumberLabel(prTotals.additions)} −${gitNumberLabel(prTotals.deletions)}`];
+      : [`Compared with ${prSummary.base}`, ...(byCommit && commitLog !== undefined ? [gitCountLabel(commitLog.commits.length, 'commit')] : []), gitCountLabel(prSummary.files, 'file'), `+${gitNumberLabel(prTotals.additions)} −${gitNumberLabel(prTotals.deletions)}`];
   const emptyLabel = activeSummary?.files === 0 ? mode === 'working' ? 'No working changes' : 'No PR changes' : 'Changed-file details unavailable';
   const disabledReviewReason = review !== undefined ? undefined : reviewUnavailable ?? (activeSummary === undefined ? 'Selected changes unavailable' : undefined);
   // a generating review says so on its button (still clickable: the dialog it opens shows progress and Cancel)
@@ -5994,7 +6072,8 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
     setRemovingBranch(undefined);
     onOperationFeedback?.({ tone: 'success', message: 'Branch deleted', detail: `${removingBranch.branch} was deleted.`, worktreeId });
   };
-  const workingPanel = <><span className="git-status-panel-header"><strong>{mode === 'working' ? 'Working changes' : 'PR changes'}</strong>{panelDetails.length > 0 && <small className="git-status-details">{panelDetails.join(' · ')}</small>}</span>{changedFiles !== undefined && changedFiles.length > 0 ? <span className="git-status-files"><GitChangeGroup label="Implementation" changes={implementationChanges} onOpenFile={path => onOpenFile(path, mode)} /><GitChangeGroup label="TESTS & DOCS" changes={supportingChanges} onOpenFile={path => onOpenFile(path, mode)} /></span> : <span className="git-status-empty">{emptyLabel}</span>}<span className="git-status-panel-footer"><span className="git-status-actions">{onViewChanges !== undefined && <button className="git-status-view-changes" type="button" disabled={changedFiles === undefined || changedFiles.length === 0} title={`View all ${mode === 'working' ? 'Working' : 'All PR'} changes in the Code panel`} onClick={() => onViewChanges(mode)}>View changes</button>}<button className="git-status-review" type="button" aria-busy={review?.generating || undefined} disabled={onReview === undefined || disabledReviewReason !== undefined} title={disabledReviewReason ?? (review?.generating ? 'Generating the guided review — open it to watch progress or cancel' : review !== undefined ? 'Open the current guided review' : `Start guided review of ${mode === 'working' ? 'Working' : 'All PR'} changes`)} onClick={() => onReview?.(mode)}>{reviewLabel}</button>{onPush !== undefined && <button className="git-status-push" type="button" disabled={pushPending} onClick={() => void commitPush()}>{pushPending ? <span className="spinner" /> : <MoreMenuIcon name="push" />}{pushAction.label}</button>}{/* keep fixes beside the push action */}<PullRequestFixup pullRequest={pullRequest} onFixup={onFixup} pending={pushPending} /></span>{/* keep the current pr between actions and view modes */}<PullRequestCard pullRequest={pullRequest} /><span className="git-status-mode" role="group" aria-label="Git change view"><button type="button" aria-pressed={mode === 'working'} onClick={() => setMode('working')}>Working</button><button type="button" aria-pressed={mode === 'pr'} disabled={prSummary === undefined} title={prSummary === undefined ? 'Merge target unavailable' : `Compare with ${prSummary.base}`} onClick={() => setMode('pr')}>All PR</button></span></span></>;
+  const groupingToolbar = mode === 'pr' && worktreeId !== undefined && <span className="git-status-grouping">{byCommit && <span className="git-status-grouping-actions"><button type="button" onClick={() => setAllSections(true)}>Collapse all</button><button type="button" onClick={() => setAllSections(false)}>Expand all</button></span>}<span className="git-status-mode" role="group" aria-label="Group files by"><button type="button" aria-pressed={grouping === 'kind'} onClick={() => chooseGrouping('kind')}>By kind</button><button type="button" aria-pressed={grouping === 'commit'} onClick={() => chooseGrouping('commit')}>By commit</button></span></span>;
+  const workingPanel = <><span className="git-status-panel-header"><strong>{mode === 'working' ? 'Working changes' : 'PR changes'}</strong>{panelDetails.length > 0 && <small className="git-status-details">{panelDetails.join(' · ')}</small>}</span>{byCommit ? <span className="git-status-files">{groupingToolbar}<GitCommitSections log={commitLog} error={commitLogError} uncommitted={summary?.changes ?? []} collapsed={sectionCollapsed} onToggle={toggleSection} messages={openMessages} onToggleMessage={toggleMessage} onOpenFile={onOpenFile} /></span> : changedFiles !== undefined && changedFiles.length > 0 ? <span className="git-status-files">{groupingToolbar}<GitChangeGroup label="Implementation" changes={implementationChanges} onOpenFile={path => onOpenFile(path, mode)} /><GitChangeGroup label="TESTS & DOCS" changes={supportingChanges} onOpenFile={path => onOpenFile(path, mode)} /></span> : <span className="git-status-empty">{emptyLabel}</span>}<span className="git-status-panel-footer"><span className="git-status-actions">{onViewChanges !== undefined && <button className="git-status-view-changes" type="button" disabled={changedFiles === undefined || changedFiles.length === 0} title={`View all ${mode === 'working' ? 'Working' : 'All PR'} changes in the Code panel`} onClick={() => onViewChanges(mode)}>View changes</button>}<button className="git-status-review" type="button" aria-busy={review?.generating || undefined} disabled={onReview === undefined || disabledReviewReason !== undefined} title={disabledReviewReason ?? (review?.generating ? 'Generating the guided review — open it to watch progress or cancel' : review !== undefined ? 'Open the current guided review' : `Start guided review of ${mode === 'working' ? 'Working' : 'All PR'} changes`)} onClick={() => onReview?.(mode)}>{reviewLabel}</button>{onPush !== undefined && <button className="git-status-push" type="button" disabled={pushPending} onClick={() => void commitPush()}>{pushPending ? <span className="spinner" /> : <MoreMenuIcon name="push" />}{pushAction.label}</button>}{/* keep fixes beside the push action */}<PullRequestFixup pullRequest={pullRequest} onFixup={onFixup} pending={pushPending} /></span>{/* keep the current pr between actions and view modes */}<PullRequestCard pullRequest={pullRequest} /><span className="git-status-mode" role="group" aria-label="Git change view"><button type="button" aria-pressed={mode === 'working'} onClick={() => setMode('working')}>Working</button><button type="button" aria-pressed={mode === 'pr'} disabled={prSummary === undefined} title={prSummary === undefined ? 'Merge target unavailable' : `Compare with ${prSummary.base}`} onClick={() => setMode('pr')}>All PR</button></span></span></>;
   const pullRequestPanel = <><span className="git-status-panel-header"><strong>Pull requests</strong>{pullRequestReason !== undefined && <small className={`git-status-details${prSwitchError === undefined ? '' : ' error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={pullRequestReason}>{pullRequestReason}</small>}</span><span className="git-status-switch-list">{prSwitch?.pullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} currentWorktreeId={worktreeId} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}{prSwitch !== undefined && otherPullRequestCount > 0 && <details className="other-pull-requests"><summary>Pull requests by others <span>{otherPullRequestCount}</span></summary><div>{prSwitch.otherPullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} currentWorktreeId={worktreeId} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}</div></details>}</span></>;
   const branchPanel = <><span className="git-status-panel-header"><strong>Branches</strong>{branchReason !== undefined && <small className={`git-status-details${prSwitchError === undefined ? '' : ' error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={branchReason}>{branchReason}</small>}</span><span className="git-status-switch-list">{prSwitch?.branches.map(candidate => <SwitchBranchOption key={candidate.branch} branch={candidate} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingBranch={switchingBranch} movingBranch={movingBranch} onSwitch={switchBranch} onMove={moveBranch} onDelete={worktreeId === undefined ? undefined : reviewBranchRemoval} onSelectTarget={selectWorktree} />)}</span></>;
   let activePanel = workingPanel;
@@ -6101,7 +6180,7 @@ type WorkspaceGitActions = Omit<Parameters<typeof GitStatus>[0], 'branch' | 'sum
 function WorkspaceGitStatus({ workspace, actions, onToggle }: { workspace: WorkspaceState; actions?: WorkspaceGitActions; onToggle?: () => void }) {
   const { place, code, setGitExpanded } = workspace;
   const onReview = actions?.onReview;
-  return <GitStatus {...actions} branch={place.branch} summary={place.gitStatus} prSummary={place.gitPrStatus} pullRequest={place.pullRequest} expanded={workspace.gitExpanded} onToggle={() => { onToggle?.(); setGitExpanded(value => !value); }} onOpenFile={(path, mode) => { setGitExpanded(false); code.openChanges(mode, path); }} onViewChanges={mode => { setGitExpanded(false); code.openChanges(mode); }} onReview={onReview === undefined ? undefined : scope => { setGitExpanded(false); onReview(scope); }} />;
+  return <GitStatus {...actions} worktreeId={place.worktreeId} branch={place.branch} summary={place.gitStatus} prSummary={place.gitPrStatus} pullRequest={place.pullRequest} expanded={workspace.gitExpanded} onToggle={() => { onToggle?.(); setGitExpanded(value => !value); }} onOpenFile={(path, mode) => { setGitExpanded(false); code.openChanges(mode, path); }} onViewChanges={mode => { setGitExpanded(false); code.openChanges(mode); }} onReview={onReview === undefined ? undefined : scope => { setGitExpanded(false); onReview(scope); }} />;
 }
 
 // Render one Place's panels in the resizable split: the agent panel first (while an Agent runs or
