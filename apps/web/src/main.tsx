@@ -901,6 +901,7 @@ type ClientSettings = {
   openServerUpdate: () => void;
   updateDavo: (settings: Pick<DavoSettings, 'enabled' | 'name' | 'context'>) => Promise<string | undefined>;
   codexAccounts: () => Promise<{ accounts?: CodexAccount[]; error?: string }>;
+  claudeAccounts: () => Promise<{ accounts?: CodexAccount[]; error?: string }>;
   switchCodexAccount: (id: string) => Promise<{ account?: CodexAccount; restarts?: CodexAccountRestart[]; error?: string }>;
   renameCodexAccount: (id: string, label: string) => Promise<{ account?: CodexAccount; error?: string }>;
   resetCodexAccount: (id: string) => Promise<{ outcome?: CodexAccountResetOutcome; account?: CodexAccount; error?: string }>;
@@ -1127,6 +1128,16 @@ const isCodexAccountLogin = (value: unknown): value is CodexAccountLogin => {
 const codexPlanLabel = (plan: string | undefined): string | undefined => plan === undefined ? undefined : plan.replaceAll('_', ' ').replace(/\b\w/gu, letter => letter.toUpperCase());
 // hide generated slot suffixes without changing custom names
 const codexAccountName = (account: Pick<CodexAccount, 'id' | 'label' | 'authMode'>): string => account.authMode === 'apikey' && account.label === `API key (${account.id})` ? 'API key' : account.label;
+// load one agent's sanitized account list
+const loadAccounts = async (path: string, fallbackError: string): Promise<{ accounts?: CodexAccount[]; error?: string }> => {
+  const response = await request(path);
+  const payload = await response.json().catch(() => undefined) as { accounts?: unknown; error?: unknown } | undefined;
+  // require one sanitized account list
+  if (!response.ok || !Array.isArray(payload?.accounts) || !payload.accounts.every(isCodexAccount)) return { error: typeof payload?.error === 'string' ? payload.error : fallbackError };
+  return { accounts: payload.accounts };
+};
+// load the signed-in Claude account and its usage
+const loadClaudeAccounts = () => loadAccounts('/api/claude/accounts', 'Unable to load Claude usage.');
 // retain cents in compact dollar totals
 const usdSpend = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 // show dollars only after a successful billing query
@@ -1487,6 +1498,7 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
   const adapters = useContext(AdaptersContext);
   // Codex account management is available only when adapters.codex is configured
   const codexConfigured = adapters?.codex?.program !== undefined;
+  const claudeConfigured = adapters?.claude?.program !== undefined;
   const terminalFontSize = useTerminalFontSize();
   const colorTheme = useColorTheme();
   const dynamicWorktrees = useDynamicWorktrees();
@@ -1511,6 +1523,8 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
   const [switchingAccountId, setSwitchingAccountId] = useState<string>();
   const [resettingAccountId, setResettingAccountId] = useState<string>();
   const [accountMessage, setAccountMessage] = useState('');
+  const [claudeAccounts, setClaudeAccounts] = useState<CodexAccount[]>([]);
+  const [claudeAccountMessage, setClaudeAccountMessage] = useState('');
   // clear stale feedback when opening an account-aware launcher
   const showAccounts = useCallback(() => { setAccountMessage(''); setAccountsVisible(true); }, []);
   // stop account polling when the launcher closes
@@ -1580,6 +1594,19 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
     });
     return () => { active = false; };
   }, [accountsVisible, codexConfigured, settings.codexAccounts, accountDay]);
+  // refresh Claude usage when the launcher opens
+  useEffect(() => {
+    if (!accountsVisible || !claudeConfigured) return;
+    let active = true;
+    void settings.claudeAccounts().then(result => {
+      // ignore closed-launcher responses
+      if (!active) return;
+      setClaudeAccountMessage(result.error ?? '');
+      // retain the last good usage on failure
+      if (result.accounts !== undefined) setClaudeAccounts(result.accounts);
+    });
+    return () => { active = false; };
+  }, [accountsVisible, claudeConfigured, settings.claudeAccounts]);
   // update visible reset countdowns every second
   useEffect(() => {
     // stop the clock while the account-aware launcher is hidden
@@ -1928,6 +1955,8 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
   const davoSection = <section className="client-settings-section client-settings-davo" aria-labelledby="settings-davo-title"><header><div><small>VOICE</small><h2 id="settings-davo-title">{davoTitle}</h2></div><label className="client-settings-toggle"><input aria-label={`Enable ${davoTitle}`} role="switch" type="checkbox" checked={davoEnabled} disabled={davoPending || !settings.davo.available && !davoEnabled} onChange={event => void toggleDavo(event)} /><span className="client-settings-switch-state">{davoStateLabel}</span><span className="client-settings-switch-track" aria-hidden="true" /></label></header>{davoEnabled && <form className="client-settings-davo-form" onSubmit={event => void saveDavo(event)}><label>Name<input aria-label="Davo name" type="text" value={davoDraft.name} maxLength={80} disabled={davoPending} onChange={event => setDavoDraft(current => ({ ...current, name: event.target.value }))} /></label><label>Context<textarea ref={davoContextRef} aria-label="Davo context" value={davoDraft.context} maxLength={16_000} disabled={davoPending} onChange={event => setDavoDraft(current => ({ ...current, context: event.target.value }))} /></label><footer>{davoError && <span className="client-settings-davo-error" role="alert">{davoError}</span>}{!davoError && davoMessage && <span className="client-settings-davo-message" role="status">{davoMessage}</span>}<button type="submit" disabled={davoPending || !davoDraft.name.trim()}>{davoPending ? <><span className="spinner" />Saving…</> : 'Save'}</button></footer></form>}{!davoEnabled && davoError && <span className="client-settings-davo-error" role="alert">{davoError}</span>}</section>;
   // the Codex accounts section renders only when adapters.codex is configured
   const accountsSection = !codexConfigured ? null : <section className="client-settings-section client-settings-accounts" aria-labelledby="launcher-accounts-title"><header><small>CODEX</small><h2 id="launcher-accounts-title">Accounts</h2><button className="chatgpt-account-add" type="button" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></header>{/* define billing periods separately from account selection */}{accounts.some(account => account.authMode === 'apikey') && <p className="api-key-spend-note">API-key spend is in USD, using UTC days and weeks starting Monday. OpenAI reporting may be delayed.</p>}<div className="client-settings-account-list" role="radiogroup" aria-label="ChatGPT accounts">{accountsLoading && accounts.length === 0 ? <div className="chatgpt-account-loading" role="status"><span className="spinner" />Loading ChatGPT accounts…</div> : accountRows}</div>{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}</section>;
+  // Claude has one signed-in account, so its section only reports usage
+  const claudeAccountsSection = !claudeConfigured ? null : <section className="client-settings-section client-settings-accounts" aria-labelledby="launcher-claude-accounts-title"><header><small>CLAUDE</small><h2 id="launcher-claude-accounts-title">Account</h2></header><div className="client-settings-account-list">{claudeAccounts.length === 0 && !claudeAccountMessage ? <div className="chatgpt-account-loading" role="status"><span className="spinner" />Loading Claude usage…</div> : claudeAccounts.map(account => <div key={account.id} className="chatgpt-account-option"><AccountCopy account={account} now={accountClock} /></div>)}</div>{claudeAccountMessage && <span className="chatgpt-account-message" role="status">{claudeAccountMessage}</span>}</section>;
   // close the settings page and consume its notification route
   const closeSettings = () => {
     setOpen(false);
@@ -1976,9 +2005,10 @@ function ClientSettingsLayout({ settings, children }: { settings: ClientSettings
   // keep ui update guidance in the toast instead of settings
   const trigger = <span className="server-switcher-settings-wrap"><button ref={triggerRef} type="button" className="server-switcher-button server-switcher-settings" aria-label="Global settings" aria-haspopup="dialog" aria-controls="global-settings-page" aria-expanded={open} onClick={toggleSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06-.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" /></svg></button></span>;
   // reuse the saved label for the selected launcher account
-  const activeAccount = accounts.find(account => account.active);
+  const activeName = (list: CodexAccount[]) => { const active = list.find(account => account.active); return active === undefined ? undefined : codexAccountName(active); };
+  const accountMenus = { ...(accountsSection === null ? {} : { codex: { content: accountsSection, activeName: activeName(accounts) } }), ...(claudeAccountsSection === null ? {} : { claude: { content: claudeAccountsSection, activeName: activeName(claudeAccounts) } }) };
   // keep account mutations mounted while the launch flyout changes menu pages
-  const accountsMenu = accountsSection === null ? undefined : { menus: { codex: { content: accountsSection, activeName: activeAccount === undefined ? undefined : codexAccountName(activeAccount) } }, onOpen: showAccounts, onClose: hideAccounts };
+  const accountsMenu = Object.keys(accountMenus).length === 0 ? undefined : { menus: accountMenus, onOpen: showAccounts, onClose: hideAccounts };
   return <ClientSettingsSplitContext.Provider value={{ open, page: settingsPage, trigger, close: closeSettings, renameServer: () => beginRename('server') }}><AgentAccountsMenuContext.Provider value={accountsMenu}>{children}</AgentAccountsMenuContext.Provider>{renameDialog}{accountLoginDialog}</ClientSettingsSplitContext.Provider>;
 }
 
@@ -9470,13 +9500,7 @@ function App() {
     return () => window.removeEventListener('hashchange', openFromHash);
   }, [openServerUpdate, state]);
   // load every configured Codex account and its limits
-  const codexAccounts = useCallback(async (): Promise<{ accounts?: CodexAccount[]; error?: string }> => {
-    const response = await request('/api/codex/accounts');
-    const payload = await response.json().catch(() => undefined) as { accounts?: unknown; error?: unknown } | undefined;
-    // require one sanitized account list
-    if (!response.ok || !Array.isArray(payload?.accounts) || !payload.accounts.every(isCodexAccount)) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to load ChatGPT accounts.' };
-    return { accounts: payload.accounts };
-  }, []);
+  const codexAccounts = useCallback(() => loadAccounts('/api/codex/accounts', 'Unable to load ChatGPT accounts.'), []);
   // switch the active Codex account and restart idle worktrees
   const switchCodexAccount = useCallback(async (id: string): Promise<{ account?: CodexAccount; restarts?: CodexAccountRestart[]; error?: string }> => {
     const response = await request('/api/codex/accounts/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
@@ -9755,7 +9779,7 @@ function App() {
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
   // expose settings without a manual server update bypass
-  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, clientUpdateAvailable, serverUpdateAvailable, serverUpdateVisible: serverUpdateOpen && !serverUpdateMinimized, serverUpdateMinimized, davo: sessionInfo.davo ?? legacyDavoSettings, renameClient, renameServer, loadServerRevision, reloadClient, openServerUpdate, updateDavo, codexAccounts, switchCodexAccount, renameCodexAccount, resetCodexAccount, addCodexApiKeyAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [addCodexApiKeyAccount, cancelCodexAccountLogin, clientUpdateAvailable, codexAccountLoginStatus, codexAccounts, loadServerRevision, openServerUpdate, reloadClient, renameClient, renameServer, renameCodexAccount, resetCodexAccount, serverInfo.name, serverInfo.url, serverUpdateAvailable, serverUpdateMinimized, serverUpdateOpen, sessionInfo?.davo, sessionInfo?.deviceName, startCodexAccountLogin, state, switchCodexAccount, updateDavo]);
+  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, clientUpdateAvailable, serverUpdateAvailable, serverUpdateVisible: serverUpdateOpen && !serverUpdateMinimized, serverUpdateMinimized, davo: sessionInfo.davo ?? legacyDavoSettings, renameClient, renameServer, loadServerRevision, reloadClient, openServerUpdate, updateDavo, codexAccounts, claudeAccounts: loadClaudeAccounts, switchCodexAccount, renameCodexAccount, resetCodexAccount, addCodexApiKeyAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [addCodexApiKeyAccount, cancelCodexAccountLogin, clientUpdateAvailable, codexAccountLoginStatus, codexAccounts, loadServerRevision, openServerUpdate, reloadClient, renameClient, renameServer, renameCodexAccount, resetCodexAccount, serverInfo.name, serverInfo.url, serverUpdateAvailable, serverUpdateMinimized, serverUpdateOpen, sessionInfo?.davo, sessionInfo?.deviceName, startCodexAccountLogin, state, switchCodexAccount, updateDavo]);
   // share the current launch settings with every flyout
   const agentLaunchSettings = useMemo(() => ({ statuses: agentUpdateStatuses, updating: updatingAgent, errors: Array.from(new Set([defaultAgentError, agentUpdateError, versionCheckError, ...agentUpdateStatuses.map(status => status.error ?? '')].filter(Boolean))), defaultAgent: sessionInfo?.defaultAgent, defaultPending: defaultAgentPending, setDefaultAgent: (kind: AgentKind) => { /* persist one default */ void selectDefaultAgent(kind); }, updateAgent: (kind: AgentKind) => { /* run one installer */ void runAgentUpdate(kind); } }), [agentUpdateStatuses, updatingAgent, agentUpdateError, versionCheckError, defaultAgentError, sessionInfo?.defaultAgent, defaultAgentPending, selectDefaultAgent, runAgentUpdate]);
   return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}><AgentLaunchSettingsContext.Provider value={agentLaunchSettings}>{screen}<ContextMenuHost /><ContextFlyoutEvents /><ServerUpdateDialog open={serverUpdateOpen} minimized={serverUpdateMinimized} onMinimize={minimizeServerUpdate} onClose={closeServerUpdate} />{reconnecting && <ReconnectingOverlay />}</AgentLaunchSettingsContext.Provider></ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;

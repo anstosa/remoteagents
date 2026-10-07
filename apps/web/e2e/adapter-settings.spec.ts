@@ -218,7 +218,7 @@ test('marks an unavailable persisted default in the launch menu', async ({ page 
   const claude = menu.getByRole('group', { name: 'Claude agent' });
   await expect(claude.getByRole('menuitemradio', { name: 'Make Claude default' })).toHaveAttribute('aria-checked', 'true');
   await expect(claude.getByRole('menuitemradio', { name: 'Make Claude default' })).toBeDisabled();
-  await expect(claude.getByRole('menuitem', { name: /Claude/u })).toBeDisabled();
+  await expect(claude.getByRole('menuitem', { name: /^Claude(?! accounts)/u })).toBeDisabled();
 });
 
 test('enables Davo and saves a configurable name and context', async ({ page }) => {

@@ -80,6 +80,7 @@ import { federationForwarder, verifyFederationRequest } from './integrations/fed
 import { IntegrationControlService } from './integrations/control/index.js';
 import { ServerAdminService } from './server-admin/service.js';
 import { ApiKeySpendService } from './accounts/spend.js';
+import { readClaudeAccount } from './accounts/claude.js';
 import { CodexAccountService, normalizeAccountLabel, normalizeApiKey, safeAccountId, UnsupportedAccountOperationError, type AccountRateLimitWindow, type AccountSummary } from './accounts/index.js';
 import { ConsoleNamedConversationService, type ConsoleNamedConversation } from './conversations/console-named-service.js';
 import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from './update-advisor.js';
@@ -91,7 +92,7 @@ import { registerHostFilesRoutes } from './host-files/routes.js';
 import { HostFilesError } from './host-files/contracts.js';
 import { HostFilesTransportError } from './host-files/protocol.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; pullRequestReviews?: PullRequestReviewService; reviewStore?: ReviewTourStore; reviewRunner?: ReviewRunner; workspaceFiles?: WorkspaceFileService; hostFiles?: HostFilesService; comparison?: ComparisonService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; accountSpend?: ApiKeySpendService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'>; scheduleBootAt?: Date; paneStream?: PaneStreamProvider };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; pullRequestReviews?: PullRequestReviewService; reviewStore?: ReviewTourStore; reviewRunner?: ReviewRunner; workspaceFiles?: WorkspaceFileService; hostFiles?: HostFilesService; comparison?: ComparisonService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; claudeAccount?: () => Promise<AccountSummary>; accountSpend?: ApiKeySpendService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'>; scheduleBootAt?: Date; paneStream?: PaneStreamProvider };
 // buildApp decorates the returned instance with the Schedule scheduler, so index.ts can start it and
 // the HTTP-seam tests can drive its `tick(now)` over the same fakes the Run routes use.
 declare module 'fastify' {
@@ -156,6 +157,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const codeReviewCapability = await codeReviewer.capability();
   const accountSpend = deps.accountSpend ?? new ApiKeySpendService();
   const accounts = deps.accounts ?? new CodexAccountService({ ...(codexProgram === undefined ? {} : { codexProgram }) });
+  const claudeAccount = deps.claudeAccount ?? (() => readClaudeAccount());
   // tolerate narrow launch doubles while deriving the production launch account home
   const launchHome = typeof launch.agentHome === 'function' ? launch.agentHome() : process.env.HOME ?? '/';
   const agentUpdates = deps.agentUpdates ?? new AgentUpdateService(config, launchHome);
@@ -2252,6 +2254,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     } catch {
       return reply.code(503).send({ error: 'Unable to load ChatGPT accounts.' });
     }
+  });
+  // read the signed-in Claude account and its usage on menu open
+  app.get('/api/claude/accounts', async request => {
+    controlled(request);
+    return { accounts: [publicAccount(await claudeAccount())] };
   });
   // rename one configured codex account without selecting it
   app.patch('/api/codex/accounts/:id', async (request, reply) => {

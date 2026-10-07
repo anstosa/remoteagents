@@ -67,7 +67,7 @@ test('mobile Launch is one menu button in the toolbar and empty Workspace', asyn
   await expect(page.locator('.workspace-toolbar-actions .launch-primary, .workspace-toolbar-actions .launch-chevron')).toHaveCount(0);
   expect((await trigger.boundingBox())?.width).toBeCloseTo((await toolbar(page).getByRole('button', { name: 'Open a terminal' }).boundingBox())?.width ?? 0, 1);
   await trigger.click();
-  await expect(page.locator('.launch-menu').getByRole('menuitem', { name: /Claude/u })).toBeVisible();
+  await expect(page.locator('.launch-menu').getByRole('menuitem', { name: /^Claude(?! accounts)/u })).toBeVisible();
   expect(posts).toEqual([]);
   await page.mouse.click(4, 4);
 
@@ -113,7 +113,7 @@ test('mobile Launch remains one menu button beside a running Agent', async ({ pa
   const launchControl = toolbar(page).locator('.launch-menu-only.quiet');
   await expect(launchControl.locator('button')).toHaveCount(1);
   await launchControl.getByRole('button', { name: 'Launch agent' }).click();
-  await expect(page.locator('.launch-menu').getByRole('menuitem', { name: /Claude/u })).toBeVisible();
+  await expect(page.locator('.launch-menu').getByRole('menuitem', { name: /^Claude(?! accounts)/u })).toBeVisible();
   expect(posts).toEqual([]);
 });
 
@@ -166,7 +166,7 @@ test('an unavailable kind is disabled in the menu with its reason', async ({ pag
   const unavailable = adapter('/bin/claude', { launchable: false, unavailableReason: '/bin/claude is not executable' });
   await mount(page, { generation: 1, adapters: { codex, claude: unavailable }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'codex', origin: 'default' })] }] });
   await toolbar(page).getByRole('button', { name: 'Choose agent' }).click();
-  const claudeRow = page.locator('.launch-menu').getByRole('menuitem', { name: /Claude/ });
+  const claudeRow = page.locator('.launch-menu').getByRole('menuitem', { name: /^Claude(?! accounts)/u });
   await expect(claudeRow).toBeDisabled();
   await expect(claudeRow).toContainText('/bin/claude is not executable');
 });
@@ -474,7 +474,7 @@ test('the Place entries stay out of the launch menus the + rows share', async ({
   await page.getByRole('tab', { name: /^Dora —/u }).click();
   await page.locator('.workspace-toolbar').getByRole('button', { name: 'Choose agent' }).click();
   await expect(menu.getByText('Launch · Dora')).toBeVisible();
-  await expect(menu.getByRole('menuitem', { name: /^Claude/u })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: /^Claude(?! accounts)/u })).toBeVisible();
   await expect(placeEntries).toHaveCount(0);
   await page.locator('.workspace-toolbar').getByRole('button', { name: 'Choose agent' }).click();
 

@@ -423,6 +423,38 @@ test('shows the active Codex account beside its version in launch menus', async 
   expect(state.patches).toEqual([{ id: 'work-account', body: { label: longName }, csrf: 'account-settings-csrf' }]);
 });
 
+// verify the signed-in Claude account and its usage reuse the Codex launcher slot
+test('shows the Claude account and usage in launch menus', async ({ page }) => {
+  await setupAccountSettings(page, []);
+  let claudeQueries = 0;
+  const resetsAt = Math.floor(Date.now() / 1000) + 3 * 3600;
+  // configure Claude beside Codex
+  await page.route('**/api/dashboard', route => route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false }, claude: { program: '/usr/local/bin/claude', launchable: true, stateSource: 'reported', turnCapture: true, inlineQuestions: true, commands: true, sandbox: false } }, agents: [], projects: [], scratchLaunch: { kind: 'claude', origin: 'default' }, cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } }));
+  // report one signed-in account with both usage windows
+  await page.route('**/api/claude/accounts', route => {
+    claudeQueries += 1;
+    return route.fulfill({ json: { accounts: [{ id: 'claude', label: 'tony@example.com', active: true, email: 'tony@example.com', planType: 'max_20x', primary: { usedPercent: 37, windowDurationMins: 300, resetsAt }, secondary: { usedPercent: 82, windowDurationMins: 10_080 } }] } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: /^(Choose agent|Launch agent)(?: — update available)?$/u }).click();
+  const menu = page.getByRole('menu', { name: 'Choose agent', exact: true });
+  const claude = menu.getByRole('group', { name: 'Claude agent' });
+  await expect(claude.locator('.launch-agent-account')).toHaveText('tony@example.com');
+  expect(claudeQueries).toBe(1);
+
+  await claude.getByRole('menuitem', { name: 'Claude accounts', exact: true }).click();
+  const accounts = menu.getByRole('group', { name: 'Claude accounts', exact: true });
+  await expect(accounts.getByRole('heading', { name: 'Account' })).toBeVisible();
+  await expect(accounts.getByText('tony@example.com (Max 20x)', { exact: true })).toBeVisible();
+  await expect(accounts.getByRole('progressbar', { name: '5h limit consumed' })).toHaveAttribute('value', '37');
+  await expect(accounts.getByRole('progressbar', { name: '7d limit consumed' })).toHaveAttribute('value', '82');
+  await expect(accounts.getByText(/^Resets in 0d 0[23]h/u)).toBeVisible();
+  await expect(accounts.getByRole('radio')).toHaveCount(0);
+  await accounts.getByRole('button', { name: /Back to agents/u }).click();
+  await expect(menu.getByRole('group', { name: 'Codex agent' }).getByRole('menuitem', { name: 'Codex accounts', exact: true })).toBeVisible();
+});
+
 // keep restart choices independent from toolbar-only account state
 test('keeps Restart as choice-only and defers account loading to the toolbar', async ({ page }) => {
   const state = await setupAccountSettings(page, [
