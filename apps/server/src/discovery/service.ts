@@ -327,14 +327,15 @@ export class DiscoveryService {
   async target(id: string, force = false): Promise<{ agent: Agent; socket: SocketRef } | undefined> {
     // refresh launch-sensitive pane state on demand
     if (force) await this.refresh(true);
-    let agent = this.snapshot.find(candidate => candidate.id === id);
     // discover only targets absent from the runtime snapshot
-    if (agent === undefined) {
-      await this.refresh(true);
-      agent = this.snapshot.find(candidate => candidate.id === id);
-    }
+    if (!this.snapshot.some(candidate => candidate.id === id)) await this.refresh(true);
+    return await this.snapshotTarget(id);
+  }
+  // resolve a pane from the current snapshot only, for callers that must not wait on a scan
+  async snapshotTarget(id: string): Promise<{ agent: Agent; socket: SocketRef } | undefined> {
+    const agent = this.snapshot.find(candidate => candidate.id === id);
     if (agent === undefined) return undefined;
-    const socket = (await this.sockets()).find(candidate => candidate.fingerprint === agent!.socketFingerprint);
+    const socket = (await this.sockets()).find(candidate => candidate.fingerprint === agent.socketFingerprint);
     return socket === undefined ? undefined : { agent, socket };
   }
 

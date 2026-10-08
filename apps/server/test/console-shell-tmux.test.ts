@@ -97,7 +97,7 @@ const encode = (data: string) => Buffer.from(data, 'utf8').toString('base64url')
 
 // open a Worktree pane socket against the given member pane, acking every binary frame
 async function openWorktreePane(socket: SocketRef, worktree: Worktree, member: { paneId: string; sessionId: string }) {
-  const discovery = { target: async () => undefined, worktreesNow: () => [worktree] } as never;
+  const discovery = { target: async () => undefined, snapshotTarget: async () => undefined, worktreesNow: () => [worktree] } as never;
   const launch = { placePanes: async () => [{ paneId: member.paneId, sessionId: member.sessionId, pid: 1, path: worktree.identity, command: 'cat', title: '', socket }] } as never;
   const port = await freePort();
   const tickets = new TicketStore();

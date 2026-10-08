@@ -2963,7 +2963,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       // session holding a pane at the Place, plus its Console shells — raw bytes, no derive, no
       // lock). Both mint a `pane` ticket bound to their id (spec, The pane socket).
       const requestedPane = (request.query as { pane?: unknown }).pane;
-      const agentTarget = await discovery.target(id);
+      // A snapshot miss is a Place, or an Agent launched since the last scan: only an id that
+      // names no Place pays for the forced scan, so a Terminal never waits on one.
+      let agentTarget = await discovery.snapshotTarget(id);
+      const place = agentTarget === undefined ? await resolvePlace(id) : undefined;
+      if (agentTarget === undefined && place === undefined) agentTarget = await discovery.target(id);
       let socketRef: SocketRef;
       let session: string;
       let pane: string;
@@ -2982,15 +2986,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         isAgentPane = pane === agentTarget.agent.paneId;
       } else {
         if (typeof requestedPane !== 'string' || !/^%\d+$/u.test(requestedPane)) throw new Error();
-        const place = await resolvePlace(id);
         if (place === undefined) throw new Error();
         const member = (await launch.placePanes(place)).find(candidate => candidate.paneId === requestedPane);
         if (member === undefined) throw new Error();
         // A live Agent's own pane is reachable through the Place set (its cwd is at the
         // Place), but it must be streamed only through its Agent target so input takes the
         // mutation lock and a lone Ctrl+C routes through queued-prompt cancellation. Refuse it
-        // here (the picker lists it disabled), so the Place path only ever drives raw panes.
-        if (await discovery.target(`${member.socket.fingerprint}:${member.paneId}`) !== undefined) throw new Error();
+        // here (the picker lists it disabled, from the same snapshot), so the Place path only
+        // ever drives raw panes.
+        if (await discovery.snapshotTarget(`${member.socket.fingerprint}:${member.paneId}`) !== undefined) throw new Error();
         socketRef = member.socket;
         session = member.sessionId;
         pane = requestedPane;

@@ -22,11 +22,11 @@ const dashboardUpdates = { setLoader: () => {}, refresh: async () => {}, close: 
 const socket = { fingerprint: 'sockfp', path: '/tmp/rac-pane-test.sock', device: 0, inode: 0 };
 // the composite agent id embeds the raw tmux session ($1) behind the socket fingerprint
 const agentOf = (kind: string) => ({ id: 'agent-1', paneId: '%1', sessionId: 'sockfp:$1', socketFingerprint: 'sockfp', home: '/repo', title: 'Ready', kind, attention: 'finished' });
-const discoveryOf = (kind: string) => ({
-  target: async (id: string) => (id === 'agent-1' ? { agent: agentOf(kind), socket } : undefined),
+const discoveryOf = (kind: string) => {
+  const target = async (id: string) => (id === 'agent-1' ? { agent: agentOf(kind), socket } : undefined);
   // the project proxy inspects every WS upgrade; no worktrees means it passes ours to Fastify
-  worktreesNow: () => []
-}) as never;
+  return { target, snapshotTarget: target, worktreesNow: () => [] } as never;
+};
 
 // a control client whose activity and bytes the test drives, recording what it was asked to
 // type and how deep it seeded
@@ -225,8 +225,10 @@ describe('/ws/pane seed and size', () => {
     // the handler is still resolving the target/membership. A slow resolution here stands in
     // for a Worktree pane's `list-panes` spawn: the frame must be buffered, not dropped —
     // otherwise no size, no seed, and the pane stays blank while still taking input.
+    const slowTarget = async (id: string) => { await delay(120); return id === 'agent-1' ? { agent: agentOf('claude'), socket } : undefined; };
     const slowDiscovery = {
-      target: async (id: string) => { await delay(120); return id === 'agent-1' ? { agent: agentOf('claude'), socket } : undefined; },
+      target: slowTarget,
+      snapshotTarget: slowTarget,
       worktreesNow: () => []
     };
     const conn = await connect(stream.provider, { tmux, discovery: slowDiscovery, sendOnOpen: { type: 'viewport', cols: 100, rows: 30, scrollback: 500 } });
@@ -515,14 +517,16 @@ describe('/ws/pane Worktree target', () => {
   // drive /ws/pane against a Worktree target (by default discovery.target misses, so the handler
   // falls to the Worktree branch and checks membership against launch.placePanes). `target`
   // can resolve a live Agent (so the handler refuses that pane) and `prompts` is wired in so the
-  // no-lock assertions on a raw pane are load-bearing.
-  async function connectWorktree(query: string, placePanes: () => Promise<unknown[]>, stream: ReturnType<typeof fakePaneStream>, tmuxOverride: unknown, deps: { target?: (id: string) => Promise<unknown>; prompts?: unknown; placeId?: string } = {}) {
+  // no-lock assertions on a raw pane are load-bearing. `forcedTarget` stands in for the
+  // scanning lookup alone, when a test must tell it apart from the snapshot one.
+  async function connectWorktree(query: string, placePanes: () => Promise<unknown[]>, stream: ReturnType<typeof fakePaneStream>, tmuxOverride: unknown, deps: { target?: (id: string) => Promise<unknown>; forcedTarget?: (id: string) => Promise<unknown>; prompts?: unknown; placeId?: string } = {}) {
     const placeId = deps.placeId ?? 'cora';
     const control = { connect: () => true, active: () => true } as never;
     const port = await freePort();
     const tickets = new TicketStore();
     // the dashboard lists a directory-Project and a Scratch Place beside the Worktree
-    const discovery = { target: deps.target ?? (async () => undefined), worktreesNow: () => [worktree], place: async (id: string) => [notesPlace, scratchPlace].find(place => place.id === id) } as never;
+    const target = deps.target ?? (async () => undefined);
+    const discovery = { target: deps.forcedTarget ?? target, snapshotTarget: target, worktreesNow: () => [worktree], place: async (id: string) => [notesPlace, scratchPlace].find(place => place.id === id) } as never;
     const launch = { placePanes } as never;
     const app = await buildApp(
       testConfig({ publicOrigin: new URL(`http://127.0.0.1:${port}`), projects: [testProject({ id: 'proj' })] as never }),
@@ -560,6 +564,19 @@ describe('/ws/pane Worktree target', () => {
     // the wired-in prompts double proves the raw path never took the agent mutation lock or cancel
     expect(prompts.mutations()).toBe(0);
     expect(prompts.cancels()).toBe(0);
+  });
+
+  it('seeds a Console shell without a forced discovery scan', async () => {
+    // the scanning lookup waits on and runs full rescans; a Place pane must resolve without it
+    const stream = fakePaneStream();
+    stream.setSeed(Buffer.from('SHELLSEED'));
+    const { tmux } = fakeTmux(stream);
+    let forced = 0;
+    const conn = await connectWorktree('?pane=%2', async () => [member], stream, tmux, { forcedTarget: async () => { forced += 1; return undefined; } });
+    conn.send({ type: 'viewport', cols: 100, rows: 30, scrollback: 500 });
+    await waitFor(() => conn.binary.length > 0);
+    expect(conn.binary[0]!.toString()).toBe('SHELLSEED');
+    expect(forced).toBe(0);
   });
 
   it('refuses the live Agent\'s own pane on the Worktree path (it must use the Agent target)', async () => {
@@ -644,8 +661,10 @@ describe('/ws/pane window-keyed Size claim', () => {
       }
     } as never;
     const panes: Record<string, string> = { 'agent-1': '%1', 'agent-2': '%2' };
+    const target = async (id: string) => (panes[id] ? { agent: { ...agentOf('claude'), id, paneId: panes[id]! }, socket } : undefined);
     const discovery = {
-      target: async (id: string) => (panes[id] ? { agent: { ...agentOf('claude'), id, paneId: panes[id]! }, socket } : undefined),
+      target,
+      snapshotTarget: target,
       worktreesNow: () => []
     } as never;
     const control = { connect: () => true, active: () => true } as never;
