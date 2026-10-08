@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { promptAttachmentBytes, promptAttachmentName, validPromptAttachments, type PromptAttachment } from '../prompts/validation.js';
+import { maxStoredAttachmentFootprintBytes, promptAttachmentBytes, promptAttachmentName, promptAttachmentsStorageFootprint, validPromptAttachments, type PromptAttachment } from '../prompts/validation.js';
 import { type Schedule, type ScheduleLastRun, validSchedule } from '../schedule/types.js';
 
 export type WorktreeNote = { id: string; text: string; title?: string; source?: 'queued-prompt'; schedule?: Schedule; attachments?: PromptAttachment[]; locked?: boolean };
@@ -41,11 +41,14 @@ const validNote = (value: unknown): value is WorktreeNote => {
 const totalNoteLength = (stored: StoredNotes) => Object.values(stored).flat().reduce((total, note) => total + note.text.length + (note.title?.length ?? 0), 0);
 // total decoded attachment bytes
 const totalAttachmentBytes = (stored: StoredNotes) => Object.values(stored).flat().reduce((total, note) => total + (note.attachments ?? []).reduce((sum, attachment) => sum + (promptAttachmentBytes(attachment) ?? 0), 0), 0);
+// total serialized attachment json bytes
+const totalAttachmentFootprint = (stored: StoredNotes) => Object.values(stored).flat().reduce((total, note) => total + promptAttachmentsStorageFootprint(note.attachments ?? []), 0);
 
 export class WorktreeNoteService {
   private mutation = Promise.resolve();
 
-  constructor(private readonly file = process.env.RAC_NOTES_FILE ?? '.data/notes.json', private readonly attachmentStorageLimit = defaultAttachmentStorageLimit) {}
+  // bind note storage and its decoded and serialized attachment budgets
+  constructor(private readonly file = process.env.RAC_NOTES_FILE ?? '.data/notes.json', private readonly attachmentStorageLimit = defaultAttachmentStorageLimit, private readonly attachmentFootprintLimit = maxStoredAttachmentFootprintBytes) {}
 
   async list(worktreeId: string): Promise<WorktreeNote[] | undefined> {
     if (!validWorktreeId(worktreeId)) return undefined;
@@ -90,6 +93,8 @@ export class WorktreeNoteService {
       if (totalNoteLength(stored) + title.length + text.length > maxTotalNoteLength) return undefined;
       // enforce the global byte budget
       if (totalAttachmentBytes(stored) + normalized.reduce((sum, attachment) => sum + promptAttachmentBytes(attachment)!, 0) > this.attachmentStorageLimit) return undefined;
+      // enforce the serialized attachment footprint budget
+      if (totalAttachmentFootprint(stored) + promptAttachmentsStorageFootprint(normalized) > this.attachmentFootprintLimit) return undefined;
       const note: WorktreeNote = { id: randomBytes(18).toString('base64url'), text, title, ...(source === undefined ? {} : { source }), ...(normalized.length === 0 ? {} : { attachments: normalized }) };
       stored[worktreeId] = [note, ...notes];
       return note;
@@ -121,6 +126,8 @@ export class WorktreeNoteService {
       const nextBytes = combined.reduce((sum, attachment) => sum + promptAttachmentBytes(attachment)!, 0);
       // enforce the global byte budget
       if (totalAttachmentBytes(stored) - previousBytes + nextBytes > this.attachmentStorageLimit) return 'invalid';
+      // enforce the serialized attachment footprint budget
+      if (totalAttachmentFootprint(stored) - promptAttachmentsStorageFootprint(note.attachments ?? []) + promptAttachmentsStorageFootprint(combined) > this.attachmentFootprintLimit) return 'invalid';
       note.attachments = combined;
       return { ...note };
     });
@@ -257,7 +264,8 @@ export class WorktreeNoteService {
       if (!validWorktreeId(worktreeId) || !Array.isArray(notes) || notes.length > maxNotesPerWorktree || notes.some(note => !validNote(note))) throw new Error('invalid notes file');
       stored[worktreeId] = notes;
     }
-    if (Object.keys(stored).length > maxWorktrees || totalNoteLength(stored) > maxTotalNoteLength || totalAttachmentBytes(stored) > this.attachmentStorageLimit) throw new Error('notes file exceeds storage limits');
+    // reject persisted data outside any aggregate storage budget
+    if (Object.keys(stored).length > maxWorktrees || totalNoteLength(stored) > maxTotalNoteLength || totalAttachmentBytes(stored) > this.attachmentStorageLimit || totalAttachmentFootprint(stored) > this.attachmentFootprintLimit) throw new Error('notes file exceeds storage limits');
     return stored;
   }
 

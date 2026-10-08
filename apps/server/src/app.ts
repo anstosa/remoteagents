@@ -16,7 +16,7 @@ import { adapterFor } from './adapters/registry.js';
 import { agentKinds, codexFamily, sameConversation, type Adapter, type AgentKind, type ConversationSummary, type InlineQuestion, type PaneSnapshot, type ResetSettling } from './adapters/types.js';
 import { TmuxCommandRegistry } from './tmux/command-registry.js';
 import { TmuxAdapter } from './tmux/adapter.js';
-import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
+import { maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
 import { promptAttachmentBytes, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments } from './prompts/validation.js';
 import { QueuedPromptService, type QueuedPrompt } from './prompts/queue.js';
 import { LaunchService, type TmuxSession } from './launch/service.js';
@@ -129,10 +129,15 @@ const requestedKind = (request: FastifyRequest): { kind?: AgentKind; invalid?: t
   if (value === undefined) return {};
   return (agentKinds as readonly string[]).includes(value as string) ? { kind: value as AgentKind } : { invalid: true };
 };
+// parse attachment records without imposing a file-count limit
 const promptAttachments = (value: unknown): PromptAttachment[] | undefined => {
+  // treat an omitted collection as empty
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > maxPromptAttachments) return undefined;
+  // require the attachment collection shape
+  if (!Array.isArray(value)) return undefined;
+  // parse every attachment record
   const attachments = value.map(candidate => candidate !== null && typeof candidate === 'object' && typeof (candidate as { name?: unknown }).name === 'string' && typeof (candidate as { data?: unknown }).data === 'string' ? candidate as PromptAttachment : undefined);
+  // reject any malformed record
   return attachments.some(attachment => attachment === undefined) ? undefined : attachments as PromptAttachment[];
 };
 // allow one maximum attachment request plus json/base64 overhead

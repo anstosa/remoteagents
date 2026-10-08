@@ -3,8 +3,34 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { QueuedPromptService } from '../src/prompts/queue.js';
+import { maxStoredAttachmentFootprintBytes } from '../src/prompts/validation.js';
 
 describe('QueuedPromptService', () => {
+  // reject unsafe attachments without mutating already queued work
+  it.each([
+    { label: 'malformed base64', attachments: [{ name: 'context.txt', data: 'invalid' }] },
+    { label: 'empty payload', attachments: [{ name: 'context.txt', data: '' }] },
+    { label: 'unsafe filename', attachments: [{ name: '../context.txt', data: 'eA==' }] },
+    { label: 'duplicate filename', attachments: [{ name: 'context.txt', data: 'eA==' }, { name: ' context.txt ', data: 'eA==' }] }
+  ])('rejects $label attachments while retaining the existing queue', async ({ attachments }) => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-invalid-queued-attachments-'));
+    try {
+      const service = new QueuedPromptService(join(directory, 'queue.json'));
+      const kept = await service.enqueue('worktree:cora', 'Keep this prompt');
+      await expect(service.enqueue('worktree:cora', 'Reject this prompt', attachments)).resolves.toBeUndefined();
+      await expect(service.list('worktree:cora')).resolves.toEqual([kept]);
+    } finally {
+      // remove only the isolated queue fixture
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // allow the encoded form of the full decoded budget plus conservative metadata overhead
+  it('keeps the serialized attachment budget above the prior bounded payload footprint', () => {
+    const encodedDecodedBudget = Math.ceil((100 * 1024 * 1024) / 3) * 4;
+    expect(maxStoredAttachmentFootprintBytes).toBeGreaterThan(encodedDecodedBudget + 1024 * 1024);
+  });
+
   it('does not create storage while an empty queue is observed', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-empty-queued-prompts-'));
     const file = join(directory, 'queue.json');
@@ -31,6 +57,37 @@ describe('QueuedPromptService', () => {
       await expect(service.remove('worktree:cora', first!.id)).resolves.toMatchObject({ id: first!.id });
 
       await expect(new QueuedPromptService(file).list('worktree:cora')).resolves.toMatchObject([{ id: second!.id, text: 'Edited second prompt' }]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  // retain every valid file across queue persistence without a count cap
+  it('persists more than ten attachments within the queue byte budget', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-many-queued-attachments-'));
+    const file = join(directory, 'queue.json');
+    // create distinct one-byte files beyond the former count cap
+    const attachments = Array.from({ length: 11 }, (_, index) => ({ name: `context-${index}.txt`, data: 'eA==' }));
+    try {
+      const service = new QueuedPromptService(file);
+      // summarize every payload without exposing stored bytes
+      const summaries = attachments.map(attachment => ({ name: attachment.name, size: 1 }));
+      await expect(service.enqueue('worktree:cora', 'Review every file', attachments)).resolves.toMatchObject({ attachments: summaries });
+      await expect(new QueuedPromptService(file).list('worktree:cora')).resolves.toMatchObject([{ attachments: summaries }]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  // reject metadata-heavy attachment growth without changing the durable queue
+  it('enforces the serialized attachment footprint on writes and reloads', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-queued-attachment-footprint-'));
+    const file = join(directory, 'queue.json');
+    // create valid tiny payloads with large serialized filenames
+    const attachments = Array.from({ length: 2 }, (_, index) => ({ name: `${'a'.repeat(200)}-${index}.txt`, data: 'eA==' }));
+    try {
+      const service = new QueuedPromptService(file, 750);
+      const accepted = await service.enqueue('worktree:cora', 'Keep this prompt', attachments);
+      await expect(service.enqueue('worktree:cora', 'Reject this prompt', attachments)).resolves.toBeUndefined();
+      await expect(service.list('worktree:cora')).resolves.toMatchObject([{ id: accepted!.id, text: 'Keep this prompt' }]);
+      await expect(new QueuedPromptService(file, 750).list('worktree:cora')).resolves.toMatchObject([{ id: accepted!.id }]);
+      await expect(new QueuedPromptService(file, 400).list('worktree:cora')).rejects.toThrow('queued prompts file exceeds storage limits');
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 

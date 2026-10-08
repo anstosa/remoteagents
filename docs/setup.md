@@ -695,8 +695,8 @@ deleting it. Locking does not prevent editing, renaming, attachments, or running
 the note; even an empty locked note is retained when closed. Protection is saved
 with the note and enforced by the server.
 
-Notes can retain up to 10 attachments totalling 25 MB per note. Use the paperclip
-beside **Send** (also beside existing attachments), drop files onto a note, or
+Notes have no attachment-count limit; attachments may total 25 MB per note. Use
+the paperclip beside **Send** (also beside existing attachments), drop files onto a note, or
 paste an image into it. Click a filename to preview text or a PNG, JPEG, GIF, or
 WebP image. Text previews show the first 256 KB; image previews support files up
 to 5 MB. Other binary files remain attached but cannot be previewed. Files are saved
@@ -705,6 +705,8 @@ queued, launched, or run on a schedule. Notes containing only attachments are
 kept when closed. Ctrl/Cmd+S in the prompt composer saves both its text and files
 as one note; queued prompts saved as notes also retain their files. The notes
 store allows 100 MB of attachment data across all projects and scratch groups.
+Notes and queued prompts each also have a 200 MB serialized attachment budget,
+including filenames and encoded file data.
 
 Saved prompts have been retired in favour of Notes. On the first boot after
 upgrading, any saved prompts are carried into Notes automatically and the source

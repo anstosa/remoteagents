@@ -1,5 +1,6 @@
 export const maxPromptAttachmentBytes = 25 * 1024 * 1024;
-export const maxPromptAttachments = 10;
+// bound durable json while allowing the encoded form of the decoded storage budget
+export const maxStoredAttachmentFootprintBytes = 200 * 1024 * 1024;
 export type PromptAttachment = { name: string; data: string };
 
 // decode one bounded canonical base64 payload
@@ -19,16 +20,22 @@ export const promptAttachmentName = (value: string): string | undefined => {
 
 export const promptAttachmentBytes = (attachment: PromptAttachment): number | undefined => promptAttachmentData(attachment.data)?.length;
 
+// measure the serialized bytes attributable to one stored attachment field
+export const promptAttachmentsStorageFootprint = (attachments: PromptAttachment[]): number => attachments.length === 0 ? 0 : Buffer.byteLength(JSON.stringify({ attachments }), 'utf8');
+
+// validate filenames, payloads, duplicate names and the shared byte limit
 export const validPromptAttachments = (attachments: PromptAttachment[]): boolean => {
-  if (attachments.length > maxPromptAttachments) return false;
   const names = new Set<string>();
   let total = 0;
+  // validate every attachment record
   for (const attachment of attachments) {
     const name = promptAttachmentName(attachment.name);
     const bytes = promptAttachmentBytes(attachment);
+    // require one unique safe filename and canonical payload
     if (name === undefined || bytes === undefined || names.has(name)) return false;
     names.add(name);
     total += bytes;
+    // preserve the aggregate request byte limit
     if (total > maxPromptAttachmentBytes) return false;
   }
   return true;

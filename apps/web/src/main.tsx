@@ -758,7 +758,6 @@ function usePromptHistory(agentId: string) {
 }
 const maxAttachmentMegabytes = 25;
 const maxAttachmentBytes = maxAttachmentMegabytes * 1024 * 1024;
-const maxAttachments = 10;
 const mergeSpeechSegments = (current: string, next: string) => {
   const left = current.trim().split(/\s+/u).filter(Boolean);
   const right = next.trim().split(/\s+/u).filter(Boolean);
@@ -2504,8 +2503,6 @@ function Prompt({ id, ready = true, history, onHistoryChanged, onPromptFocus, on
     // preserve attachment snapshots owned by pending operations
     if (!files || attachmentInputDisabled) return;
     const next = [...attachments, ...Array.from(files)];
-    // reject the whole addition when the file count exceeds the limit
-    if (next.length > maxAttachments) return setAttachmentError(`Attach up to ${maxAttachments} files.`);
     // preserve earlier files when an addition exceeds the byte limit
     if (next.reduce((total, file) => total + file.size, 0) > maxAttachmentBytes) return setAttachmentError(`Attachments must total ${maxAttachmentMegabytes} MB or less.`);
     setAttachmentError(undefined);
@@ -3907,8 +3904,6 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
     if (files === null || files.length === 0 || note === undefined || attachmentMutation.current) return;
     const selected = Array.from(files);
     const combined = [...(note.attachments ?? []), ...selected];
-    // match the prompt attachment count limit
-    if (combined.length > maxAttachments) return setNoteAttachmentError(`Attach up to ${maxAttachments} files.`);
     // reject the entire addition rather than silently dropping files
     if (combined.reduce((sum, file) => sum + file.size, 0) > maxAttachmentBytes) return setNoteAttachmentError(`Attachments must total ${maxAttachmentMegabytes} MB or less.`);
     const names = new Set<string>();

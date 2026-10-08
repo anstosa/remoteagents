@@ -48,6 +48,38 @@ describe('worktree notes', () => {
     }
   });
 
+  // retain every valid file across note persistence without a count cap
+  it('persists more than ten attachments within the note byte budget', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-many-note-attachments-'));
+    const file = join(directory, 'notes.json');
+    // create distinct one-byte files beyond the former count cap
+    const attachments = Array.from({ length: 11 }, (_, index) => ({ name: `context-${index}.txt`, data: 'eA==' }));
+    try {
+      const service = new WorktreeNoteService(file);
+      const note = await service.createWithText('cora', 'Many files', '', undefined, attachments);
+      expect(note?.attachments).toHaveLength(11);
+      await expect(new WorktreeNoteService(file).attachments('cora', note!.id)).resolves.toEqual(attachments);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  // reject metadata-heavy attachment growth without changing the durable note
+  it('enforces the serialized attachment footprint on writes and reloads', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-note-attachment-footprint-'));
+    const file = join(directory, 'notes.json');
+    // create valid tiny payloads with large serialized filenames
+    const attachments = Array.from({ length: 2 }, (_, index) => ({ name: `${'a'.repeat(200)}-${index}.txt`, data: 'eA==' }));
+    try {
+      const service = new WorktreeNoteService(file, 100, 750);
+      const note = await service.createWithText('cora', 'Keep this note', '', undefined, attachments);
+      await expect(service.appendAttachments('cora', note!.id, attachments.map((attachment, index) => ({ ...attachment, name: `${'b'.repeat(200)}-${index}.txt` })))).resolves.toBe('invalid');
+      await expect(service.createWithText('owen', 'Reject this note', '', undefined, attachments)).resolves.toBeUndefined();
+      await expect(service.attachments('cora', note!.id)).resolves.toEqual(attachments);
+      await expect(service.list('owen')).resolves.toEqual([]);
+      await expect(new WorktreeNoteService(file, 100, 750).attachments('cora', note!.id)).resolves.toEqual(attachments);
+      await expect(new WorktreeNoteService(file, 100, 400).list('cora')).rejects.toThrow('notes file exceeds storage limits');
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   // accept legacy note records without attachments or deletion locks
   it('loads legacy note records without attachment or lock fields', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-legacy-notes-'));

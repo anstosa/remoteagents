@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { ResetBoundaryStore } from './reset-boundaries.js';
-import { promptAttachmentBytes, validPrompt, validPromptAttachments, type PromptAttachment } from './validation.js';
+import { maxStoredAttachmentFootprintBytes, promptAttachmentBytes, promptAttachmentsStorageFootprint, validPrompt, type PromptAttachment } from './validation.js';
 
 export type QueuedPrompt = { id: string; text: string; createdAt: string; attachments?: PromptAttachment[] };
 export type QueuedPromptSummary = { id: string; text: string; createdAt: string; attachments?: Array<{ name: string; size: number }> };
@@ -25,15 +25,16 @@ const parsePrompt = (value: unknown): QueuedPrompt | undefined => {
   return { id: prompt.id, text: prompt.text, createdAt: prompt.createdAt, ...(attachments.length === 0 ? {} : { attachments }) };
 };
 const summarize = (prompt: QueuedPrompt): QueuedPromptSummary => ({ id: prompt.id, text: prompt.text, createdAt: prompt.createdAt, ...(prompt.attachments === undefined ? {} : { attachments: prompt.attachments.map(attachment => ({ name: attachment.name, size: promptAttachmentBytes(attachment)! })) }) });
-const totals = (stored: StoredQueues) => Object.values(stored).flat().reduce((value, prompt) => ({ text: value.text + prompt.text.length, attachments: value.attachments + (prompt.attachments ?? []).reduce((sum, attachment) => sum + (promptAttachmentBytes(attachment) ?? 0), 0) }), { text: 0, attachments: 0 });
+// sum every durable queue budget across all scopes
+const totals = (stored: StoredQueues) => Object.values(stored).flat().reduce((value, prompt) => ({ text: value.text + prompt.text.length, attachments: value.attachments + (prompt.attachments ?? []).reduce((sum, attachment) => sum + (promptAttachmentBytes(attachment) ?? 0), 0), attachmentFootprint: value.attachmentFootprint + promptAttachmentsStorageFootprint(prompt.attachments ?? []) }), { text: 0, attachments: 0, attachmentFootprint: 0 });
 
 export class QueuedPromptService {
   private mutation = Promise.resolve();
   private stored?: StoredQueues;
   readonly resets: ResetBoundaryStore;
 
-  // bind prompt and reset storage
-  constructor(private readonly file = process.env.RAC_QUEUED_PROMPTS_FILE ?? '.data/queued-prompts.json') {
+  // bind prompt storage, its serialized attachment budget and reset storage
+  constructor(private readonly file = process.env.RAC_QUEUED_PROMPTS_FILE ?? '.data/queued-prompts.json', private readonly attachmentFootprintLimit = maxStoredAttachmentFootprintBytes) {
     this.resets = new ResetBoundaryStore(`${file}.resets.json`);
   }
 
@@ -43,8 +44,10 @@ export class QueuedPromptService {
     return ((await this.read())[scope] ?? []).map(summarize);
   }
 
+  // validate complete prompt content once before queue persistence
   async enqueue(scope: string, text: string, attachments: PromptAttachment[] = []): Promise<QueuedPromptSummary | undefined> {
-    if (!validScope(scope) || !validPrompt(text, attachments) || !validPromptAttachments(attachments)) return undefined;
+    // prompt validation includes every attachment safeguard
+    if (!validScope(scope) || !validPrompt(text, attachments)) return undefined;
     return await this.mutate(stored => {
       if (stored[scope] === undefined && Object.keys(stored).length >= maxScopes) return undefined;
       const queue = stored[scope] ?? [];
@@ -53,7 +56,8 @@ export class QueuedPromptService {
       queue.push(prompt);
       stored[scope] = queue;
       const size = totals(stored);
-      if (size.text > maxStoredTextLength || size.attachments > maxStoredAttachmentBytes) {
+      // roll back any aggregate decoded or serialized storage overflow
+      if (size.text > maxStoredTextLength || size.attachments > maxStoredAttachmentBytes || size.attachmentFootprint > this.attachmentFootprintLimit) {
         queue.pop();
         if (queue.length === 0) delete stored[scope];
         return undefined;
@@ -162,7 +166,8 @@ export class QueuedPromptService {
       stored[scope] = parsed as QueuedPrompt[];
     }
     const size = totals(stored);
-    if (Object.keys(stored).length > maxScopes || size.text > maxStoredTextLength || size.attachments > maxStoredAttachmentBytes) throw new Error('queued prompts file exceeds storage limits');
+    // reject persisted data outside any aggregate storage budget
+    if (Object.keys(stored).length > maxScopes || size.text > maxStoredTextLength || size.attachments > maxStoredAttachmentBytes || size.attachmentFootprint > this.attachmentFootprintLimit) throw new Error('queued prompts file exceeds storage limits');
     this.stored = stored;
     return stored;
   }

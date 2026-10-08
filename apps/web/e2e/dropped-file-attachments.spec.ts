@@ -129,25 +129,40 @@ test('appends dropped files, removes a chip, and queues the unchanged draft with
   await expect(attachments).toHaveCount(0);
 });
 
-// verify the attachment-count boundary
-test('accepts ten files and rejects the entire eleventh-file addition without losing the draft', async ({ page }) => {
-  await mockComposerApi(page);
+// retain every selected file without a count cap
+test('accepts more than ten files from the picker and appends dropped files before queueing', async ({ page }) => {
+  let queued: unknown;
+  // capture every attachment in the accepted prompt
+  await mockComposerApi(page, route => {
+    queued = route.request().postDataJSON();
+    return route.fulfill({ status: 202, json: { queued: true } });
+  });
   await page.goto('/');
   const composer = promptComposer(page);
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
-  await prompt.fill('Preserve count-boundary state.');
-  // build the exact file-count boundary
-  const accepted = Array.from({ length: 10 }, (_, index) => ({ name: `accepted-${index + 1}.txt`, body: `${index + 1}` }));
+  await prompt.fill('Keep every attachment.');
+  // select a batch larger than the previous cap
+  const selected = Array.from({ length: 12 }, (_, index) => ({ name: `selected-${index + 1}.txt`, body: `${index + 1}` }));
+  const picker = page.waitForEvent('filechooser');
+  await composer.getByRole('button', { name: 'Attach files' }).click();
+  await (await picker).setFiles(selected.map(file => ({ name: file.name, mimeType: 'text/plain', buffer: Buffer.from(file.body) })));
 
-  await dispatchFileDrag(composer, 'drop', accepted);
-  await expect(page.getByLabel('Selected attachments').getByRole('button')).toHaveCount(10);
+  const attachments = page.getByLabel('Selected attachments');
+  await expect(attachments.getByRole('button')).toHaveCount(12);
   await expect(page.getByRole('alert')).toHaveCount(0);
 
-  await dispatchFileDrag(composer, 'drop', [{ name: 'eleventh.txt', body: 'reject this entire addition' }]);
-  await expect(page.getByRole('alert')).toHaveText('Attach up to 10 files.');
-  await expect(page.getByLabel('Selected attachments').getByRole('button')).toHaveCount(10);
-  await expect(page.getByLabel('Selected attachments')).not.toContainText('eleventh.txt');
-  await expect(prompt).toHaveValue('Preserve count-boundary state.');
+  const appended = [{ name: 'appended.txt', body: 'additional context' }];
+  await dispatchFileDrag(composer, 'drop', appended);
+  await expect(attachments.getByRole('button')).toHaveCount(13);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(prompt).toHaveValue('Keep every attachment.');
+  await page.getByRole('button', { name: 'Queue', exact: true }).click();
+  // preserve every filename and byte in the outbound payload
+  await expect.poll(() => queued).toEqual({
+    prompt: 'Keep every attachment.',
+    attachments: [...selected, ...appended].map(file => ({ name: file.name, data: Buffer.from(file.body).toString('base64') }))
+  });
+  await expect(attachments).toHaveCount(0);
 });
 
 // verify the attachment-size boundary

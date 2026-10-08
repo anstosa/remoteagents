@@ -387,16 +387,38 @@ test('keeps attachment-only notes and hydrates bytes before sending them', async
   await expect(page.getByRole('button', { name: 'Notes (1)' })).toBeVisible();
 });
 
-test('rejects duplicate, excess, and oversized note attachments before upload', async ({ page }) => {
+// persist and send every note attachment beyond the previous count cap
+test('uploads more than ten note attachments and retains them across reload and send', async ({ page }) => {
+  const fixture = noteFixture({ id: 'note-identifier-001', title: 'Many files', text: 'Read every attachment.' });
+  await mockNoteApi(page, fixture);
+  await page.goto('/');
+  let dialog = await openNote(page, 'Many files');
+  // select one batch beyond the previous cap
+  const selected = Array.from({ length: 12 }, (_, index) => ({ name: `context-${index + 1}.txt`, mimeType: 'text/plain', buffer: Buffer.from(`${index + 1}`) }));
+  const expected = selected.map(file => ({ name: file.name, data: file.buffer.toString('base64') }));
+  await dialog.getByLabel('Note attachment files').setInputFiles(selected);
+  await expect.poll(() => fixture.attachmentWrites).toEqual([expected]);
+  await expect(dialog.getByRole('button', { name: /^Remove note attachment:/u })).toHaveCount(12);
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await dropFile(dialog, 'extra.txt', 'additional context');
+  expected.push({ name: 'extra.txt', data: Buffer.from('additional context').toString('base64') });
+  await expect.poll(() => fixture.attachments).toEqual(expected);
+  await expect(dialog.getByRole('button', { name: /^Remove note attachment:/u })).toHaveCount(13);
+
+  await page.reload();
+  dialog = await openNote(page, 'Many files');
+  await expect(dialog.getByRole('button', { name: /^Remove note attachment:/u })).toHaveCount(13);
+  await dialog.getByRole('button', { name: 'Send note as prompt' }).click();
+  await expect.poll(() => fixture.prompts).toEqual([{ prompt: 'Read every attachment.', attachments: expected }]);
+});
+
+// retain filename and size safeguards without restricting the file count
+test('rejects duplicate and oversized note attachments before upload', async ({ page }) => {
   const fixture = noteFixture({ id: 'note-identifier-001', title: 'Bounded context', text: 'Keep attachment limits bounded.' });
   await mockNoteApi(page, fixture);
   await page.goto('/');
   const dialog = await openNote(page, 'Bounded context');
   const input = dialog.getByLabel('Note attachment files');
-
-  await input.setInputFiles(Array.from({ length: 11 }, (_, index) => ({ name: `count-${index + 1}.txt`, mimeType: 'text/plain', buffer: Buffer.from(`${index}`) })));
-  await expect(dialog.getByRole('alert')).toBeVisible();
-  expect(fixture.attachmentWrites).toEqual([]);
 
   await input.setInputFiles([
     { name: 'duplicate.txt', mimeType: 'text/plain', buffer: Buffer.from('one') },

@@ -1611,12 +1611,15 @@ describe('queued prompt API', () => {
     }
   }, 15_000);
 
-  it('accepts a durable prompt when immediate agent acknowledgement is missing', async () => {
+  // preserve every valid attachment beyond the former request count cap
+  it('accepts a durable prompt with more than ten attachments when immediate agent acknowledgement is missing', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-unacknowledged-prompt-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/tmp', title: 'Ready' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: directory, title: 'Ready' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     let pasted = '';
+    // create distinct one-byte files beyond the former count cap
+    const attachments = Array.from({ length: 11 }, (_, index) => ({ name: `context-${index}.txt`, data: 'eA==' }));
     const queuedApp = await buildApp(config, {
       auth: new AuthService(hash, Buffer.alloc(32, 34).toString('base64url')),
       discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [] } as never,
@@ -1632,11 +1635,13 @@ describe('queued prompt API', () => {
       const boot = await queuedApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
       const login = await queuedApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
       const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
-      const submitted = await queuedApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'Retain this prompt', attachments: [] } });
+      const submitted = await queuedApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'Retain this prompt', attachments } });
       const listed = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(submitted.statusCode).toBe(204);
-      expect(listed.json().prompts).toMatchObject([{ text: 'Retain this prompt' }]);
+      // verify every attachment survives request parsing and queue persistence
+      const summaries = attachments.map(attachment => ({ name: attachment.name, size: 1 }));
+      expect(listed.json().prompts).toMatchObject([{ text: 'Retain this prompt', attachments: summaries }]);
     } finally {
       await queuedApp.close();
       await rm(directory, { recursive: true, force: true });

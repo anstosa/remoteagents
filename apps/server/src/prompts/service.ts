@@ -12,12 +12,12 @@ import type { PromptHistoryService } from '../prompt-history/service.js';
 import { agentAttentionState } from '../notifications.js';
 import { QueuedPromptService, type QueuedPrompt, type QueuedPromptSummary } from './queue.js';
 import type { ResetBoundary } from './reset-boundaries.js';
-import { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments, type PromptAttachment } from './validation.js';
+import { maxPromptAttachmentBytes, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments, type PromptAttachment } from './validation.js';
 import { expandCommand } from '../launch/service.js';
 import { configuredWorktreeForWorkspace } from '../workspaces/resolver.js';
 import { isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from '../update-advisor.js';
 import { isFullGitSha } from '../git/revision.js';
-export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, validPromptAttachments, type PromptAttachment } from './validation.js';
+export { maxPromptAttachmentBytes, promptAttachmentBytes, validPromptAttachments, type PromptAttachment } from './validation.js';
 
 // where a halted queue's prompts are drained: each queued prompt is handed to this sink, in order,
 // and removed only when the sink reports it durable. The console wires it to the notes store; a
@@ -918,17 +918,20 @@ export class PromptService {
     return (await run('/usr/bin/git', ['-C', workspace, 'check-ignore', '--quiet', '--', relativeRoot])).code === 0;
   }
 
+  // validate and stage batches without unbounded filesystem concurrency
   private async stageAttachments(workspace: string, attachments: PromptAttachment[]): Promise<string[] | undefined> {
     // skip empty attachment sets
     if (attachments.length === 0) return [];
     const files: Array<{ name: string; data: Buffer }> = [];
+    const names = new Set<string>();
     let total = 0;
     // validate attachment payloads
     for (const attachment of attachments) {
       const name = promptAttachmentName(attachment.name);
       const data = promptAttachmentData(attachment.data);
       // reject unsafe or duplicate files
-      if (!name || !data || files.some(file => file.name === name)) return undefined;
+      if (!name || !data || names.has(name)) return undefined;
+      names.add(name);
       total += data.length;
       // enforce the request limit
       if (total > maxPromptAttachmentBytes) return undefined;
@@ -941,9 +944,12 @@ export class PromptService {
     const root = join(workspace, relativeRoot);
     try {
       await mkdir(root, { recursive: true, mode: 0o700 });
-      await Promise.all(files.map(file => writeFile(join(root, file.name), file.data, { mode: 0o600 })));
+      // bound file-descriptor use independently of batch size
+      for (const file of files) await writeFile(join(root, file.name), file.data, { mode: 0o600 });
+      // retain the original attachment order
       return files.map(file => `${relativeRoot}/${file.name}`);
     } catch {
+      // remove every partial file before retaining the queued batch
       await rm(root, { recursive: true, force: true });
       return undefined;
     }

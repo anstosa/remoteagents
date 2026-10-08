@@ -4,7 +4,7 @@ import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { maxPromptAttachmentBytes, PromptService, type UndeliveredDrain } from '../src/prompts/service.js';
-import { promptAttachmentData, promptAttachmentName } from '../src/prompts/validation.js';
+import { promptAttachmentData, promptAttachmentName, validPromptAttachments } from '../src/prompts/validation.js';
 import { codexAdapter } from '../src/adapters/codex.js';
 import { inlineQuestionId } from '../src/adapters/inline-questions.js';
 import { QueuedPromptService, type QueuedPrompt } from '../src/prompts/queue.js';
@@ -14,6 +14,12 @@ const socket={fingerprint:'socket',path:'/tmp/sock',device:1,inode:1}; const age
 const drainRecorder = () => { const drained: QueuedPrompt[] = []; const drain: UndeliveredDrain = async (_scope, prompt) => { drained.push(prompt); return true; }; return { drained, drain }; };
 it('allows prompt attachments totaling 25 MiB', () => {
   expect(maxPromptAttachmentBytes).toBe(25 * 1024 * 1024);
+});
+// retain byte limits without imposing a file-count limit
+it('allows more than ten valid prompt attachments', () => {
+  // create distinct one-byte files beyond the former count cap
+  const attachments = Array.from({ length: 11 }, (_, index) => ({ name: `context-${index}.txt`, data: 'eA==' }));
+  expect(validPromptAttachments(attachments)).toBe(true);
 });
 // validate the advertised maximum without recursive regular-expression overflow
 it('decodes a 25 MiB attachment and rejects malformed base64', () => {
