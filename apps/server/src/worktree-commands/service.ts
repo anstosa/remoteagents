@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
-import { stackActions, type ProcessNotice, type ProcessUse, type StackAction, type StackProcessState, type Worktree } from '../domain/models.js';
+import { stackActions, type PaneListingSnapshot, type ProcessNotice, type ProcessUse, type StackAction, type StackProcessState, type Worktree } from '../domain/models.js';
 import { declaredProcesses, dependenciesOf, startOrder, type StackProcess } from '../domain/stack-processes.js';
 import { worktreeById, worktreeHostPath, worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { serverCheckout, serverCheckoutOnHost } from '../workspaces/server-checkout.js';
@@ -47,6 +47,7 @@ const stackProcesses = (worktree: Worktree): StackProcess[] => declaredProcesses
 // session is the Workspace of, its console role, and the Stack process tags on its window
 // (empty when untagged)
 type ListedPane = { sessionId: string; windowId: string; paneId: string; place: string; role: string; name: string; worktree: string; dead: boolean; exitCode?: number };
+type DashboardPaneListing = { status: 'available'; panes: ListedPane[] } | { status: 'unavailable' };
 // a listed process pane's state: live, or dead with the exit status tmux kept (absent after a signal)
 const processStateOf = (pane: ListedPane, name: string): StackProcessState => pane.dead ? { name, state: 'exited', ...(pane.exitCode === undefined ? {} : { exitCode: pane.exitCode }) } : { name, state: 'running' };
 type PaneListing = Promise<ListedPane[] | undefined>;
@@ -324,10 +325,21 @@ export class WorktreeCommandService {
   // A Worktree with Stack processes reads `running` straight from the process panes — true
   // when every one runs, false when none does, absent in between — and never runs a `status`
   // probe; that probe is for daemon-style stacks only.
-  async state(worktree: Worktree): Promise<StackState> {
+  async state(worktree: Worktree, snapshots?: ReadonlyMap<string, PaneListingSnapshot>): Promise<StackState> {
     const withProcess = stackProcesses(worktree).length > 0;
-    // one listing answers both the processes' states and those of the processes their notices name
-    const listing = withProcess ? this.stackPanes() : undefined;
+    const transitionAtStart = this.transitions.get(worktree.id);
+    let listing: PaneListing | undefined;
+    // process stacks need one listing for state, notices, and uses
+    if (withProcess) {
+      // a starting transition requires a read begun after that transition
+      if (transitionAtStart?.value === 'starting') listing = this.stackPanes(true);
+      else {
+        const shared = this.dashboardPanes(snapshots);
+        // absent snapshots fall back; unavailable observations stay unknown
+        if (shared === undefined) listing = this.stackPanes();
+        else listing = Promise.resolve(shared.status === 'available' ? shared.panes : undefined);
+      }
+    }
     const [listed, notices, uses, probed, tunnel, operation] = await Promise.all([listing === undefined ? undefined : this.processStates(worktree, listing), listing === undefined ? undefined : this.processNotices(worktree, listing), listing === undefined ? undefined : this.processUses(worktree, listing), withProcess ? undefined : this.running(worktree), this.tunnel(worktree), this.operation(worktree)]);
     // a process action in flight, and the notices and uses a process reported, show on that process
     const targeted = this.processOperations.get(worktree.id);
@@ -339,14 +351,24 @@ export class WorktreeCommandService {
     const runningCount = processes?.filter(entry => entry.state === 'running').length;
     const running = withProcess ? processes === undefined ? undefined : runningCount === processes.length ? true : runningCount === 0 ? false : undefined : probed;
     const transition = this.transitions.get(worktree.id);
-    // A Start is done once its Project answers. The cache is read again here, not `tunnel`: a
-    // Start that landed while this read awaited has cleared it, so what it holds postdates the
-    // Start. A stack with no process running has nothing left to start either, so a command that
-    // dies at once shows as down straight away rather than Starting.
+    // a start is done once its project answers; rereading the cache keeps that answer newer
+    // than the start, while an empty listing ends only the transition that listing followed
     const answered = this.tunnelCache.get(worktree.id)?.value === true;
-    if (transition !== undefined && (transition.expiresAt <= Date.now() || (transition.value === 'starting' && (answered || runningCount === 0)))) this.transitions.delete(worktree.id);
+    const emptyAfterTransition = transition !== undefined && transition === transitionAtStart && runningCount === 0;
+    if (transition !== undefined && (transition.expiresAt <= Date.now() || (transition.value === 'starting' && (answered || emptyAfterTransition)))) this.transitions.delete(worktree.id);
     const activeTransition = this.transitions.get(worktree.id)?.value;
     return { ...(running === undefined ? {} : { running }), ...(activeTransition === undefined ? {} : { transition: activeTransition }), ...(operation === undefined ? {} : { operation }), ...(tunnel === undefined ? {} : { tunnel }), ...(processes === undefined ? {} : { processes }) };
+  }
+
+  // reuse only the successful observation of the stack socket, never mutation reads
+  private dashboardPanes(snapshots?: ReadonlyMap<string, PaneListingSnapshot>): DashboardPaneListing | undefined {
+    const path = this.hostSocket ?? `/tmp/tmux-${process.getuid?.() ?? 0}/default`;
+    const snapshot = snapshots?.get(path);
+    // a known failed read suppresses a duplicate display listing
+    if (snapshot?.status === 'unavailable') return { status: 'unavailable' };
+    // absent or incomplete snapshots fall back to the stack's fresh listing
+    if (snapshot?.status !== 'available' || snapshot.panes.some(pane => pane.socket.path !== path || !pane.windowId || pane.dead === undefined || (pane.role === processPaneRole && (!pane.processName || pane.processWorktree === undefined)))) return undefined;
+    return { status: 'available', panes: snapshot.panes.map(pane => ({ sessionId: pane.sessionId, windowId: pane.windowId!, paneId: pane.paneId, place: pane.placeMark ?? '', role: pane.role ?? '', name: pane.processName ?? '', worktree: pane.processWorktree ?? '', dead: pane.dead!, ...(pane.exitCode === undefined ? {} : { exitCode: pane.exitCode }) })) };
   }
 
   // each of a Worktree's Stack processes, in config order, as its tagged window shows it: live,
@@ -765,6 +787,7 @@ export class WorktreeCommandService {
   // tmux server that is not running holds no panes; undefined means tmux could not answer (it
   // could not run, or its socket refused us).
   private stackPanes(fresh = false): Promise<ListedPane[] | undefined> {
+    // run one uncached pane listing
     const list = async (): Promise<ListedPane[] | undefined> => {
       const listed = await this.tmux(['list-panes', '-a', '-F', `#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}\t#{@rac_place}\t#{@rac_role}\t#{${processNameOption}}\t#{${processWorktreeOption}}`]);
       if (listed.code !== 0) return listed.code === 1 && (listed.stderr === undefined || /no server running/u.test(listed.stderr)) ? [] : undefined;
@@ -775,6 +798,7 @@ export class WorktreeCommandService {
         return [{ sessionId, windowId, paneId, place: place ?? '', role: role ?? '', name, worktree: path.join('\t'), dead: dead === '1', ...(exitCode === undefined || Number.isNaN(exitCode) ? {} : { exitCode }) }];
       });
     };
+    // lifecycle callers never join an older read
     if (fresh) return list();
     this.processListing ??= list().finally(() => { this.processListing = undefined; });
     return this.processListing;

@@ -5,6 +5,7 @@ import { formatSavedPromptsToNotes, migrateSavedPromptsToNotes } from './migrati
 import { buildApp } from './app.js';
 import { WorktreeNoteService } from './notes/service.js';
 import { DiscoveryService } from './discovery/service.js';
+import { TmuxCommandRegistry } from './tmux/command-registry.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { PushService } from './push-service.js';
 import { AgentNotificationCoordinator } from './notifications.js';
@@ -26,7 +27,8 @@ const config = await acquireConfig().catch((error: unknown) => {
 // retire any pre-existing Bookmark store once: log each saved bookmark and set the file aside
 // (Conversations replace bookmarks; ADR 0007). A missing file is a no-op, so this fires once.
 await retireBookmarks();
-const tmux = new TmuxAdapter(); const worktreeStore = new WorktreeLaunchStore(); const discovery = new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore, undefined, config.scratchDirectory); const push = new PushService(); const worktreeManagement = new WorktreeManagementService(() => config.projects); const cleanup = new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement);
+// dashboard commands share a quiet connection independently of browser viewers
+const tmux = new TmuxAdapter(new TmuxCommandRegistry()); const worktreeStore = new WorktreeLaunchStore(); const discovery = new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore, undefined, config.scratchDirectory); const push = new PushService(); const worktreeManagement = new WorktreeManagementService(() => config.projects); const cleanup = new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement);
 const dashboardPollMs = config.pollIntervalMs;
 const notifications = new AgentNotificationCoordinator(notification => push.notify(notification), Math.max(2_000, dashboardPollMs * 2));
 const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboardFingerprint);

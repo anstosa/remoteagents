@@ -30,3 +30,41 @@ The work ships in slices. This ADR is written with the first, which is option E 
 - **The log view now depends on the control client, and recovers rather than wedges.** A spawned `capture-pane` was independent per poll; a shared control connection is not. Every command carries a timeout, and a command block that never closes is capped, so a stalled, half-dead or desynced connection fails the client — its viewers get an exit and reconnect on a fresh one — instead of freezing the live view forever. A missing stdin-error listener would let an EPIPE (writing to a child whose server just died) crash the whole process, so the client installs one.
 - **A capture reply is trusted to the command-number match.** Because a `capture-pane` reply can contain pane text that looks like a `%end`/`%begin` line, the framer distinguishes a real terminator by the command number, as every control-mode client (e.g. iTerm2) does. Enumerated protocol-shaped pane content can still desync a block; the timeout and block cap bound that to a recoverable reconnect rather than a permanent wedge, and the byte-streaming slice, which reworks this parser, is where a stronger guarantee belongs.
 - **The browser and the wire are unchanged in this slice.** Frames keep their shape; the streamed xterm, scrollback, byte-exact sizing and input-on-the-connection arrive with the later slices.
+
+## Dashboard command connections
+
+Dashboard discovery keeps its configured cadence (500 ms by default) but sends
+`list-panes` through a separate, server-owned connection per discovered socket.
+It does not require a browser viewer and does not count as an open Terminal for
+launch or removal protection. The command surface permits pane listings only;
+mutations are never retried through this transport.
+
+The observer attaches with `-N` (never start a server), `-E` (preserve the session
+environment), and `ignore-size,no-output,no-detach-on-destroy,read-only`. It neither
+streams pane output nor changes viewport sizing. It is still an attached tmux
+client: `session_attached`, attach/detach hooks, and `destroy-unattached` can observe
+its presence. `read-only` is not a command authorization boundary; the narrow
+server-owned listing method is.
+
+An attach or command failure disposes the connection. The same read falls back to
+the existing spawned listing, with persistent reconnect attempts separated by
+five seconds and each control reply bounded to two seconds. When the spawned
+fallback confirms “no server running”, ordinary dashboard scans also back off that
+socket for five seconds instead of polling a stale socket file. A changed socket
+identity bypasses this backoff, as do forced discovery and lifecycle reads. Socket discovery
+reaps removed or replaced identities, and application shutdown closes every
+command connection. A continuous degraded period warns once; another successful
+listing rearms that diagnostic, while intentional close, retention, and socket
+replacement remain silent. Ending the initially attached session can move the
+observer to another surviving session without a reconnect.
+
+Stack display consumes the same successful pane snapshot for its configured
+socket, including dead panes and their exit statuses. Failed or incomplete
+listings are explicit unavailable observations, not authoritative empty snapshots,
+so stack display stays unknown without spawning a duplicate listing during the
+observer's retry window. Successful and unbacked failed observations expire after
+two seconds; confirmed missing-server observations expire when their five-second
+retry is due. A missing or malformed snapshot falls back to a fresh stack listing.
+Start, Stop, Remove, pane membership, and other lifecycle-sensitive checks do not
+use these display snapshots. A Starting stack also forces a listing begun after
+the transition, so an older successful display snapshot cannot end a new Start.

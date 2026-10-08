@@ -1,8 +1,15 @@
+import { lstat } from 'node:fs/promises';
+import type { SocketRef } from '../domain/models.js';
 import { spawn } from 'node:child_process';
 import { userInfo } from 'node:os';
 import { interactiveShellPath } from './interactive-shell.js';
 // the tmux binary the console runs; read at call time so tests can stub the env
 export const tmuxBinary = (): string => process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
+// reconnects must not attach a replacement server under an older agent identity
+export async function socketIsCurrent(socket: SocketRef): Promise<boolean> {
+  const info = await lstat(socket.path).catch(() => undefined);
+  return info !== undefined && info.isSocket() && info.dev === socket.device && info.ino === socket.inode;
+}
 // tmux pane and session identifiers, validated before they are put in a command
 export const paneIdPattern = /^%\d+$/u;
 export const sessionIdPattern = /^\$?[-\w.]+$/u;

@@ -83,12 +83,18 @@ export class TmuxControlClient implements PaneClient {
   // resolves once the attach's own %begin/%end block has been consumed
   readonly ready: Promise<void>;
 
-  constructor(binary: string, socketPath: string, session: string, private readonly onGone: () => void) {
+  // command clients suppress output and have server-owned lifetimes
+  constructor(binary: string, socketPath: string, session: string | undefined, private readonly onGone: () => void, private readonly options: { commandOnly?: boolean; timeoutMs?: number } = {}) {
     this.parser = new ControlProtocolParser(event => this.onEvent(event));
     // `-C` over pipes (never `-CC`), `-f ignore-size` so the client does not affect any
     // window's size; default stdio is 'pipe' for all three fds
-    this.child = spawn(binary, ['-S', socketPath, '-C', 'attach-session', '-t', session, '-f', 'ignore-size'], { env: safeEnv() });
-    this.ready = new Promise<void>((resolve, reject) => this.blockWaiters.push({ resolve: () => resolve(), reject, timer: this.armTimeout() }));
+    const flags = options.commandOnly ? 'ignore-size,no-output,no-detach-on-destroy,read-only' : 'ignore-size';
+    this.child = spawn(binary, ['-S', socketPath, ...(options.commandOnly ? ['-N'] : []), '-C', 'attach-session', ...(options.commandOnly ? ['-E'] : []), ...(session === undefined ? [] : ['-t', session]), '-f', flags], { env: safeEnv() });
+    this.ready = new Promise<void>((resolve, reject) => this.blockWaiters.push({ resolve: reply => {
+      // failed attaches are not usable connections
+      if (reply.ok) resolve();
+      else { reject(new Error('control attach failed')); this.fail('control client lost'); }
+    }, reject, timer: this.armTimeout() }));
     // an attach that fails before any capture attaches a catch would otherwise be an unhandled rejection
     this.ready.catch(() => {});
     // once attached, subscribe to attached clients' sizes so a terminal resize is a push, not
@@ -96,13 +102,14 @@ export class TmuxControlClient implements PaneClient {
     // the client stays alive on %layout-change re-clamps only: attach/detach/resize of a second
     // terminal no longer re-clamps, and there is no periodic fallback. A tmux that old is not a
     // target here, so this soft-degrades rather than wedges.
-    void this.ready.then(() => this.command(`refresh-client -B ${clientSizeSubscribeArg}`)).catch(() => { /* a broken connection tears the client down elsewhere */ });
+    // dashboard clients neither stream panes nor coordinate viewport sizes
+    if (!options.commandOnly) void this.ready.then(() => this.command(`refresh-client -B ${clientSizeSubscribeArg}`)).catch(() => { /* a broken connection tears the client down elsewhere */ });
     this.child.stdout.on('data', (chunk: Buffer) => this.parser.push(chunk));
     this.child.stderr.on('data', () => { /* tmux diagnostics are not actionable here */ });
     // a write to a child whose read-end has closed (server gone) raises EPIPE
     // asynchronously; without this listener it is an unhandled 'error' that crashes the
     // whole process, and the try/catch around writes only guards synchronous throws
-    this.child.stdin.on('error', () => { /* the exit handler tears the client down */ });
+    this.child.stdin.on('error', () => this.fail('control client lost'));
     this.child.on('error', () => this.fail('control client lost'));
     this.child.on('exit', () => this.fail('control client lost'));
   }
@@ -128,9 +135,10 @@ export class TmuxControlClient implements PaneClient {
     }
   }
 
+  // bound each attach and command reply
   private armTimeout(): ReturnType<typeof setTimeout> {
     // a command whose reply never arrives means the connection is broken, not the session
-    return setTimeout(() => this.fail('control client lost'), commandTimeoutMs);
+    return setTimeout(() => this.fail('control client lost'), this.options.timeoutMs ?? commandTimeoutMs);
   }
 
   // send a command and await its reply block; rejects if the client is gone or stalls
@@ -158,7 +166,10 @@ export class TmuxControlClient implements PaneClient {
     return Buffer.from(`${block.lines.join('\n')}\n`, 'latin1').toString('utf8');
   }
 
+  // subscribe browser viewers only
   subscribe(pane: string, subscriber: PaneActivitySubscriber): () => void {
+    // command ownership never participates in browser subscription teardown
+    if (this.options.commandOnly) throw new Error('command client cannot stream panes');
     if (!paneId.test(pane)) throw new Error('bad pane id');
     if (this.disposed) throw new Error('control client disposed');
     const set = this.subscribers.get(pane) ?? new Set<PaneActivitySubscriber>();

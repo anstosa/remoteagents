@@ -267,14 +267,17 @@ export class DiscoveryService {
     // lifecycle-sensitive reads still revalidate roots, once per forced scan
     if (force) this.workspaceRoots.clear();
     const sockets = await this.sockets(force);
-    const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket)).map(pane => ({ ...pane, socket }))))).flat();
+    // dashboard command connections follow the discovered socket inventory
+    this.tmux.retainSockets?.(sockets);
+    const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket, { backoffMissingServer: !force })).map(pane => ({ ...pane, socket }))))).flat();
     const panePids = new Map<string, number>();
     const paneCwds = new Map<string, string>();
     const paneReported = new Map<string, AttentionState>();
     const paneQuestionPayloads = new Map<string, string>();
     const places = await this.places(this.worktreeSnapshot);
     const discovered: Agent[] = (await Promise.all(panes.filter(pane => !paneExcluded(pane)).map(async (pane): Promise<Agent | undefined> => {
-      const recognized = await this.processes.recognizeAgent(pane.pid);
+      // ordinary polling revalidates established lineages; lifecycle scans walk afresh
+      const recognized = await this.processes.recognizeAgent(pane.pid, { reusePositive: !force });
       if (recognized === undefined) {
         // a pane whose agent is gone must not keep a stale report; nothing else clears it
         if (pane.reportedAttention !== undefined || pane.reportedSession !== undefined || pane.reportedSandboxed !== undefined || pane.reportedQuestion !== undefined) void this.tmux.unsetReportedState(pane.socket, pane.paneId).catch(() => {});

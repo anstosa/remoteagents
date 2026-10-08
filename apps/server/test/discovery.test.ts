@@ -48,6 +48,16 @@ async function buildProc(proc: string, holdings: Record<number, string[]>): Prom
 }
 
 describe('DiscoveryService dashboard', () => {
+  // only non-forced scans may reuse established process recognition
+  it('keeps lifecycle process recognition fresh while polling opts into reuse', async () => {
+    const processes = { recognizeAgent: vi.fn().mockResolvedValue(undefined) };
+    const service = new DiscoveryService(socketFinder(), paneLister([{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: '' }]) as never, processes);
+    await service.refresh(false, true);
+    expect(processes.recognizeAgent).toHaveBeenLastCalledWith(123, { reusePositive: true });
+    await service.refresh(true);
+    expect(processes.recognizeAgent).toHaveBeenLastCalledWith(123, { reusePositive: false });
+  });
+
   it('reports commits available from the configured branch upstream', async () => {
     const command = vi.fn(async (_binary: string, args: string[]) => args.includes('rev-parse')
       ? { code: 0, stdout: 'origin/feature\n' }

@@ -1,12 +1,14 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { mkdtemp as mkdtempAsync, rm as rmAsync } from 'node:fs/promises';
+import { mkdtemp as mkdtempAsync, lstat, readFile, writeFile, rm as rmAsync } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { SocketRef } from '../src/domain/models.js';
 import { TmuxAdapter } from '../src/tmux/adapter.js';
 import { run } from '../src/tmux/command.js';
+import { TmuxCommandRegistry } from '../src/tmux/command-registry.js';
 import { PaneStreamRegistry, TmuxControlClient } from '../src/tmux/control.js';
 
 const tmux = execFileSync('/bin/sh', ['-c', 'command -v tmux || true'], { encoding: 'utf8' }).trim();
@@ -49,7 +51,8 @@ async function fixtureSession(): Promise<{ ref: SocketRef; socket: string; pane:
   const paneOut = await run(tmux, ['-S', socket, 'display-message', '-p', '-t', 'fixture', '#{pane_id}']);
   const pane = paneOut.stdout.trim();
   expect(pane).toMatch(/^%\d+$/);
-  return { ref: { path: socket, fingerprint: 'fixture', device: 0, inode: 0 }, socket, pane };
+  const info = await lstat(socket);
+  return { ref: { path: socket, fingerprint: 'fixture', device: info.dev, inode: info.ino }, socket, pane };
 }
 
 async function eventually(check: () => boolean): Promise<void> {
@@ -65,6 +68,116 @@ describe.skipIf(!tmuxSocketsWork)('tmux control client (real tmux)', () => {
   // lives under mise, not /usr/bin/tmux, so point them at the probed binary
   beforeAll(() => { vi.stubEnv('RAC_TMUX_BIN', tmux); });
   afterAll(() => { vi.unstubAllEnvs(); });
+
+  // the hot dashboard path creates one client, not one process per tick
+  it('lists repeatedly without viewers, streaming output, or changing session environment', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    const root = fixtures.at(-1)!.root;
+    const wrapper = join(root, 'tmux');
+    const calls = join(root, 'calls');
+    await writeFile(wrapper, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nexec '${tmux}' "$@"\n`, { mode: 0o700 });
+    vi.stubEnv('RAC_TMUX_BIN', wrapper);
+    const adapter = new TmuxAdapter(new TmuxCommandRegistry());
+    const viewers = new PaneStreamRegistry();
+    try {
+      await run(tmux, ['-S', socket, 'set-environment', '-t', 'fixture', 'DISPLAY', 'keep-me']);
+      await run(tmux, ['-S', socket, 'select-pane', '-t', pane, '-T', 'café ☕']);
+      // repeated fresh reads still produce exactly one client process
+      for (let tick = 0; tick < 20; tick += 1) expect(await adapter.listPanes(ref)).toMatchObject([{ paneId: pane, title: 'café ☕', dead: false }]);
+      expect((await readFile(calls, 'utf8')).trim().split('\n')).toHaveLength(1);
+      expect((await readFile(calls, 'utf8'))).toContain('-N -C attach-session -E');
+      const flags = (await run(tmux, ['-S', socket, 'list-clients', '-F', '#{client_flags}'])).stdout;
+      expect(flags).toContain('no-output');
+      expect(flags).toContain('ignore-size');
+      expect(await adapter.size(ref, pane)).toEqual({ cols: 80, rows: 24 });
+      expect((await run(tmux, ['-S', socket, 'show-environment', '-t', 'fixture', 'DISPLAY'])).stdout.trim()).toBe('DISPLAY=keep-me');
+      // browser subscribers keep a separate lifecycle and terminal membership
+      expect(viewers.openPaneKeys().size).toBe(0);
+      const viewer = viewers.get(ref, 'fixture');
+      const unsubscribe = viewer.subscribe(pane, { onReseed: () => {}, onResize: () => {}, onExit: () => {} });
+      await viewer.ready;
+      unsubscribe();
+      expect(viewers.size).toBe(0);
+      expect(await adapter.listPanes(ref)).toHaveLength(1);
+      // closing the bootstrap session moves the command client to a surviving session
+      await run(tmux, ['-S', socket, 'new-session', '-d', '-s', 'survivor', 'cat']);
+      await run(tmux, ['-S', socket, 'kill-session', '-t', 'fixture']);
+      expect(await adapter.listPanes(ref)).toMatchObject([{ sessionName: 'survivor' }]);
+    } finally {
+      adapter.closeCommands();
+      viewers.closeAll();
+      vi.stubEnv('RAC_TMUX_BIN', tmux);
+    }
+  });
+
+  // socket loss falls back on the same call, then a later tick reconnects
+  it('falls back after client loss and reconnects without a browser', async () => {
+    const { ref, socket } = await fixtureSession();
+    const registry = new TmuxCommandRegistry();
+    const adapter = new TmuxAdapter(registry);
+    try {
+      expect(await adapter.listPanes(ref)).toHaveLength(1);
+      const name = (await run(tmux, ['-S', socket, 'list-clients', '-F', '#{client_name}'])).stdout.trim();
+      await run(tmux, ['-S', socket, 'detach-client', '-t', name]);
+      // the same request falls back after the client exits
+      expect(await adapter.listPanes(ref)).toHaveLength(1);
+      // backoff uses a one-shot command, not a new control connection
+      expect(await adapter.listPanes(ref)).toHaveLength(1);
+      expect((await run(tmux, ['-S', socket, 'list-clients'])).stdout.trim()).toBe('');
+      const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now + 5_001);
+      expect(await adapter.listPanes(ref)).toHaveLength(1);
+      expect((await run(tmux, ['-S', socket, 'list-clients', '-F', '#{client_flags}'])).stdout).toContain('no-output');
+    } finally { vi.restoreAllMocks(); adapter.closeCommands(); }
+  });
+
+  // a socket replacement must not inherit the previous server's pane identities
+  it('rejects stale socket identities and discovers a replacement server', async () => {
+    const { ref, socket } = await fixtureSession();
+    const adapter = new TmuxAdapter(new TmuxCommandRegistry());
+    try {
+      expect(await adapter.listPanes(ref)).toHaveLength(1);
+      await run(tmux, ['-S', socket, 'kill-server']);
+      await run(tmux, ['-f', '/dev/null', '-S', socket, 'new-session', '-d', '-s', 'replacement', 'cat']);
+      const info = await lstat(socket);
+      const replacement = { ...ref, fingerprint: 'replacement', device: info.dev, inode: info.ino };
+      // model an old identity even if the filesystem happened to recycle its inode
+      expect(await adapter.listPanes({ ...ref, inode: info.ino + 1 })).toEqual([]);
+      adapter.retainSockets([replacement]);
+      expect(await adapter.listPanes(replacement)).toMatchObject([{ sessionName: 'replacement' }]);
+    } finally { adapter.closeCommands(); }
+  });
+
+  // attach errors reject readiness instead of publishing a usable connection
+  it('rejects a failed attach', async () => {
+    const { ref } = await fixtureSession();
+    const gone = vi.fn();
+    const client = new TmuxControlClient(tmux, ref.path, 'missing', gone, { commandOnly: true });
+    try { await expect(client.ready).rejects.toThrow(); expect(gone).toHaveBeenCalledOnce(); }
+    finally { client.dispose(); }
+  });
+
+  // an unresponsive socket cannot hold dashboard refreshes indefinitely
+  it('times out and disposes an attach that never answers', async () => {
+    const root = await mkdtempAsync(join(tmpdir(), 'rac-control-stalled-'));
+    const socket = join(root, 'sock');
+    const peers: import('node:net').Socket[] = [];
+    const server = createServer(peer => { peers.push(peer); });
+    await new Promise<void>(resolve => server.listen(socket, resolve));
+    const gone = vi.fn();
+    const client = new TmuxControlClient(tmux, socket, undefined, gone, { commandOnly: true, timeoutMs: 100 });
+    try {
+      await expect(client.ready).rejects.toThrow('disposed');
+      expect(gone).toHaveBeenCalledOnce();
+      await expect(client.command('list-panes')).rejects.toThrow('disposed');
+    } finally {
+      client.dispose();
+      // release accepted peers before closing the fixture server
+      for (const peer of peers) peer.destroy();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await rmAsync(root, { recursive: true, force: true });
+    }
+  });
 
   it('arms activity on %output and captures the pane on the same connection', async () => {
     const { ref, socket, pane } = await fixtureSession();

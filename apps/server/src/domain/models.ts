@@ -11,7 +11,10 @@ export type SocketRef = { fingerprint: string; path: string; device: number; ino
 // session is: every pane of the session belongs there, wherever its shell has `cd`'d.
 // `reviewRun` is the pane's `@rac_review_run`, the id of the interactive Review run that
 // launched it (ADR 0010); the Agent carries it too.
-export type Pane = { paneId: string; sessionId: string; sessionName?: string; windowId?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; role?: string; processName?: string; paneName?: string; paneMode?: string; placeMark?: string; reviewRun?: string; socket: SocketRef };
+// shared snapshots also retain dead stack panes without a cwd; live listings omit them
+export type Pane = { paneId: string; sessionId: string; sessionName?: string; windowId?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; role?: string; processName?: string; paneName?: string; paneMode?: string; placeMark?: string; reviewRun?: string; processWorktree?: string; dead?: boolean; exitCode?: number; socket: SocketRef };
+// a dashboard pane read distinguishes a complete listing from a known failed read
+export type PaneListingSnapshot = { status: 'available'; panes: readonly Pane[] } | { status: 'unavailable' };
 export type PullRequestIssues = { mergeConflicts?: boolean; failingChecks?: boolean; unresolvedComments?: boolean };
 export type PullRequestCheckStatus = 'passed' | 'pending' | 'failed';
 export type PullRequestSummary = { number: number; title: string; status: 'draft' | 'open' | 'merged'; url: string; baseBranch?: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };

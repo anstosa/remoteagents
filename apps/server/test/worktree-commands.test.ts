@@ -602,6 +602,41 @@ describe('worktree Stack process', () => {
     await expect(service.state(cora)).resolves.toEqual({ running: true, transition: 'starting', processes: [{ name: 'dev', state: 'running' }] });
   });
 
+  // a snapshot taken before start cannot clear or hide the new transition
+  it('reads fresh process state when Starting postdates the dashboard snapshot', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const service = processService(tmux);
+    const snapshots = new Map([[`/tmp/tmux-${process.getuid?.() ?? 0}/default`, { status: 'available' as const, panes: [] }]]);
+
+    await expect(service.start(cora.id, 'start')).resolves.toBe('started');
+    await expect(service.state(cora, snapshots)).resolves.toEqual({ running: true, transition: 'starting', processes: [{ name: 'dev', state: 'running' }] });
+  });
+
+  // a start racing an older state read keeps the transition that read never observed
+  it('does not reconcile a new Starting transition against a prior observation', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    let releaseGit!: () => void;
+    let heldGit = false;
+    const command = async (binary: string, args: string[]) => {
+      // hold the first metadata read so start can land during state
+      if (binary.endsWith('/git') && !heldGit) {
+        heldGit = true;
+        return await new Promise<{ code: number; stdout: string; stderr: string }>(resolve => { releaseGit = () => resolve({ code: 128, stdout: '', stderr: 'missing fixture checkout' }); });
+      }
+      return await tmux.command(binary, args);
+    };
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [cora] } as never, command);
+    const snapshots = new Map([[`/tmp/tmux-${process.getuid?.() ?? 0}/default`, { status: 'available' as const, panes: [] }]]);
+
+    const pending = service.state(cora, snapshots);
+    await vi.waitFor(() => expect(heldGit).toBe(true));
+    await expect(service.start(cora.id, 'start')).resolves.toBe('started');
+    releaseGit();
+    await expect(pending).resolves.toEqual({ running: false, transition: 'starting', processes: [{ name: 'dev', state: 'stopped' }] });
+  });
+
   // a Worktree with no Agent or Terminal open yet gets its Workspace session the way a launch
   // makes one: named for the checkout (suffixed past a taken name) and marked for the Worktree
   it('creates the Workspace session, named and marked like a launch, when the Worktree has none', async () => {
@@ -985,6 +1020,20 @@ describe('worktree Stack process', () => {
     await expect(service.start(migrating.id, 'migrate')).resolves.toBe('started');
     await expect(service.start(migrating.id, 'stop')).resolves.toBe('started');
     await expect(service.state(migrating)).resolves.toMatchObject({ transition: 'migrating' });
+  });
+
+  // migrating does not need a lifecycle pane read to reconcile its transition
+  it('reuses the dashboard pane snapshot while a process stack is migrating', async () => {
+    const tmux = fakeTmux();
+    const migrating = testWorktree({ ...cora, commands: { processes: { dev: 'pnpm dev' }, migrate: 'pnpm migrate' } });
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [migrating] } as never, tmux.command);
+    const path = `/tmp/tmux-${process.getuid?.() ?? 0}/default`;
+    const snapshots = new Map([[path, { status: 'available' as const, panes: [] }]]);
+
+    await expect(service.start(migrating.id, 'migrate')).resolves.toBe('started');
+    const listings = tmux.calls.filter(args => args.includes('list-panes')).length;
+    await expect(service.state(migrating, snapshots)).resolves.toMatchObject({ running: false, transition: 'migrating' });
+    expect(tmux.calls.filter(args => args.includes('list-panes'))).toHaveLength(listings);
   });
 
   // A shell the operator split into the process window carries the window's tags but not the
