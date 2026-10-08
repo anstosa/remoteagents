@@ -7675,9 +7675,10 @@ function NotificationControl() {
   return <button className="notification-control" type="button" onClick={() => void enable()}>Enable alerts</button>;
 }
 
-function OperationFeedbackToast({ feedback, onDismiss }: { feedback: OperationFeedback; onDismiss: () => void }) {
+// present persistent failures with a dedicated optional accessible label
+function OperationFeedbackToast({ feedback, onDismiss, ariaLabel }: { feedback: OperationFeedback; onDismiss: () => void; ariaLabel?: string }) {
   const role = feedback.tone === 'error' ? 'alert' : 'status';
-  return <div className={`toast operation-feedback ${feedback.tone}`} role={role} aria-live={feedback.tone === 'error' ? 'assertive' : 'polite'}>
+  return <div className={`toast operation-feedback ${feedback.tone}`} role={role} aria-label={ariaLabel} aria-live={feedback.tone === 'error' ? 'assertive' : 'polite'}>
     <span className="operation-feedback-icon" aria-hidden="true">{feedback.tone === 'pending' ? <span className="spinner" /> : feedback.tone === 'success' ? '✓' : '!'}</span>
     <span className="operation-feedback-copy"><strong>{feedback.message}</strong><span>{feedback.detail}</span></span>
     {feedback.tone !== 'pending' && <button type="button" aria-label="Dismiss operation status" title="Dismiss" onClick={onDismiss}><PanelIcon path={panelIcons.close} /></button>}
@@ -7685,7 +7686,7 @@ function OperationFeedbackToast({ feedback, onDismiss }: { feedback: OperationFe
 }
 
 // stack transient feedback and persistent notices in one corner region
-function ToastRegion({ children, feedback, onDismissFeedback, updateError, launchErrorMessage }: { children?: ReactNode; feedback?: OperationFeedback; onDismissFeedback: () => void; updateError?: string; launchErrorMessage?: string }) {
+function ToastRegion({ children, feedback, onDismissFeedback, updateError, onDismissUpdateError, launchErrorMessage }: { children?: ReactNode; feedback?: OperationFeedback; onDismissFeedback: () => void; updateError?: string; onDismissUpdateError: () => void; launchErrorMessage?: string }) {
   const clientSettings = useContext(ClientSettingsContext);
   // keep stale-client guidance visible until the browser reloads
   const showClientUpdate = clientSettings?.clientUpdateAvailable === true;
@@ -7710,7 +7711,8 @@ function ToastRegion({ children, feedback, onDismissFeedback, updateError, launc
   return createPortal(<div className="toast-region" ref={reserveToastSpace}>
     {showClientUpdate && <section className="toast client-update-notification" role="status" aria-label="UI update available"><div className="client-update-copy"><h2>UI update available</h2><span>Reload to use the latest version.</span></div><button type="button" onClick={clientSettings.reloadClient}>Reload UI</button></section>}
     {feedback && <OperationFeedbackToast key={feedback.id} feedback={feedback} onDismiss={onDismissFeedback} />}
-    {updateError && <p className="toast toast-error" role="alert">{updateError}</p>}
+    {/* keep update failures independent from other operation feedback */}
+    {updateError && <OperationFeedbackToast ariaLabel="Agent update failed" feedback={{ id: 0, tone: 'error', message: 'Agent update failed', detail: updateError }} onDismiss={onDismissUpdateError} />}
     {showLaunchError && <p className="toast toast-error" role="alert">{launchErrorMessage}</p>}
     {children}
   </div>, document.body);
@@ -7952,7 +7954,7 @@ function PruneWorktreesDialog({ project, request, onClose, onPruned }: { project
 }
 
 // render the active console dashboard
-function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => void; onInactive: () => void }) {
+function DashboardView({ onUnauthorized, onInactive, updateError, onDismissUpdateError }: { onUnauthorized: () => void; onInactive: () => void; updateError?: string; onDismissUpdateError: () => void }) {
   const serverInfo = useContext(ServerContext) ?? fallbackServerInfo();
   const clientSettings = useContext(ClientSettingsContext);
   const davo = clientSettings?.davo ?? legacyDavoSettings;
@@ -9216,7 +9218,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   // offer one Scratch launch even before any Workspace has been opened
   const globalLaunch: ToolbarLaunch = { label: 'Scratch', resolution: data.scratchLaunch, pending: creatingAgent, start: choice => createAgent(choice) };
   // share one toast stack while the active agent supplies its rebase action
-  const renderNotifications = (content: ReactNode = null) => <ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage}>{content}</ToastRegion>;
+  const renderNotifications = (content: ReactNode = null) => <ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} updateError={updateError} onDismissUpdateError={onDismissUpdateError} launchErrorMessage={launchErrorMessage}>{content}</ToastRegion>;
   // read an inactive workspace's retained splits without activating it
   const retainedSplits = (entry: DashboardItem): WorkspaceSplit[] => {
     const live = workspaceViews.get(entry.key);
@@ -9853,14 +9855,14 @@ function App() {
   const screen = state === 'checking'
       ? <LoadingScreen />
       : state === 'ready'
-        ? <DashboardView onUnauthorized={handleUnauthorized} onInactive={handleInactive} />
+        ? <DashboardView onUnauthorized={handleUnauthorized} onInactive={handleInactive} updateError={agentUpdateError} onDismissUpdateError={() => { /* dismiss only the agent update failure */ setAgentUpdateError(''); }} />
         : (state === 'inactive' || state === 'naming') && sessionInfo !== undefined
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
   // expose settings without a manual server update bypass
   const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, clientUpdateAvailable, serverUpdateAvailable, serverUpdateVisible: serverUpdateOpen && !serverUpdateMinimized, serverUpdateMinimized, davo: sessionInfo.davo ?? legacyDavoSettings, renameClient, renameServer, loadServerRevision, reloadClient, openServerUpdate, updateDavo, codexAccounts, claudeAccounts: loadClaudeAccounts, switchCodexAccount, renameCodexAccount, resetCodexAccount, addCodexApiKeyAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [addCodexApiKeyAccount, cancelCodexAccountLogin, clientUpdateAvailable, codexAccountLoginStatus, codexAccounts, loadServerRevision, openServerUpdate, reloadClient, renameClient, renameServer, renameCodexAccount, resetCodexAccount, serverInfo.name, serverInfo.url, serverUpdateAvailable, serverUpdateMinimized, serverUpdateOpen, sessionInfo?.davo, sessionInfo?.deviceName, startCodexAccountLogin, state, switchCodexAccount, updateDavo]);
   // share the current launch settings with every flyout
-  const agentLaunchSettings = useMemo(() => ({ statuses: agentUpdateStatuses, updating: updatingAgent, errors: Array.from(new Set([defaultAgentError, agentUpdateError, versionCheckError, ...agentUpdateStatuses.map(status => status.error ?? '')].filter(Boolean))), defaultAgent: sessionInfo?.defaultAgent, defaultPending: defaultAgentPending, setDefaultAgent: (kind: AgentKind) => { /* persist one default */ void selectDefaultAgent(kind); }, updateAgent: (kind: AgentKind) => { /* run one installer */ void runAgentUpdate(kind); } }), [agentUpdateStatuses, updatingAgent, agentUpdateError, versionCheckError, defaultAgentError, sessionInfo?.defaultAgent, defaultAgentPending, selectDefaultAgent, runAgentUpdate]);
+  const agentLaunchSettings = useMemo(() => ({ statuses: agentUpdateStatuses, updating: updatingAgent, errors: Array.from(new Set([defaultAgentError, versionCheckError, ...agentUpdateStatuses.map(status => status.error ?? '')].filter(Boolean))), defaultAgent: sessionInfo?.defaultAgent, defaultPending: defaultAgentPending, setDefaultAgent: (kind: AgentKind) => { /* persist one default */ void selectDefaultAgent(kind); }, updateAgent: (kind: AgentKind) => { /* run one installer */ void runAgentUpdate(kind); } }), [agentUpdateStatuses, updatingAgent, versionCheckError, defaultAgentError, sessionInfo?.defaultAgent, defaultAgentPending, selectDefaultAgent, runAgentUpdate]);
   return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}><AgentLaunchSettingsContext.Provider value={agentLaunchSettings}>{screen}<ContextMenuHost /><ContextFlyoutEvents /><ServerUpdateDialog open={serverUpdateOpen} minimized={serverUpdateMinimized} onMinimize={minimizeServerUpdate} onClose={closeServerUpdate} />{reconnecting && <ReconnectingOverlay />}</AgentLaunchSettingsContext.Provider></ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');

@@ -488,12 +488,15 @@ test('recovers agent update polling after a transient HTML 524 response', async 
   await expect(page.getByRole('alert', { name: 'Reconnecting to console' })).toHaveCount(0);
 });
 
-// surface one terminal job failure without disconnecting the console
-test('reports a failed queued agent update without global reconnect', async ({ page }) => {
+// keep failed updates visible outside their menu until explicitly dismissed
+test('shows a dismissible toast after a queued agent update fails with its menu closed', async ({ page }) => {
   const adapters = { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } };
   await openSettings(page, adapters, { open: false, agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
   const menu = await openAgentMenu(page);
   let posts = 0;
+  let failUpdate = true;
+  // capture timers before the first failure creates its toast
+  await page.clock.install();
   await page.route('**/api/agents/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -503,16 +506,71 @@ test('reports a failed queued agent update without global reconnect', async ({ p
       return route.fulfill({ status: 202, json: { update: { id: 'update-failed', kind: 'codex', state: 'running' } } });
     }
     // publish one terminal command failure
-    if (url.pathname === '/api/agents/codex/update/update-failed' && request.method() === 'GET') return route.fulfill({ json: { update: { id: 'update-failed', kind: 'codex', state: 'failed', error: 'Agent update failed after starting.' } } });
+    if (url.pathname === '/api/agents/codex/update/update-failed' && request.method() === 'GET') {
+      // hold an explicit retry pending while its prior notice is checked
+      if (!failUpdate) return route.fulfill({ json: { update: { id: 'update-failed', kind: 'codex', state: 'running' } } });
+      return route.fulfill({ json: { update: { id: 'update-failed', kind: 'codex', state: 'failed', error: 'Agent update failed after starting.' } } });
+    }
     return route.fallback();
   });
 
   const update = menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' });
   await update.click();
-  await expect(menu.getByRole('alert')).toHaveText('Agent update failed after starting.');
+  await expect(update).toContainText('Updating…');
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: /^Choose agent/u }).click();
+  await expect(menu).toHaveCount(0);
+  const toast = page.getByRole('alert', { name: 'Agent update failed' });
+  await page.clock.runFor(1_001);
+  await expect(toast).toContainText('Agent update failed after starting.');
+  // error notices must not expire before dismissal
+  await page.clock.fastForward(60_000);
+  await expect(toast).toBeVisible();
+  await openAgentMenu(page);
+  await expect(menu.getByRole('alert')).toHaveCount(0);
   await expect(update).toBeEnabled();
   expect(posts).toBe(1);
+  await toast.getByRole('button', { name: 'Dismiss operation status' }).click();
+  await expect(toast).toHaveCount(0);
+  await openAgentMenu(page);
+  await expect(menu.getByRole('alert')).toHaveCount(0);
+  await expect(toast).toHaveCount(0);
+  // show a fresh notice for a later explicit retry
+  await update.click();
+  await page.clock.runFor(1_001);
+  await expect(toast).toContainText('Agent update failed after starting.');
+  expect(posts).toBe(2);
+  // an explicit retry replaces undismissed feedback without leaving a stale error
+  failUpdate = false;
+  await update.click();
+  await expect(update).toContainText('Updating…');
+  await expect(toast).toHaveCount(0);
+  expect(posts).toBe(3);
+  failUpdate = true;
+  await page.clock.runFor(1_001);
+  await expect(toast).toContainText('Agent update failed after starting.');
   await expect(page.getByRole('alert', { name: 'Reconnecting to console' })).toHaveCount(0);
+});
+
+// surface start refusals without replaying the installer
+test('shows a dismissible toast when an agent update cannot start', async ({ page }) => {
+  const adapters = { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } };
+  await openSettings(page, adapters, { open: false, agentUpdates: [{ kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true }] });
+  const menu = await openAgentMenu(page);
+  let posts = 0;
+  // retain the server's explicit refusal message
+  await page.route('**/api/agents/codex/update', route => {
+    posts += 1;
+    return route.fulfill({ status: 409, json: { error: 'Another agent update is already running.' } });
+  });
+  const update = menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' });
+  await update.click();
+  const toast = page.getByRole('alert', { name: 'Agent update failed' });
+  await expect(toast).toContainText('Another agent update is already running.');
+  await expect(menu.getByRole('alert')).toHaveCount(0);
+  await expect(update).toBeEnabled();
+  await toast.getByRole('button', { name: 'Dismiss operation status' }).click();
+  await expect(toast).toHaveCount(0);
+  expect(posts).toBe(1);
 });
 
 // reject stale and mismatched queued update identities
@@ -549,14 +607,14 @@ test('rejects stale and mismatched agent update jobs', async ({ page }) => {
 
   const codexUpdate = menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' });
   await codexUpdate.click();
-  await expect(menu.getByRole('alert')).toHaveText(staleMessage);
+  await expect(page.getByRole('alert', { name: 'Agent update failed' })).toContainText(staleMessage);
   await expect(codexUpdate).toBeEnabled();
   await expect(menu.getByRole('group', { name: 'Codex agent' }).getByText('v0.152.1 → v0.153.2', { exact: true })).toBeVisible();
 
   const omxUpdate = menu.getByRole('menuitem', { name: 'Update OMX to 0.22.0' });
   await omxUpdate.click();
-  await expect(menu.getByRole('alert')).toBeVisible();
-  await expect(menu.getByRole('alert')).not.toHaveText(staleMessage);
+  await expect(page.getByRole('alert', { name: 'Agent update failed' })).toBeVisible();
+  await expect(page.getByRole('alert', { name: 'Agent update failed' })).not.toContainText(staleMessage);
   await expect(omxUpdate).toBeEnabled();
   await expect(menu.getByRole('group', { name: 'OMX agent' }).getByText('v0.21.3 → v0.22.0', { exact: true })).toBeVisible();
   expect(posts).toEqual({ codex: 1, omx: 1 });
@@ -593,7 +651,7 @@ test('stops transient agent update polling at the seventeen-minute deadline', as
   await page.clock.runFor(1_001);
   await expect.poll(() => polls).toBeGreaterThan(0);
   await page.clock.fastForward(17 * 60_000);
-  await expect(menu.getByRole('alert')).toHaveText(unknownStatus);
+  await expect(page.getByRole('alert', { name: 'Agent update failed' })).toContainText(unknownStatus);
   await expect(update).toBeEnabled();
   expect(posts).toBe(1);
   expect(polls).toBeGreaterThan(0);
@@ -626,7 +684,7 @@ test('does not retry an agent update POST after an HTML 524 response', async ({ 
   const unknownStatus = 'Update status is unavailable. The update may still be running; check installed versions before retrying.';
   const update = menu.getByRole('menuitem', { name: 'Update Codex to 0.153.2' });
   await update.click();
-  await expect(menu.getByRole('alert')).toHaveText(unknownStatus);
+  await expect(page.getByRole('alert', { name: 'Agent update failed' })).toContainText(unknownStatus);
   await expect(update).toBeEnabled();
   expect({ posts, polls }).toEqual({ posts: 1, polls: 0 });
   await page.waitForTimeout(1_100);
