@@ -1230,6 +1230,20 @@ describe('Console shells server lifecycle', () => {
     } finally { await app.close(); }
   }, 15_000);
 
+  it("clears a Stack process's output, 404 for a name not configured, 503 when tmux cannot answer", async () => {
+    const clears: string[] = [];
+    const clearProcessOutput = async (id: string, name: string) => { clears.push(`${id}/${name}`); return name === 'dev' ? true : name === 'web' ? 'unavailable' : undefined; };
+    const { app, headers } = await start({ worktreeCommands: { clearProcessOutput } });
+    try {
+      expect((await app.inject({ method: 'DELETE', url: '/api/worktrees/cora/processes/dev/output', headers })).statusCode).toBe(204);
+      expect((await app.inject({ method: 'DELETE', url: '/api/worktrees/cora/processes/api/output', headers })).statusCode).toBe(404);
+      expect((await app.inject({ method: 'DELETE', url: '/api/worktrees/cora/processes/web/output', headers })).statusCode).toBe(503);
+      // a clear changes the pane, so it needs the CSRF token, not only a session
+      expect((await app.inject({ method: 'DELETE', url: '/api/worktrees/cora/processes/dev/output', headers: { host: headers.host, cookie: headers.cookie } })).statusCode).toBe(403);
+      expect(clears).toEqual(['cora/dev', 'cora/api', 'cora/web']);
+    } finally { await app.close(); }
+  }, 15_000);
+
   // one process of the stack: a name the Worktree does not configure, or a one-shot action, has
   // no route; a busy Worktree is the command route's 409, and a Start that fails is not a 404
   it('starts, stops and restarts one Stack process, 404 for a name or action it has not, 409 while busy', async () => {

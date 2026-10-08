@@ -85,6 +85,9 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     expect(await first.state(worktree)).toMatchObject({ running: true, processes: [{ name: 'dev', state: 'running' }] });
     const pane = await tmuxAt('display-message', '-p', '-t', '=fixture:dev', '#{pane_id}');
     expect(await first.processOutput(worktree.id, 'dev')).toMatchObject({ state: 'running', paneId: pane, output: expect.stringContaining(`dev server up in ${root}`) });
+    // Clear empties the live pane while the process keeps running
+    await expect(first.clearProcessOutput(worktree.id, 'dev')).resolves.toBe(true);
+    expect(await first.processOutput(worktree.id, 'dev')).toMatchObject({ state: 'running', paneId: pane, output: '' });
     // the Place pane listing, which admits a pane to a Terminal, holds it named for its process
     const listed = await listPanes();
     expect(listed.find(candidate => candidate.paneId === pane)).toMatchObject({ role: 'process', processName: 'dev', placeMark: worktree.id });
@@ -114,6 +117,9 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     // "Show dev output" reads the same dead pane, with its code
     const exited = await instance.processOutput(worktree.id, 'dev');
     expect(exited).toMatchObject({ name: 'dev', state: 'exited', exitCode: 3, output: expect.stringContaining('missing binary') });
+    // Clear empties even a dead pane, screen and history both
+    await expect(instance.clearProcessOutput(worktree.id, 'dev')).resolves.toBe(true);
+    expect(await instance.processOutput(worktree.id, 'dev')).toMatchObject({ state: 'exited', exitCode: 3, output: '' });
     // a dead pane reports no cwd, so the Place pane listing drops it and it offers no Terminal
     expect(exited).not.toHaveProperty('paneId');
     const pane = await tmuxAt('display-message', '-p', '-t', `=${session}:dev`, '#{pane_id}');

@@ -6,16 +6,17 @@ import { isStackProcessOutput, type ProcessUse, type StackAction, type StackProc
 
 // What the Stack panel and its menu asked for, for a spec to read back: the actions on this
 // Worktree's processes and on the stack, the used processes' Starts and Stops, the Worktrees
-// opened, the Terminals opened, every output read (by Worktree and process) and whether it closed.
+// opened, the Terminals opened, every output read and clear (by Worktree and process) and whether it closed.
 // `failNextUse` makes the next used process's action fail with that reason, as a busy Worktree would.
-type Record_ = { actions?: string[]; useActions?: string[]; openedWorktrees?: string[]; openedTerminals?: { paneId: string; name: string }[]; outputReads?: string[]; panelClosed?: boolean; failNextUse?: string };
+type Record_ = { actions?: string[]; useActions?: string[]; openedWorktrees?: string[]; openedTerminals?: { paneId: string; name: string }[]; outputReads?: string[]; outputClears?: string[]; panelClosed?: boolean; failNextUse?: string };
 const record = () => window as unknown as Record_;
-const push = (key: 'actions'|'useActions'|'openedWorktrees'|'outputReads', value: string) => { record()[key] = [...record()[key] ?? [], value]; };
+const push = (key: 'actions'|'useActions'|'openedWorktrees'|'outputReads'|'outputClears', value: string) => { record()[key] = [...record()[key] ?? [], value]; };
 
 // The Worktree "Obsidian / testing": `sync` runs, `api` runs and needs `sync`, `web` needs `api`
 // and has exited, `docs` is stopped and stands alone. `api` uses Static's `static` (stopped) and a
 // `preview` the console could not place. Each output read grows by a line, so polling shows; a
-// running process here gives its pane, `%17`. Every action is held briefly, then lands.
+// running process here gives its pane, `%17`. Every action is held briefly, then lands. A clear
+// drops everything read so far, as an emptied pane would.
 const Workbench = () => {
   const [open, setOpen] = useState(false);
   const [selection, setSelection] = useState<StackSelection>();
@@ -27,6 +28,7 @@ const Workbench = () => {
   ]);
   const [staticState, setStaticState] = useState<'running'|'stopped'>('stopped');
   const [reads] = useState(() => new Map<string, number>());
+  const [cleared] = useState(() => new Map<string, number>());
   const uses: ProcessUse[] = [{ worktreeId: 'site:/code/static', label: 'Static Site / Main', process: 'static', state: staticState }, { label: '/code/elsewhere', process: 'preview' }];
   const shown = processes.map(process => process.name === 'api' ? { ...process, uses } : process);
   const stack = { actions: ['start', 'stop', 'restart'] as StackAction[], processes: shown };
@@ -53,10 +55,17 @@ const Workbench = () => {
     reads.set(key, count);
     const own = worktreeId === 'app:/code/app';
     const state = own ? shown.find(process => process.name === name)?.state ?? 'stopped' : staticState;
-    const output = [`${key} ready`, ...Array.from({ length: 80 }, (_, index) => `compiled module ${index + 1}`), ...Array.from({ length: count }, (_, index) => `request ${index + 1}`)].join('\n');
+    const since = cleared.get(key);
+    const lines = [`${key} ready`, ...Array.from({ length: 80 }, (_, index) => `compiled module ${index + 1}`), ...Array.from({ length: count }, (_, index) => `request ${index + 1}`)];
+    const output = (since === undefined ? lines : lines.slice(81 + since)).join('\n');
     const payload: unknown = { name, state, ...(own && state === 'running' ? { paneId: '%17' } : {}), output };
     if (!isStackProcessOutput(payload)) throw new Error('invalid process output');
     return payload;
+  };
+  const clearOutput = async (worktreeId: string, name: string) => {
+    push('outputClears', `${worktreeId} ${name}`);
+    await hold();
+    cleared.set(`${worktreeId} ${name}`, reads.get(`${worktreeId} ${name}`) ?? 0);
   };
   const openWorktree = (worktreeId: string) => push('openedWorktrees', worktreeId);
   return createElement('div', { className: 'workbench' },
@@ -67,7 +76,7 @@ const Workbench = () => {
     open && createElement('div', { className: 'workbench-panel' }, createElement(StackPanel, {
       worktreeId: 'app:/code/app', title: 'Obsidian / testing', stack, selection, onSelect: setSelection,
       onClose: () => { record().panelClosed = true; setOpen(false); },
-      handlers, onOpenWorktree: openWorktree, readOutput,
+      handlers, onOpenWorktree: openWorktree, readOutput, clearOutput,
       onOpenTerminal: (paneId: string, name: string) => { record().openedTerminals = [...record().openedTerminals ?? [], { paneId, name }]; }
     }))
   );

@@ -322,6 +322,22 @@ export class WorktreeCommandService {
     return { ...processStateOf(window, name), ...(window.dead ? {} : { paneId: window.paneId }), output: outputTail(plainLog(captured.stdout).trimEnd()) };
   }
 
+  // The Stack panel's Clear: reset the process pane's screen and drop its history, so its output
+  // starts fresh while the process keeps running and its log file keeps everything. True once
+  // nothing is left to show (a process with no window has nothing), otherwise as processOutput.
+  async clearProcessOutput(worktreeId: string, name: string): Promise<true | 'unavailable' | undefined> {
+    const worktree = worktreeById(this.discovery.worktreesNow(), worktreeId);
+    if (worktree === undefined || !stackProcesses(worktree).some(declared => declared.name === name)) return undefined;
+    const panes = await this.stackPanes();
+    if (panes === undefined) return 'unavailable';
+    const window = this.processWindow(panes, worktree, name);
+    if (window === undefined) return true;
+    // the reset moves the screen into the history, which clear-history then drops
+    const cleared = await this.tmux(['send-keys', '-R', '-t', window.paneId, ';', 'clear-history', '-t', window.paneId]);
+    // a window a Stop closed after the listing has nothing left either
+    return cleared.code === 0 || /can't find pane/u.test(cleared.stderr ?? '') ? true : 'unavailable';
+  }
+
   // A Worktree with Stack processes reads `running` straight from the process panes — true
   // when every one runs, false when none does, absent in between — and never runs a `status`
   // probe; that probe is for daemon-style stacks only.

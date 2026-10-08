@@ -2889,6 +2889,16 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (output === 'unavailable') return reply.code(503).send({ error: 'tmux unavailable' });
     return output;
   });
+  // the Stack panel's Clear: empty a Stack process's pane so its output starts fresh
+  app.delete('/api/worktrees/:id/processes/:name/output', async (request, reply) => {
+    controlled(request, true);
+    const { id, name } = request.params as { id: string; name: string };
+    if (configuredWorktree(id) === undefined) return await nonWorktreeReply(id, reply, { missing: { error: 'process output unavailable' } });
+    const cleared = await stackCommands.clearProcessOutput(id, name);
+    if (cleared === undefined) return reply.code(404).send({ error: 'process output unavailable' });
+    if (cleared === 'unavailable') return reply.code(503).send({ error: 'tmux unavailable' });
+    return reply.code(204).send();
+  });
   app.post('/api/agents/launch', async (request, reply) => {
     controlled(request, true);
     const kind = requestedKind(request);

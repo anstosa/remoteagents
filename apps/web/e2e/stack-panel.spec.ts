@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-type Recorded = { actions?: string[]; useActions?: string[]; openedWorktrees?: string[]; openedTerminals?: { paneId: string; name: string }[]; outputReads?: string[]; panelClosed?: boolean };
+type Recorded = { actions?: string[]; useActions?: string[]; openedWorktrees?: string[]; openedTerminals?: { paneId: string; name: string }[]; outputReads?: string[]; outputClears?: string[]; panelClosed?: boolean };
 const read = <K extends keyof Recorded>(page: Page, key: K) => page.evaluate(name => (window as unknown as Recorded)[name], key) as Promise<Recorded[K]>;
 
 // the stack menu beside a Stack panel it opens, as a Workspace holds them
@@ -78,6 +78,22 @@ test("refreshes the selected process's output, following it from the bottom unti
   await output.evaluate(element => { element.scrollTop = 0; });
   await expect(output).toContainText('request 6');
   expect(await output.evaluate(element => element.scrollTop)).toBe(0);
+});
+
+test("clears the selected process's output, showing only what follows", async ({ page }) => {
+  await workbench(page);
+  await openMenu(page);
+  await page.getByRole('button', { name: 'Open Stack panel', exact: true }).click();
+
+  const output = panel(page).getByLabel('Process output');
+  await expect(output).toContainText('request 3');
+  await panel(page).getByRole('button', { name: 'Clear sync output' }).click();
+  // a read begun before the clear never paints the old output back
+  await expect(output).not.toContainText('ready');
+  expect(await read(page, 'outputClears')).toEqual(['app:/code/app sync']);
+  await expect(output).toContainText(/request \d+/u);
+  await expect(output).not.toContainText('compiled module');
+  if (process.env.SHOT_STACK_CLEAR) await page.screenshot({ path: process.env.SHOT_STACK_CLEAR });
 });
 
 test("acts on this Worktree's process, offering Open as Terminal only while it runs", async ({ page }) => {

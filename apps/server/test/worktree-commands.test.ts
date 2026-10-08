@@ -497,6 +497,13 @@ function fakeTmux() {
       else if (keys.includes('C-c') && !entry.dead && entry.ignoresInterrupt !== true) { Object.assign(entry, { dead: true, status: 130 }); delete entry.pipe; }
       return { code: 0, stdout: '' };
     }
+    if (verb === 'clear-history') {
+      const entry = find(value(args, '-t'));
+      if (entry === undefined) return { code: 1, stdout: '', stderr: "can't find pane" };
+      entry.output = '';
+      events.push(`clear ${entry.paneId}`);
+      return { code: 0, stdout: '' };
+    }
     if (verb === 'capture-pane') {
       const entry = find(value(args, '-t'));
       if (entry === undefined) return { code: 1, stdout: '', stderr: "can't find pane" };
@@ -791,6 +798,34 @@ describe('worktree Stack process', () => {
     // the running pane's id, so "Open as Terminal" can stream the process itself
     await expect(service.processOutput(cora.id, 'dev')).resolves.toEqual({ name: 'dev', state: 'running', paneId: dev.paneId, output: 'ready in 120ms\nlocal' });
     expect(tmux.calls.find(args => args[0] === 'capture-pane')).toEqual(['capture-pane', '-p', '-J', '-S', '-', '-t', dev.paneId]);
+  });
+
+  // the Stack panel's Clear empties the pane itself, live or exited, and leaves the process alone
+  it("clears a process's output by resetting its pane and dropping the history", async () => {
+    const tmux = fakeTmux();
+    const dev = tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    dev.output = 'ready in 120ms\n';
+    const web = tmux.seedProcess('dana', '/worktrees/dana', 'dev', true, 1);
+    web.output = 'crashed\n';
+    const service = processService(tmux);
+
+    await expect(service.clearProcessOutput(cora.id, 'dev')).resolves.toBe(true);
+    expect(tmux.calls.find(args => args.includes('clear-history'))).toEqual(['send-keys', '-R', '-t', dev.paneId, ';', 'clear-history', '-t', dev.paneId]);
+    await expect(service.processOutput(cora.id, 'dev')).resolves.toEqual({ name: 'dev', state: 'running', paneId: dev.paneId, output: '' });
+    expect(dev.dead).toBe(false);
+    await expect(service.clearProcessOutput(dana.id, 'dev')).resolves.toBe(true);
+    await expect(service.processOutput(dana.id, 'dev')).resolves.toMatchObject({ state: 'exited', exitCode: 1, output: '' });
+  });
+
+  it('clears nothing for a process with no window, and refuses a name the Worktree does not configure', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const service = processService(tmux);
+    await expect(service.clearProcessOutput(cora.id, 'dev')).resolves.toBe(true);
+    await expect(service.clearProcessOutput(cora.id, 'nope')).resolves.toBeUndefined();
+    expect(tmux.calls.some(args => args.includes('clear-history'))).toBe(false);
+    tmux.state.fail = true;
+    await expect(service.clearProcessOutput(cora.id, 'dev')).resolves.toBe('unavailable');
   });
 
   // a dead pane is not one of its Place's streamable panes, so it offers no Terminal

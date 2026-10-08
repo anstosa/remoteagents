@@ -1099,7 +1099,8 @@ html.software-keyboard-open :is(.log, .log-split) > :is(.log-output, .terminal-p
 .stack-pane-relations { display: grid; gap: .35rem; padding: .6rem .9rem; border-bottom: 1px solid var(--surface-1); }
 .stack-pane-relations:empty { display: none; }
 .stack-pane-output-head { display: flex; min-height: 2.3rem; align-items: center; gap: .5rem; padding: .3rem .9rem; color: var(--overlay-1); font-size: .62rem; letter-spacing: .09em; text-transform: uppercase; }
-.stack-pane-output-head .stack-text-button { margin-left: auto; letter-spacing: .03em; text-transform: none; }
+.stack-pane-output-head > :first-child { margin-right: auto; }
+.stack-pane-output-head .stack-text-button { letter-spacing: .03em; text-transform: none; }
 .stack-pane-detail .stack-log-error { margin: 0; padding: .3rem .9rem; color: var(--red); font-size: .7rem; }
 .stack-pane-output { flex: 1 1 auto; min-height: 0; margin: 0; overflow: auto; padding: .6rem .9rem; background: var(--crust); color: var(--subtext-1); font: 500 11px/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .stack-pane-note { margin: 0; padding: .8rem .9rem; color: var(--overlay-1); font-size: .7rem; font-weight: 600; line-height: 1.45; }

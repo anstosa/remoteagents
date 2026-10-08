@@ -8,14 +8,26 @@ import { dependantsOf, processActionLabel, processActions, processesSummary, pro
 const outputRefreshMs = 750;
 
 // A process's recent output, read from `worktreeId` and refreshed while it shows; undefined until
-// the first read lands, and `error` when a read fails (the last output stays)
-function useProcessOutput(target: { worktreeId: string; name: string } | undefined, read: (worktreeId: string, name: string) => Promise<StackProcessOutput | undefined>) {
+// the first read lands, and `error` when a read fails (the last output stays). `clear` empties the
+// process's pane so its output starts fresh.
+function useProcessOutput(target: { worktreeId: string; name: string } | undefined, read: (worktreeId: string, name: string) => Promise<StackProcessOutput | undefined>, clearOutput: (worktreeId: string, name: string) => Promise<void>) {
   const [output, setOutput] = useState<StackProcessOutput>();
   const [error, setError] = useState('');
   const readRef = useRef(read);
   readRef.current = read;
+  // bumped by each clear, so a read begun before it cannot paint the cleared output back
+  const clears = useRef(0);
   const worktreeId = target?.worktreeId;
   const name = target?.name;
+  const clear = async () => {
+    if (worktreeId === undefined || name === undefined) return;
+    try {
+      await clearOutput(worktreeId, name);
+      clears.current += 1;
+      setOutput(current => current?.name === name ? { ...current, output: '' } : current);
+      setError('');
+    } catch { setError('Unable to clear the output.'); }
+  };
   useEffect(() => {
     setOutput(undefined);
     setError('');
@@ -26,9 +38,10 @@ function useProcessOutput(target: { worktreeId: string; name: string } | undefin
       // avoid overlapping slow requests
       if (loading) return;
       loading = true;
+      const generation = clears.current;
       try {
         const next = await readRef.current(worktreeId, name);
-        if (!active) return;
+        if (!active || generation !== clears.current) return;
         setOutput(next);
         setError('');
       } catch {
@@ -40,7 +53,7 @@ function useProcessOutput(target: { worktreeId: string; name: string } | undefin
     const interval = window.setInterval(() => { void refresh(); }, outputRefreshMs);
     return () => { active = false; window.clearInterval(interval); };
   }, [worktreeId, name]);
-  return { output, error };
+  return { output, error, clear };
 }
 
 // The output of the process shown, following new output from the bottom unless the operator
@@ -55,6 +68,11 @@ function ProcessOutput({ text, error }: { text: string; error: string }) {
     {error !== '' && <p className="stack-log-error" role="alert">{error}</p>}
     <pre ref={ref} className="stack-pane-output" tabIndex={0} aria-label="Process output" onScroll={event => { const output = event.currentTarget; follow.current = output.scrollHeight - output.scrollTop - output.clientHeight < 24; }}>{text}</pre>
   </>;
+}
+
+// Clear the shown output, emptying the process's pane so what follows starts fresh
+function ClearOutput({ output, label }: { output: ReturnType<typeof useProcessOutput>; label: string }) {
+  return <button type="button" className="stack-text-button" disabled={!output.output?.output} aria-label={`Clear ${label} output`} title="Clear the output; the process keeps running" onClick={() => void output.clear()}><StackIcon path={stackGlyphs.clear} />Clear</button>;
 }
 
 // what the output area says when there is no output to show
@@ -82,7 +100,7 @@ function ProcessDetail({ process, processes, controls, output, onSelect, onOpenT
       <RelationChips label="Needed by" names={dependantsOf(processes, process.name)} processes={processes} onSelect={name => onSelect({ kind: 'process', name })} showEmpty />
       <UseChips uses={usedProcesses([process])} onSelect={key => onSelect({ kind: 'use', key })} />
     </div>
-    <div className="stack-pane-output-head"><span>Output</span>{paneId !== undefined && onOpenTerminal !== undefined && <button type="button" className="stack-text-button" title={`Open ${process.name} as a Terminal panel`} onClick={() => onOpenTerminal(paneId, process.name)}><StackIcon path={stackGlyphs.terminal} />Open as Terminal</button>}</div>
+    <div className="stack-pane-output-head"><span>Output</span><span className="stack-pane-buttons">{paneId !== undefined && onOpenTerminal !== undefined && <button type="button" className="stack-text-button" title={`Open ${process.name} as a Terminal panel`} onClick={() => onOpenTerminal(paneId, process.name)}><StackIcon path={stackGlyphs.terminal} />Open as Terminal</button>}<ClearOutput output={output} label={process.name} /></span></div>
     <ProcessOutput key={process.name} text={outputText(output.output)} error={output.error} />
   </div>;
 }
@@ -106,7 +124,7 @@ function UseDetail({ used, processes, controls, output, onSelect, onOpenWorktree
       <UsedFailure controls={controls} used={used} />
     </div>
     <div className="stack-pane-relations"><RelationChips label="Used by" names={used.usedBy} processes={processes} onSelect={name => onSelect({ kind: 'process', name })} showEmpty /></div>
-    <div className="stack-pane-output-head"><span>Output</span></div>
+    <div className="stack-pane-output-head"><span>Output</span>{worktreeId !== undefined && <ClearOutput output={output} label={`${use.process} in ${use.label}`} />}</div>
     {worktreeId === undefined
       ? <p className="stack-pane-note">The console found no Worktree declaring this process, so its output is not available here.</p>
       : <ProcessOutput key={used.key} text={outputText(output.output)} error={output.error} />}
@@ -116,8 +134,9 @@ function UseDetail({ used, processes, controls, output, onSelect, onOpenWorktree
 // The Stack panel: one Worktree's Stack processes and the processes they use in other Worktrees,
 // listed on the left, and the selected one's actions, relations and live output on the right.
 // `worktreeId` is that Worktree and `title` its "<Project> / <Worktree>". `selection` is what the panel shows, the first process when
-// it names nothing there is. `readOutput` reads a process's output from any Worktree.
-export function StackPanel({ worktreeId, title, stack, selection, onSelect, onClose, handlers, onOpenWorktree, onOpenTerminal, readOutput }: { worktreeId: string; title: string; stack: ProjectStack | undefined; selection: StackSelection | undefined; onSelect: (selection: StackSelection) => void; onClose: () => void; handlers: StackHandlers; onOpenWorktree?: (worktreeId: string) => void; onOpenTerminal?: (paneId: string, name: string) => void; readOutput: (worktreeId: string, name: string) => Promise<StackProcessOutput | undefined> }) {
+// it names nothing there is. `readOutput` reads a process's output from any Worktree, and
+// `clearOutput` empties it.
+export function StackPanel({ worktreeId, title, stack, selection, onSelect, onClose, handlers, onOpenWorktree, onOpenTerminal, readOutput, clearOutput }: { worktreeId: string; title: string; stack: ProjectStack | undefined; selection: StackSelection | undefined; onSelect: (selection: StackSelection) => void; onClose: () => void; handlers: StackHandlers; onOpenWorktree?: (worktreeId: string) => void; onOpenTerminal?: (paneId: string, name: string) => void; readOutput: (worktreeId: string, name: string) => Promise<StackProcessOutput | undefined>; clearOutput: (worktreeId: string, name: string) => Promise<void> }) {
   const expanded = usePanelExpand('stack')?.expanded === true;
   const controls = useStackControls(stack, handlers);
   const processes = stack?.processes ?? [];
@@ -127,7 +146,7 @@ export function StackPanel({ worktreeId, title, stack, selection, onSelect, onCl
   const target = selectedUse !== undefined
     ? selectedUse.use.worktreeId === undefined ? undefined : { worktreeId: selectedUse.use.worktreeId, name: selectedUse.use.process }
     : selectedProcess === undefined ? undefined : { worktreeId, name: selectedProcess.name };
-  const output = useProcessOutput(target, readOutput);
+  const output = useProcessOutput(target, readOutput, clearOutput);
   const summary = processesSummary(processes);
   const actions = stack?.actions ?? [];
   // the whole stack's actions, which fold into the header's ⋮ when the panel is narrow

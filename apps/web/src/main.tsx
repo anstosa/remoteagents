@@ -700,6 +700,11 @@ const processOutput = async (worktreeId: string, name: string): Promise<StackPro
   if (!isStackProcessOutput(payload)) throw new Error('invalid process output');
   return payload;
 };
+// empty a Stack process's pane so its output starts fresh
+const clearProcessOutput = async (worktreeId: string, name: string): Promise<void> => {
+  const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/processes/${encodeURIComponent(name)}/output`, { method: 'DELETE' });
+  if (!response.ok) throw new Error('process output not cleared');
+};
 // the route that starts, stops or restarts one Stack process of a Worktree
 const processActionUrl = (worktreeId: string, name: string, action: StackAction) => `/api/worktrees/${encodeURIComponent(worktreeId)}/processes/${encodeURIComponent(name)}/${action}`;
 // start the process a notice names in its own Worktree, as that Worktree's menu would, throwing
@@ -6234,7 +6239,7 @@ function Workspace({ workspace, output, empty, git, onAddToPrompt, onOpenWorktre
   const stackName = stackPlaceName(place.worktreeId, projects);
   const placeId = place.id;
   // the Stack panel shows only for a Worktree whose stack has processes to show
-  const stackPane = !stackPanel.open || place.worktreeId === undefined || (place.stack?.processes?.length ?? 0) === 0 ? null : <StackPanel worktreeId={place.worktreeId} title={stackName === undefined ? 'this worktree' : `${stackName.project} / ${stackName.worktree}`} stack={place.stack} selection={stackPanel.selection} onSelect={stackPanel.select} onClose={stackPanel.close} handlers={stackHandlers(place.worktreeId)} onOpenWorktree={onOpenWorktreeStack} onOpenTerminal={placeId === undefined ? undefined : (paneId, name) => { /* on a phone an already-open panel is scrolled to; a new one comes into view as it opens */ workspace.carousel?.show(paneId); requestTerminalFocus(placeId, { paneId, name }); }} readOutput={processOutput} />;
+  const stackPane = !stackPanel.open || place.worktreeId === undefined || (place.stack?.processes?.length ?? 0) === 0 ? null : <StackPanel worktreeId={place.worktreeId} title={stackName === undefined ? 'this worktree' : `${stackName.project} / ${stackName.worktree}`} stack={place.stack} selection={stackPanel.selection} onSelect={stackPanel.select} onClose={stackPanel.close} handlers={stackHandlers(place.worktreeId)} onOpenWorktree={onOpenWorktreeStack} onOpenTerminal={placeId === undefined ? undefined : (paneId, name) => { /* on a phone an already-open panel is scrolled to; a new one comes into view as it opens */ workspace.carousel?.show(paneId); requestTerminalFocus(placeId, { paneId, name }); }} readOutput={processOutput} clearOutput={clearProcessOutput} />;
   return <SelectionActionsContext.Provider value={selectionActions}><section className="log-shell" data-workspace-key={workspace.viewKey}><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={visibleOutput} empty={empty} note={notes.pane} browser={browserPane} files={filesPane} code={codePane} stack={stackPane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onCarousel={workspace.setCarousel} initialPanelsReady={notes.initialNotesLoaded} /></div><ClientSettingsPane /></section></SelectionActionsContext.Provider>;
 }
 
