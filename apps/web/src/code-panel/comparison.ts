@@ -6,6 +6,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 // The two Comparisons a Worktree can show, matching the server's `ComparisonKind`.
 export type CodePanelMode = 'working' | 'pr';
+// One commit of the branch shown on its own, against its first parent; it stands in for the mode's
+// Comparison until the reviewer picks Working or All PR again.
+export type CodePanelCommit = { sha: string; subject: string };
 
 // One changed path in a Comparison — the client mirror of the server `GitStatusChange`.
 export type ComparisonChange = { code: string; path: string; originalPath?: string; additions?: number; deletions?: number; category?: 'implementation' | 'test' | 'doc' };
@@ -16,7 +19,7 @@ export type ComparisonFileKind = 'tracked' | 'metadata' | 'binary' | 'untracked'
 export type ComparisonFile = { change: ComparisonChange; kind: ComparisonFileKind; patch: string; capped: boolean };
 // The `POST /api/worktrees/:id/comparison` response: every Change with its per-file patch, a
 // content-sensitive fingerprint (for staleness), and whether the file-count/total cap truncated it.
-export type ComparisonPatch = { kind: CodePanelMode; base: string; gitBase: string; files: ComparisonFile[]; fingerprint: string; truncated: boolean };
+export type ComparisonPatch = { kind: CodePanelMode | 'commit'; base: string; gitBase: string; files: ComparisonFile[]; fingerprint: string; truncated: boolean };
 
 // One side of a file in a Comparison, from `POST /api/worktrees/:id/comparison/file`.
 export type RevisionFile = { path: string; size: number; binary: boolean; truncated: boolean; content?: string };
@@ -42,7 +45,7 @@ const isComparisonFile = (value: unknown): value is ComparisonFile =>
 // Validate the patch endpoint's payload before trusting it, the way `useFilePreview` guards its own.
 export const isComparisonPatch = (value: unknown): value is ComparisonPatch =>
   value !== null && typeof value === 'object'
-  && ((value as ComparisonPatch).kind === 'working' || (value as ComparisonPatch).kind === 'pr')
+  && ['working', 'pr', 'commit'].includes((value as ComparisonPatch).kind)
   && typeof (value as ComparisonPatch).fingerprint === 'string'
   && Array.isArray((value as ComparisonPatch).files)
   && (value as ComparisonPatch).files.every(isComparisonFile);
@@ -122,6 +125,8 @@ export const isFilePreview = (value: unknown): value is FilePreview =>
 export type CodePanelController = {
   open: boolean;
   mode: CodePanelMode;
+  // the one commit the panel shows instead of the mode's Comparison, if any
+  commit: CodePanelCommit | undefined;
   state: CodePanelState;
   patch: ComparisonPatch | undefined;
   // the one file the panel is filtered to, or undefined for the all-files view
@@ -132,12 +137,14 @@ export type CodePanelController = {
   // open (or refocus) the panel on the given Comparison, seeded from the flyout's mode; a `path`
   // filters straight to that one Change (a flyout row deep link), otherwise shows all files
   openChanges(mode: CodePanelMode, path?: string): void;
+  // open (or refocus) the panel on one commit's own Changes
+  openCommit(commit: CodePanelCommit): void;
   // open (or refocus) the panel on one file, fetched from the given preview endpoint (agent-keyed for
   // an agent-context file so the `/tmp` screenshot bridge works, worktree-keyed otherwise)
   openFilePreview(path: string, previewUrl: string, options?: { body?: unknown; source?: 'files' }): void;
   // leave the File view, revealing the Comparison the panel would otherwise show
   closeFilePreview(): void;
-  // switch the Comparison in place (the panel-header Working / All PR toggle); refetches
+  // switch the Comparison in place (the panel-header Working / All PR toggle), leaving any commit; refetches
   setMode(mode: CodePanelMode): void;
   // filter the open panel to one Change, or return to all files
   selectFile(path: string): void;
@@ -174,6 +181,8 @@ export const saveCodeOpen = (worktreeId: string | undefined, open: boolean) => {
 export const useCodePanel = (worktreeId: string | undefined, request: Requester, changeSignal?: string): CodePanelController => {
   const [open, setOpen] = useState(() => savedCodeOpen(worktreeId));
   const [mode, setModeState] = useState<CodePanelMode>('working');
+  const [commit, setCommit] = useState<CodePanelCommit>();
+  const commitSha = commit?.sha;
   const [state, setState] = useState<CodePanelState>('loading');
   const [patch, setPatch] = useState<ComparisonPatch>();
   const [selectedPath, setSelectedPath] = useState<string>();
@@ -189,9 +198,9 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
 
   // fetch and validate one Comparison patch; returns undefined on any failure so callers decide
   // whether that means "error" (a hard load) or "leave the current patch untouched" (a soft refresh)
-  const fetchPatch = useCallback(async (id: string, kind: CodePanelMode): Promise<ComparisonPatch | undefined> => {
+  const fetchPatch = useCallback(async (id: string, kind: CodePanelMode, sha?: string): Promise<ComparisonPatch | undefined> => {
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(id)}/comparison`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind }) });
+      const response = await request(`/api/worktrees/${encodeURIComponent(id)}/comparison`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(sha === undefined ? { kind } : { kind: 'commit', commit: sha }) });
       if (!response.ok) return undefined;
       const payload: unknown = await response.json();
       return isComparisonPatch(payload) ? payload : undefined;
@@ -203,6 +212,7 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
   useEffect(() => {
     setOpen(savedCodeOpen(worktreeId));
     setPatch(undefined);
+    setCommit(undefined);
     setSelectedPath(undefined);
     setFilePreview(undefined);
     signalRef.current = changeSignal;
@@ -220,14 +230,14 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
     setState('loading');
     setPatch(undefined);
     void (async () => {
-      const next = await fetchPatch(worktreeId, mode);
+      const next = await fetchPatch(worktreeId, mode, commitSha);
       // drop a response the panel no longer awaits
       if (requestId.current !== id) return;
       if (next === undefined) { setState('error'); return; }
       setPatch(next);
       setState('ready');
     })();
-  }, [open, worktreeId, mode, refreshToken, fetchPatch]);
+  }, [open, worktreeId, mode, commitSha, refreshToken, fetchPatch]);
 
   // soft refresh: the live change summary moved, so update the open Comparison in place. Only acts
   // once a patch is already on screen — while the initial hard load is still in flight (or after an
@@ -241,23 +251,34 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
     if (!changed || !open || worktreeId === undefined || patch === undefined) return;
     const id = ++requestId.current;
     void (async () => {
-      const next = await fetchPatch(worktreeId, mode);
+      const next = await fetchPatch(worktreeId, mode, commitSha);
       if (next === undefined || requestId.current !== id) return;
       setPatch(current => current !== undefined && current.fingerprint === next.fingerprint ? current : next);
       setState('ready');
     })();
-  }, [changeSignal, open, worktreeId, mode, patch, fetchPatch]);
+  }, [changeSignal, open, worktreeId, mode, commitSha, patch, fetchPatch]);
 
   const openChanges = useCallback((next: CodePanelMode, path?: string) => {
     // opening Changes leaves any File view the panel was showing
     previewRequest.current += 1;
     setFilePreview(undefined);
     setModeState(next);
+    setCommit(undefined);
     setSelectedPath(path);
     setOpen(true);
     // A flyout deep link reflects the live dashboard status, so always refetch — an already-open
     // panel holds a one-time snapshot that may predate the file being opened, which would otherwise
     // read as "not part of the current changes".
+    setRefreshToken(token => token + 1);
+    saveCodeOpen(worktreeId, true);
+  }, [worktreeId]);
+
+  const openCommit = useCallback((next: CodePanelCommit) => {
+    previewRequest.current += 1;
+    setFilePreview(undefined);
+    setCommit(next);
+    setSelectedPath(undefined);
+    setOpen(true);
     setRefreshToken(token => token + 1);
     saveCodeOpen(worktreeId, true);
   }, [worktreeId]);
@@ -289,7 +310,7 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
   }, [filePreview?.source, worktreeId]);
 
   // the panel-header Working / All PR toggle; keep any selected file so the reviewer stays on it
-  const setMode = useCallback((next: CodePanelMode) => setModeState(next), []);
+  const setMode = useCallback((next: CodePanelMode) => { setModeState(next); setCommit(undefined); }, []);
   const selectFile = useCallback((path: string) => setSelectedPath(path), []);
   const clearFile = useCallback(() => setSelectedPath(undefined), []);
 
@@ -299,16 +320,16 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
   const loadFile = useCallback(async (path: string): Promise<ComparisonFileContents | undefined> => {
     if (worktreeId === undefined) return undefined;
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/comparison/file`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: mode, path }) });
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/comparison/file`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(commitSha === undefined ? { kind: mode, path } : { kind: 'commit', commit: commitSha, path }) });
       if (!response.ok) return undefined;
       const payload: unknown = await response.json();
       return isComparisonFileContents(payload) ? payload : undefined;
     } catch { return undefined; }
-  }, [worktreeId, mode, request]);
+  }, [worktreeId, mode, commitSha, request]);
 
   // The Comparison needs a Worktree to scope its endpoints, but a File preview rides the agent-keyed
   // file-preview endpoint, so it can show even for an agent with no Worktree — keep the panel visible
   // whenever a File is open, or when Changes are open on a real Worktree.
   const panelVisible = filePreview !== undefined || (open && worktreeId !== undefined);
-  return { open: panelVisible, mode, state, patch, selectedPath, filePreview, openChanges, openFilePreview, closeFilePreview, setMode, selectFile, clearFile, refresh, loadFile, close };
+  return { open: panelVisible, mode, commit, state, patch, selectedPath, filePreview, openChanges, openCommit, openFilePreview, closeFilePreview, setMode, selectFile, clearFile, refresh, loadFile, close };
 };

@@ -66,7 +66,7 @@ import { ReviewTourStore } from './review-tour/store.js';
 import { INTERACTIVE_REVIEW_GENERATION_TIMEOUT_MS, parseReviewRequestId, parseReviewTourInput, REVIEW_GENERATION_TIMEOUT_MS, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type ReviewErrorCode, type ReviewTourInput, type StoredReviewTourSummary } from './review-tour/contracts.js';
 import { configuredWorktreeForWorkspace, projectIdOf, worktreeById, worktreeHostRoot, worktreeMatchesWorkspace, worktreePathOf, worktreePrBase, worktreeWireId } from './workspaces/resolver.js';
 import { previewFileBytes, WorkspaceFileService } from './workspace-files/service.js';
-import { ComparisonService } from './git/comparison-service.js';
+import { ComparisonService, type ComparisonScope } from './git/comparison-service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest, type InstanceStatus } from './instance-status.js';
 import { createHmac, randomBytes } from 'node:crypto';
@@ -114,7 +114,11 @@ const editorCommand = (editor: string, file?: string, line?: number): string => 
   return line === undefined ? `${editor} ${path}` : `${editor} +${line} ${path}`;
 };
 // the requested Comparison kind, or undefined when the body names neither Working nor All PR
-const comparisonKind = (request: FastifyRequest): 'working' | 'pr' | undefined => { const kind = body(request).kind; return kind === 'working' || kind === 'pr' ? kind : undefined; };
+const comparisonScope = (request: FastifyRequest): ComparisonScope | undefined => {
+  const { kind, commit } = body(request);
+  if (kind === 'working' || kind === 'pr') return kind;
+  return kind === 'commit' && typeof commit === 'string' ? { commit } : undefined;
+};
 // one Named conversation on the wire: the Adapter's summary tagged with its kind, plus the
 // server-resolved Worktree, console-named flag and whether it is the current Conversation
 type ConversationRow = ConversationSummary & { kind: AgentKind; worktreeId?: string; consoleNamed: boolean; current: boolean };
@@ -1423,18 +1427,18 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const preview = await workspaceFiles.preview(place.home, path);
     return preview === undefined ? reply.code(404).send({ error: 'file unavailable' }) : preview;
   });
-  // the git patch for a Comparison of one configured worktree: the Changes with their per-file
-  // patch text, a content-sensitive fingerprint (for staleness), and per-file size-cap markers
+  // the git patch for a Comparison of one configured worktree (Working, All PR, or one commit): the
+  // Changes with their per-file patch text, a content-sensitive fingerprint (for staleness), and per-file size-cap markers
   app.post('/api/worktrees/:id/comparison', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request, true);
     const { id } = request.params as { id: string };
-    const kind = comparisonKind(request);
-    // require one of the two Comparison kinds
-    if (kind === undefined) return reply.code(400).send({ error: 'invalid comparison' });
+    const scope = comparisonScope(request);
+    // require Working, All PR, or a named commit
+    if (scope === undefined) return reply.code(400).send({ error: 'invalid comparison' });
     const worktree = configuredWorktree(id);
     // require a configured workspace
     if (worktree === undefined) return await nonWorktreeReply(id, reply);
-    const result = await comparison.patch(worktree, kind);
+    const result = await comparison.patch(worktree, scope);
     // an unresolvable base, conflicted tree, or unavailable worktree has no Comparison to show
     return result.ok ? { kind: result.kind, ...result.patch } : reply.code(404).send({ error: 'comparison unavailable' });
   });
@@ -1455,16 +1459,16 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.post('/api/worktrees/:id/comparison/file', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request, true);
     const { id } = request.params as { id: string };
-    const kind = comparisonKind(request);
+    const scope = comparisonScope(request);
     const path = body(request).path;
-    // require one of the two Comparison kinds
-    if (kind === undefined) return reply.code(400).send({ error: 'invalid comparison' });
+    // require Working, All PR, or a named commit
+    if (scope === undefined) return reply.code(400).send({ error: 'invalid comparison' });
     // require one bounded relative path
     if (typeof path !== 'string' || !path || path.length > 512 || path.includes('\0')) return reply.code(400).send({ error: 'invalid file path' });
     const worktree = configuredWorktree(id);
     // require a configured workspace
     if (worktree === undefined) return await nonWorktreeReply(id, reply);
-    const result = await comparison.file(worktree, kind, path);
+    const result = await comparison.file(worktree, scope, path);
     // a path outside the Comparison, or a Comparison that will not resolve, is unavailable
     if (!result.ok) return reply.code(404).send({ error: result.reason === 'not_in_comparison' ? 'file unavailable' : 'comparison unavailable' });
     return { path: result.path, base: result.base ?? null, working: result.working ?? null };

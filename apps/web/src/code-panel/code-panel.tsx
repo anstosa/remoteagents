@@ -14,7 +14,7 @@ import { openSelectionContextMenu, preserveContextMenuPress, useSelectionActions
 import { useColorTheme } from '../color-theme.js';
 import { PanelHeader, PanelIcon, panelIcons, usePanelExpand } from '../panel-header.js';
 import { useTerminalFontSize } from '../terminal-font-size.js';
-import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch, type FilePreviewView } from './comparison.js';
+import { groupComparisonFiles, type CodePanelCommit, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch, type FilePreviewView } from './comparison.js';
 import { DiffLayoutSegment, SPLIT_MIN_WIDTH, useObservedWidth } from './diff-layout.js';
 import { diffJumpLine, EditorJumpButton, isPlaceRelativePath, type EditorTarget } from './editor-jump.js';
 import { codeViewBaseOptions, codeViewStyle, diffItemForContents, diffItemForFile, fileItemForContents, fileVersion, loadedFilesFromContents } from './items.js';
@@ -39,6 +39,8 @@ type ViewMode = 'hunks' | 'full' | 'plain';
 export type CodePanelProps = {
   // the Comparison the panel shows: Working tree vs HEAD, or the whole PR
   mode: CodePanelMode;
+  // one commit shown in place of the mode's Comparison
+  commit?: CodePanelCommit;
   state: CodePanelState;
   patch: ComparisonPatch | undefined;
   // the one file the panel is filtered to, or undefined for the all-files scroll
@@ -161,7 +163,7 @@ function codeContextMenu(event: ReactMouseEvent<HTMLElement>, actions: Selection
   });
 }
 
-export default function CodePanel({ mode, state, patch, selectedPath, filePreview, prAvailable, branch, review, loadFile, onSelectFile, onClearFile, onSetMode, onCloseFile, onClose, onRetry, onOpenInEditor }: CodePanelProps) {
+export default function CodePanel({ mode, commit, state, patch, selectedPath, filePreview, prAvailable, branch, review, loadFile, onSelectFile, onClearFile, onSetMode, onCloseFile, onClose, onRetry, onOpenInEditor }: CodePanelProps) {
   const selectionActions = useSelectionActions();
   const theme = useColorTheme();
   const fontSize = useTerminalFontSize();
@@ -197,16 +199,17 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   // once per version even as the memo re-emits the need on every render until it resolves.
   const overrideInflightRef = useRef<Map<string, number>>(new Map());
 
-  // Reset the view-local caches when the Comparison changes. A mode switch (Working ↔ All PR) is a
-  // different Comparison entirely, so everything view-local is dropped. A same-mode content refresh
+  // Reset the view-local caches when the Comparison changes. A mode switch (Working ↔ All PR, or a
+  // commit) is a different Comparison entirely, so everything view-local is dropped. A same-mode content refresh
   // (a live update) is surgical: only entries for files the Comparison no longer has are dropped, plus
   // resolved overrides whose file changed content — a "Load anyway" view or expansion of an unrelated,
   // unchanged file survives an edit elsewhere. The id-based scroll anchor and the version-guarded item
   // cache are kept so unchanged files stay put.
-  const lastModeRef = useRef(mode);
+  const comparisonKey = commit?.sha ?? mode;
+  const lastModeRef = useRef(comparisonKey);
   useEffect(() => {
-    const modeChanged = lastModeRef.current !== mode;
-    lastModeRef.current = mode;
+    const modeChanged = lastModeRef.current !== comparisonKey;
+    lastModeRef.current = comparisonKey;
     if (modeChanged) {
       setLoaded({}); setLoadStatus({}); setPlain(undefined); setFullOverrides({});
       setFileCollapse({});
@@ -225,7 +228,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
     setLoadStatus(current => keepKeys(current, path => present.has(path)));
     setFullOverrides(current => keepKeys(current, path => versions.get(path) === current[path]?.patchVersion));
     setFileCollapse(current => keepKeys(current, path => present.has(path)));
-  }, [mode, patch?.fingerprint]);
+  }, [comparisonKey, patch?.fingerprint]);
   // The current Comparison's fingerprint, tracked in a ref so an in-flight "Load anyway" or override
   // can tell the Comparison changed under it (a stale resolve must not write into the new patch's map).
   const fingerprintRef = useRef(patch?.fingerprint);
@@ -506,31 +509,32 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
     )}
     <nav className="code-pane-crumbs" aria-label="Location">
       {selectedPath === undefined
-        ? <span className="code-pane-crumb-current code-pane-title">{mode === 'working' ? 'Working changes' : 'All PR changes'}</span>
+        ? <span className="code-pane-crumb-current code-pane-title" title={commit?.subject}>{commit !== undefined ? commit.subject : mode === 'working' ? 'Working changes' : 'All PR changes'}</span>
         : <>
             <button type="button" className="code-pane-crumb-back" onClick={backToAll}>‹ All files</button>
             <span className="code-pane-crumb-sep" aria-hidden="true">/</span>
             <span className="code-pane-crumb-current" title={selectedPath}>{basename(selectedPath)}</span>
           </>}
     </nav>
-    {!compact && state === 'ready' && selectedPath === undefined && <span className="panel-header-sub"><span className="code-pane-count">{fileCount === 1 ? '1 file' : `${fileCount} files`}</span>{branch !== undefined && <span className="code-pane-branch" title={branch}> · {branch}</span>}</span>}
+    {!compact && state === 'ready' && selectedPath === undefined && <span className="panel-header-sub"><span className="code-pane-count">{fileCount === 1 ? '1 file' : `${fileCount} files`}</span>{commit !== undefined ? <span className="code-pane-branch" title={commit.sha}> · {commit.sha.slice(0, 7)}</span> : branch !== undefined && <span className="code-pane-branch" title={branch}> · {branch}</span>}</span>}
   </>;
   // The Working / All PR toggle stays available whenever the Comparison has settled — including when
   // it resolved empty — so switching to an empty Comparison never strands the reviewer.
   const actions = <>
     {state !== 'loading' && (
       <span className="code-pane-segment" role="group" aria-label="Comparison">
-        <button type="button" aria-pressed={mode === 'working'} onClick={() => onSetMode('working')}>Working</button>
-        <button type="button" aria-pressed={mode === 'pr'} disabled={!prAvailable} title={prAvailable ? 'Compare the whole PR' : 'Merge target unavailable'} onClick={() => onSetMode('pr')}>All PR</button>
+        <button type="button" aria-pressed={commit === undefined && mode === 'working'} onClick={() => onSetMode('working')}>Working</button>
+        <button type="button" aria-pressed={commit === undefined && mode === 'pr'} disabled={!prAvailable} title={prAvailable ? 'Compare the whole PR' : 'Merge target unavailable'} onClick={() => onSetMode('pr')}>All PR</button>
       </span>
     )}
-    {review !== undefined && <button type="button" className="code-pane-review" aria-busy={review.generating || undefined} disabled={review.onReview === undefined || (!review.open && (review.unavailable !== undefined || !hasDiffs))} title={review.unavailable ?? (review.generating ? 'Generating the guided review — open it to watch progress or cancel' : review.open ? 'Open the guided review' : 'Start a guided review of these changes')} onClick={() => review.onReview?.(mode)}>{review.generating ? <><span className="spinner" aria-hidden="true" />Generating…</> : review.open ? 'Open Review' : 'Review'}</button>}
+    {/* a guided review covers Working or All PR, never a single commit */}
+    {review !== undefined && commit === undefined && <button type="button" className="code-pane-review" aria-busy={review.generating || undefined} disabled={review.onReview === undefined || (!review.open && (review.unavailable !== undefined || !hasDiffs))} title={review.unavailable ?? (review.generating ? 'Generating the guided review — open it to watch progress or cancel' : review.open ? 'Open the guided review' : 'Start a guided review of these changes')} onClick={() => review.onReview?.(mode)}>{review.generating ? <><span className="spinner" aria-hidden="true" />Generating…</> : review.open ? 'Open Review' : 'Review'}</button>}
   </>;
 
   return (
     <section onAuxClickCapture={event => closeOnMiddleClick(event, onClose)} className={`code-pane${expanded ? ' expanded' : ''}`} data-wrap-lines={wrapLines ? 'true' : undefined} style={style} role="region" aria-label="Code changes" ref={panelRef} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={event => codeContextMenu(event, selectionActions, [
-      { id: 'working', label: 'Working changes', checked: mode === 'working', onSelect: () => onSetMode('working') },
-      ...(prAvailable ? [{ id: 'pr', label: 'All PR changes', checked: mode === 'pr', onSelect: () => onSetMode('pr') }] : [])
+      { id: 'working', label: 'Working changes', checked: commit === undefined && mode === 'working', onSelect: () => onSetMode('working') },
+      ...(prAvailable ? [{ id: 'pr', label: 'All PR changes', checked: commit === undefined && mode === 'pr', onSelect: () => onSetMode('pr') }] : [])
     ])}>
       <PanelHeader panelKey="code" label="code panel" title={title} actions={actions} menuContent={viewMenu} close={{ key: 'close', label: 'Close code changes', title: 'Close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} />
       <div className="code-pane-main">

@@ -159,6 +159,46 @@ describe('ComparisonService patch', () => {
   });
 });
 
+describe('ComparisonService commit scope', () => {
+  it('shows only one commit\'s Changes, not later commits or working edits to the same files', async () => {
+    const root = await featureRepo();
+    const feature = (await git(root, 'rev-parse', 'HEAD')).trim();
+    await git(root, 'add', '.');
+    await git(root, 'commit', '-m', 'second');
+    await writeFile(join(root, 'src', 'a.ts'), 'v1\nv2\nv3\nv4\n');
+    const service = new ComparisonService(noBase);
+    const result = await service.patch(worktree(root), { commit: feature });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.kind).toBe('commit');
+    expect(result.patch.gitBase).toBe((await git(root, 'rev-parse', 'main')).trim());
+    expect(result.patch.files.map(file => [file.change.code, file.change.path]).sort()).toEqual([['A ', 'added.ts'], ['D ', 'gone.ts'], ['M ', 'src/a.ts'], ['R ', 'renamed.ts']]);
+    const patch = result.patch.files.find(file => file.change.path === 'src/a.ts')?.patch ?? '';
+    expect(patch).toContain('+v2');
+    expect(patch).not.toContain('v3');
+    // the new side reads the commit, not the working tree
+    const file = await service.file(worktree(root), { commit: feature }, 'src/a.ts');
+    expect(file).toMatchObject({ ok: true, base: { content: 'v1\n' }, working: { content: 'v1\nv2\n' } });
+  });
+
+  it('compares a root commit with the empty tree', async () => {
+    const root = await featureRepo();
+    const first = (await git(root, 'rev-parse', 'main')).trim();
+    const result = await new ComparisonService(noBase).patch(worktree(root), { commit: first });
+    expect(result.ok && result.patch.files.map(file => file.change.path).sort()).toEqual(['gone.ts', 'old.ts', 'src/a.ts']);
+  });
+
+  it('refuses a commit HEAD does not contain, or anything but an object id', async () => {
+    const root = await featureRepo();
+    // a commit on main's tree that the feature branch never merged
+    const side = (await git(root, 'commit-tree', 'main^{tree}', '-p', 'main', '-m', 'side')).trim();
+    const service = new ComparisonService(noBase);
+    for (const commit of [side, 'HEAD', '--output=/tmp/x', side.slice(0, 7)]) {
+      expect(await service.patch(worktree(root), { commit })).toEqual({ ok: false, reason: 'unavailable' });
+    }
+  });
+});
+
 describe('ComparisonService commits', () => {
   it('lists the All PR commits newest first with their own Changes, merges, and pushed state', async () => {
     const root = await featureRepo();

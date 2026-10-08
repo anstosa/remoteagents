@@ -318,8 +318,9 @@ export async function resolveHead(workspace: string): Promise<{ base: string; gi
 // ---- Comparison resolution ------------------------------------------------------------------
 
 export type ComparisonKind = 'working' | 'pr';
-// a resolved Comparison: its base label, the diffable base ref, the working-tree status, and its Changes
-export type Comparison = { kind: ComparisonKind; base: string; gitBase: string; status: GitStatusSummary; changes: GitStatusChange[] };
+// a resolved Comparison: its base label, the diffable base ref, the working-tree status, and its
+// Changes. A single-commit Comparison ends at `head` rather than the working tree, and has no status.
+export type Comparison = { kind: ComparisonKind | 'commit'; base: string; gitBase: string; head?: string; status?: GitStatusSummary; changes: GitStatusChange[] };
 export type ComparisonFailure = 'unavailable' | 'conflicted' | 'no_base';
 export type ComparisonResult = { ok: true; comparison: Comparison } | { ok: false; reason: ComparisonFailure };
 
@@ -340,6 +341,27 @@ export async function resolveComparison(workspace: string, kind: ComparisonKind,
   const resolved = await comparisonAgainst(workspace, candidates, untracked);
   if (resolved === undefined) return { ok: false, reason: 'no_base' };
   return { ok: true, comparison: { kind, base: resolved.comparison.base, gitBase: resolved.gitBase, status, changes: resolved.comparison.changes ?? [] } };
+}
+
+// resolve one commit of HEAD's history against its first parent (a root commit compares the empty
+// tree), so later commits and working-tree edits to the same files stay out. Only a full object id
+// HEAD contains is accepted: the caller names the revision, so it must never reach git as an option.
+export async function resolveCommitComparison(workspace: string, commit: string): Promise<ComparisonResult> {
+  if (!objectId.test(commit)) return { ok: false, reason: 'unavailable' };
+  const [contained, parents] = await Promise.all([
+    run(git, ['-C', workspace, 'merge-base', '--is-ancestor', commit, 'HEAD']),
+    run(git, ['-C', workspace, 'rev-list', '--parents', '--max-count=1', commit, '--'])
+  ]);
+  if (contained.code !== 0 || parents.code !== 0) return { ok: false, reason: 'unavailable' };
+  const parent = parents.stdout.trim().split(' ')[1];
+  const gitBase = parent ?? emptyTree;
+  const [names, lines] = await Promise.all([
+    run(git, ['--no-optional-locks', '-C', workspace, 'diff', '--name-status', '-z', '--find-renames', gitBase, commit, '--']),
+    run(git, ['--no-optional-locks', '-C', workspace, 'diff', '--numstat', '-z', '--find-renames', gitBase, commit, '--'])
+  ]);
+  if (names.code !== 0 || lines.code !== 0) return { ok: false, reason: 'unavailable' };
+  const base = parent === undefined ? 'empty tree' : `${commit.slice(0, 7)}^`;
+  return { ok: true, comparison: { kind: 'commit', base, gitBase, head: commit, changes: gitComparisonSummary(base, names.stdout, lines.stdout).changes ?? [] } };
 }
 
 // ---- Per-file patch capture -----------------------------------------------------------------
@@ -387,15 +409,16 @@ export async function synthesizeUntrackedPatch(workspace: string, change: GitSta
   return { patch: `--- /dev/null\n+++ b/${change.path}\n@@ -0,0 +1,${additions} @@\n${body}${body === '' ? '' : '\n'}`, kind: 'untracked' };
 }
 
-// capture the unified patch for one tracked Change against `base`; `ok: false` means git failed
-export async function capturePatch(workspace: string, base: string, change: GitStatusChange): Promise<{ ok: true; patch: string } | { ok: false }> {
+// capture the unified patch for one tracked Change from `base` to `head` (default: the working
+// tree); `ok: false` means git failed
+export async function capturePatch(workspace: string, base: string, change: GitStatusChange, head?: string): Promise<{ ok: true; patch: string } | { ok: false }> {
   const paths = [change.originalPath, change.path].filter((path): path is string => path !== undefined);
   // Force the standard a/ b/ path prefixes so the patch parses regardless of the user's git config:
   // diff.mnemonicPrefix (c/ w/ i/ …), diff.noprefix, and custom diff.srcPrefix/dstPrefix would
   // otherwise flow into the header, and @pierre/diffs' parser rejects a non-a/b header ("invalid git
   // diff header") — leaving the diff nameless, which breaks file-at-revision loads (full context,
   // Load anyway) and the Review tour. Explicit --src-prefix/--dst-prefix override every prefix config.
-  const result = await run(git, ['--no-optional-locks', '-C', workspace, 'diff', '--binary', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', '--unified=3', '--find-renames', base, '--', ...paths], undefined, 20_000);
+  const result = await run(git, ['--no-optional-locks', '-C', workspace, 'diff', '--binary', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', '--unified=3', '--find-renames', base, ...(head === undefined ? [] : [head]), '--', ...paths], undefined, 20_000);
   // surface git failures to the caller
   if (result.code !== 0) return { ok: false };
   return { ok: true, patch: result.stdout || `${change.code.trim() || 'metadata'} ${change.originalPath === undefined ? change.path : `${change.originalPath} -> ${change.path}`}` };
@@ -429,7 +452,7 @@ export async function captureComparisonPatch(workspace: string, comparison: Comp
       kind = synth.kind;
       patch = synth.patch;
     } else {
-      const captured = await capturePatch(workspace, comparison.gitBase, change);
+      const captured = await capturePatch(workspace, comparison.gitBase, change, comparison.head);
       // an unavailable per-file diff is surfaced as an empty entry rather than failing the whole Comparison
       kind = 'tracked';
       patch = captured.ok ? captured.patch : '';

@@ -19,9 +19,14 @@ const commits = {
   ]
 };
 
-// mount one worktree with an agent, counting commit-log loads (or failing them)
+// a one-file unified diff the Code panel can parse
+const commitPatch = (path: string) => `diff --git a/${path} b/${path}\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1 @@\n+export const log = [];\n`;
+
+// mount one worktree with an agent, counting commit-log loads (or failing them) and recording the
+// Comparisons the Code panel asks for
 async function mount(page: Page, failCommits = false) {
   const loads = { count: 0 };
+  const comparisons: unknown[] = [];
   await page.route('**/api/**', route => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
@@ -34,11 +39,17 @@ async function mount(page: Page, failCommits = false) {
       loads.count += 1;
       return failCommits ? route.fulfill({ status: 404, json: { error: 'commits unavailable' } }) : route.fulfill({ json: commits });
     }
+    if (url.pathname === '/api/worktrees/active/comparison') {
+      const body = route.request().postDataJSON() as { kind: string };
+      comparisons.push(body);
+      const path = body.kind === 'commit' ? 'src/log.ts' : 'src/main.tsx';
+      return route.fulfill({ json: { kind: body.kind, base: 'HEAD', gitBase: 'HEAD', truncated: false, fingerprint: path, files: [{ change: { code: 'A ', path, additions: 1, deletions: 0 }, kind: 'tracked', patch: commitPatch(path), capped: false }] } });
+    }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
   await page.goto('/');
   await page.getByRole('button', { name: /^Git status: feature\/commits/u }).click();
-  return { panel: page.getByRole('region', { name: 'Changed files' }), loads };
+  return { panel: page.getByRole('region', { name: 'Changed files' }), loads, comparisons };
 }
 
 test('groups the All PR files by commit and remembers the choice', async ({ page }) => {
@@ -90,6 +101,39 @@ test('groups the All PR files by commit and remembers the choice', async ({ page
   await expect(page.getByRole('region', { name: 'Changed files' }).getByRole('group', { name: 'Group files by' }).getByRole('button', { name: 'By commit' })).toHaveAttribute('aria-pressed', 'true');
   expect(await page.evaluate(() => localStorage.getItem('rac.git-change-grouping'))).toBe('commit');
   if (process.env.SHOT_COMMITS) await page.screenshot({ path: process.env.SHOT_COMMITS });
+});
+
+test('opens one commit\'s own changes in the Code panel', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.setViewportSize({ width: 1180, height: 900 });
+  await page.addInitScript(() => localStorage.setItem('rac.git-change-grouping', 'commit'));
+  const { panel, comparisons } = await mount(page);
+  const sections = panel.locator('.git-commit-section');
+  await expect(sections).toHaveCount(4);
+  // the uncommitted changes and a merge have no commit diff of their own to open
+  const view = (index: number) => sections.nth(index).getByRole('button', { name: "View this commit's changes" });
+  await expect(view(0)).toHaveCount(0);
+  await expect(view(2)).toHaveCount(0);
+  await expect(view(1)).toBeVisible();
+
+  await view(3).click();
+  await expect(panel).toHaveCount(0);
+  const code = page.getByRole('region', { name: 'Code changes' });
+  await expect(code.locator('.code-pane-title')).toHaveText('Add commit log endpoint');
+  await expect(code.locator('.code-pane-branch')).toHaveText(' · c40bf6c');
+  await expect(code.getByRole('button', { name: 'src/log.ts', exact: false }).first()).toBeVisible();
+  expect(comparisons.at(-1)).toEqual({ kind: 'commit', commit: commits.commits[2]!.sha });
+  // neither Comparison is selected, and a guided review does not cover a single commit
+  const toggle = code.getByRole('group', { name: 'Comparison' });
+  await expect(toggle.getByRole('button', { name: 'Working' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(toggle.getByRole('button', { name: 'All PR' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(code.getByRole('button', { name: /Review/u })).toHaveCount(0);
+  if (process.env.SHOT_COMMIT_VIEW) await page.screenshot({ path: process.env.SHOT_COMMIT_VIEW });
+
+  // picking a Comparison leaves the commit
+  await toggle.getByRole('button', { name: 'Working' }).click();
+  await expect(code.locator('.code-pane-title')).toHaveText('Working changes');
+  expect(comparisons.at(-1)).toEqual({ kind: 'working' });
 });
 
 test('shows a failure in place of the commit sections', async ({ page }) => {

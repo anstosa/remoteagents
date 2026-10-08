@@ -1,7 +1,7 @@
 import type { Worktree } from '../domain/models.js';
 import {
-  addUntrackedLineStats, captureComparisonPatch, commitLog, fileAtRevision, prComparisonCandidates, resolveComparison,
-  type CommitLog, type ComparisonFailure, type ComparisonKind, type ComparisonPatch,
+  addUntrackedLineStats, captureComparisonPatch, commitLog, fileAtRevision, prComparisonCandidates, resolveCommitComparison, resolveComparison,
+  type CommitLog, type Comparison, type ComparisonFailure, type ComparisonKind, type ComparisonPatch,
   type PatchLimits, type RevisionFile
 } from './comparison.js';
 
@@ -14,12 +14,16 @@ export const DEFAULT_COMPARISON_PATCH_LIMITS: PatchLimits = { perFileBytes: 256 
 // when none is known — see workspaces/resolver.worktreePrBase, the single reader of that base
 export type PreferredBaseResolver = (worktreeId: string) => Promise<string | undefined>;
 
+// the Comparison a Code-panel read names: Working, All PR, or one commit of HEAD's history
+export type ComparisonScope = ComparisonKind | { commit: string };
+
 export type ComparisonPatchResult =
-  | { ok: true; kind: ComparisonKind; patch: ComparisonPatch }
+  | { ok: true; kind: Comparison['kind']; patch: ComparisonPatch }
   | { ok: false; reason: ComparisonFailure };
 
 // a changed file's two sides: its contents at the Comparison base (the old side; a rename reads
-// its origin) and at the working tree (the new side). Either side is absent for an add or delete.
+// its origin) and at the working tree or commit it ends at (the new side). Either side is absent
+// for an add or delete.
 export type ComparisonFileResult =
   | { ok: true; path: string; base?: RevisionFile; working?: RevisionFile }
   | { ok: false; reason: ComparisonFailure | 'not_in_comparison' };
@@ -34,8 +38,8 @@ export class ComparisonService {
     private readonly limits: PatchLimits = DEFAULT_COMPARISON_PATCH_LIMITS
   ) {}
 
-  async patch(worktree: Worktree, kind: ComparisonKind): Promise<ComparisonPatchResult> {
-    const result = await this.resolve(worktree, kind);
+  async patch(worktree: Worktree, scope: ComparisonScope): Promise<ComparisonPatchResult> {
+    const result = await this.resolve(worktree, scope);
     // map the module's failure reasons straight through; the route turns them into a 404
     if (!result.ok) return { ok: false, reason: result.reason };
     // Enrich untracked line counts before fingerprinting: workingStatus's numstat lineStats cover
@@ -44,13 +48,14 @@ export class ComparisonService {
     // Pass the resolved `changes` explicitly — for a Working Comparison it is the same array as
     // `status.changes`, but an All PR Comparison copies untracked entries into `changes`, so the
     // fingerprint (which reads `changes`) only moves when those copies are the ones mutated.
-    await addUntrackedLineStats(worktree.identity, { ...result.comparison.status, changes: result.comparison.changes });
+    const { status } = result.comparison;
+    if (status !== undefined) await addUntrackedLineStats(worktree.identity, { ...status, changes: result.comparison.changes });
     const patch = await captureComparisonPatch(worktree.identity, result.comparison, this.limits);
-    return { ok: true, kind, patch };
+    return { ok: true, kind: result.comparison.kind, patch };
   }
 
-  async file(worktree: Worktree, kind: ComparisonKind, path: string): Promise<ComparisonFileResult> {
-    const result = await this.resolve(worktree, kind);
+  async file(worktree: Worktree, scope: ComparisonScope, path: string): Promise<ComparisonFileResult> {
+    const result = await this.resolve(worktree, scope);
     if (!result.ok) return { ok: false, reason: result.reason };
     const comparison = result.comparison;
     // security-F2: pin caller input to the resolved Comparison. Allow-list the requested path to a
@@ -59,10 +64,10 @@ export class ComparisonService {
     // Prefer the exact current-path match so a new file at a rename's vacated origin is not shadowed.
     const change = comparison.changes.find(candidate => candidate.path === path) ?? comparison.changes.find(candidate => candidate.originalPath === path);
     if (change === undefined) return { ok: false, reason: 'not_in_comparison' };
-    // the base side reads the rename origin when present; the working side always reads the current path
+    // the base side reads the rename origin when present; the new side always reads the current path
     const [base, working] = await Promise.all([
       fileAtRevision(worktree.identity, { commit: comparison.gitBase }, change.originalPath ?? change.path),
-      fileAtRevision(worktree.identity, { workingTree: true }, change.path)
+      fileAtRevision(worktree.identity, comparison.head === undefined ? { workingTree: true } : { commit: comparison.head }, change.path)
     ]);
     return { ok: true, path, ...(base === undefined ? {} : { base }), ...(working === undefined ? {} : { working }) };
   }
@@ -73,11 +78,13 @@ export class ComparisonService {
   }
 
   // resolve a Comparison for one worktree; Working folds HEAD vs the working tree, All PR compares
-  // the resolved merge target (falling back to the full base-candidate ladder). lineStats is always
-  // on so an edit inside a size-capped file still moves the fingerprint.
-  private async resolve(worktree: Worktree, kind: ComparisonKind) {
-    if (kind !== 'pr') return resolveComparison(worktree.identity, kind, [], { lineStats: true });
-    return resolveComparison(worktree.identity, kind, await this.prCandidates(worktree), { lineStats: true });
+  // the resolved merge target (falling back to the full base-candidate ladder), and a commit
+  // compares its first parent. lineStats is always on so an edit inside a size-capped file still
+  // moves the fingerprint.
+  private async resolve(worktree: Worktree, scope: ComparisonScope) {
+    if (typeof scope === 'object') return resolveCommitComparison(worktree.identity, scope.commit);
+    if (scope !== 'pr') return resolveComparison(worktree.identity, scope, [], { lineStats: true });
+    return resolveComparison(worktree.identity, scope, await this.prCandidates(worktree), { lineStats: true });
   }
 
   // the resolved base is already a full ref label — pass it straight through (like the Review tour),

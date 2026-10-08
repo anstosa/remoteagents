@@ -2231,7 +2231,9 @@ describe('comparison API', () => {
   const discovery = { worktreesNow: () => [worktree], place: async () => undefined };
   // a comparison service faked to the route seam: Working resolves with a capped file, All PR has no base
   const comparison = {
-    patch: async (_worktree: unknown, kind: 'working' | 'pr') => kind === 'working'
+    patch: async (_worktree: unknown, kind: 'working' | 'pr' | { commit: string }) => typeof kind === 'object'
+      ? { ok: true, kind: 'commit', patch: { base: `${kind.commit.slice(0, 7)}^`, gitBase: 'parent', truncated: false, fingerprint: 'fp-commit', files: [] } }
+      : kind === 'working'
       ? { ok: true, kind, patch: { base: 'HEAD', gitBase: 'abc123', truncated: false, fingerprint: 'fp-passed-through', files: [
           { change: { code: ' M', path: 'src/a.ts' }, kind: 'tracked', patch: '@@ -1 +1 @@\n', capped: false },
           { change: { code: ' M', path: 'big.bin' }, kind: 'tracked', patch: '', capped: true }
@@ -2272,10 +2274,14 @@ describe('comparison API', () => {
     const { app, headers } = await comparisonApp();
     try {
       const invalidKind = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison', headers, payload: { kind: 'staged' } });
+      const unnamedCommit = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison', headers, payload: { kind: 'commit' } });
+      const commit = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison', headers, payload: { kind: 'commit', commit: 'b'.repeat(40) } });
       const missingWorktree = await app.inject({ method: 'POST', url: '/api/worktrees/missing/comparison', headers, payload: { kind: 'working' } });
       const noBase = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison', headers, payload: { kind: 'pr' } });
       const unauthenticated = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison', headers: { host: 'agents.example.com', origin: 'https://agents.example.com' }, payload: { kind: 'working' } });
       expect(invalidKind.statusCode).toBe(400);
+      expect(unnamedCommit.statusCode).toBe(400);
+      expect(commit.json()).toMatchObject({ kind: 'commit', base: 'bbbbbbb^', fingerprint: 'fp-commit' });
       expect(missingWorktree.statusCode).toBe(404);
       expect(noBase.statusCode).toBe(404);
       expect(unauthenticated.statusCode).toBe(401);
