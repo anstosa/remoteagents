@@ -101,7 +101,8 @@ function activeComposerFromCapture(value: string): string | undefined {
     }
     // inspect only a live composer
     if (submitted) continue;
-    return draft.join(' ');
+    // retain visual wraps separately from authored spaces
+    return draft.join('\n');
   }
   return undefined;
 }
@@ -120,10 +121,16 @@ export function codexDraftState(capture: string, prompt: string): SubmissionDraf
   const collapsedPaste = `[Pasted Content ${[...prompt].length} chars]`;
   // accept Codex's exact long-paste placeholder
   if (normalizedComposer.includes(collapsedPaste)) return 'visible';
-  // anchor short prompts at the composer start so footer text cannot match
-  if (promptCharacters.length <= 64) return normalizedComposer.startsWith(normalizedPrompt) ? 'visible' : 'cleared';
-  // match only the visible tail when a long composer scrolls its prefix away
-  return normalizedComposer.includes(visibleSuffix) ? 'visible' : 'cleared';
+  const short = promptCharacters.length <= 64;
+  // preserve the ordinary whitespace-normalized match
+  if (short ? normalizedComposer.startsWith(normalizedPrompt) : normalizedComposer.includes(visibleSuffix)) return 'visible';
+  // match literal text across visual wraps without discarding in-row spaces
+  const witness = short ? normalizedPrompt : visibleSuffix;
+  // escape authored punctuation and require authored whitespace
+  const wrappedPattern = [...witness].map(character => character === ' ' ? '\\s+' : character.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('(?: *\n *)?');
+  // keep short drafts anchored and long drafts tied to their exact visible tail
+  const wrappedComposer = composer.replace(/[^\S\n]+/gu, ' ').trim().replace(/^!\s*/u, '!');
+  return new RegExp(`${short ? '^' : ''}${wrappedPattern}`, 'u').test(wrappedComposer) ? 'visible' : 'cleared';
 }
 
 // a request failure or cancellation banner on the active (latest) turn

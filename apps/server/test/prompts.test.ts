@@ -145,6 +145,7 @@ it('submits attachment-only prompts from a non-Git workspace', async () => {
   }
 });
 
+// retain configured worktree staging even when shared scratch storage is configured
 it('maps a discovered host worktree path to its mounted workspace before staging attachments', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'rac-mounted-'));
   await writeFile(join(workspace, '.gitignore'), 'node_modules/\n');
@@ -155,7 +156,7 @@ it('maps a discovered host worktree path to its mounted workspace before staging
   const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent: discoveredAgent, socket }) };
   const tmux = { pastePrompt: async (_s: unknown, _p: string, _b: string, prompt: string) => { pasted.push(prompt); return true; }, sendKeys: async () => true };
   try {
-    const service = new PromptService(discovery as never, tmux as never);
+    const service = new PromptService(discovery as never, tmux as never, undefined, undefined, undefined, undefined, undefined, { workspace: join(workspace, 'unused-shared-checkout'), hostWorkspace: '/host/console-checkout' });
     await expect(service.submit(discoveredAgent.id, 'Read.', [{ name: 'notes.txt', data: Buffer.from('mounted').toString('base64') }])).resolves.toBe(true);
     const path = /@(node_modules\/[^\s]+)/.exec(pasted[0] ?? '')?.[1];
     await expect(readFile(join(workspace, path!), 'utf8')).resolves.toBe('mounted');

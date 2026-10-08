@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -23,6 +23,136 @@ const composerRow = (text: string) => `${composerBackground}${text}${resetBackgr
 // before pressing the submit key, and holds the scope so a quick second submit
 // queues behind the first instead of double-pasting during the settle.
 describe('interactive submit settle', () => {
+  // keep scratch attachments in a shared namespace rather than a container-only home
+  it.each([false, true])('delivers an existing Scratch queue with inaccessible home=%s through shared staging', async inaccessible => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-scratch-attachment-'));
+    const workspace = join(directory, 'checkout');
+    const home = join(directory, 'host-home');
+    await mkdir(workspace);
+    // model a missing host mount without relying on the test user's permissions
+    if (inaccessible) await writeFile(home, 'container mount placeholder');
+    else await mkdir(home);
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const history = new PromptHistoryService(join(directory, 'history.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home, title: 'Ready', displayLabel: '~ Scratch' });
+    const attachment = { name: 'report final.csv', data: Buffer.from('scratch attachment').toString('base64') };
+    const hostWorkspace = '/host/console-checkout';
+    const pasted: string[] = [];
+    const sent: string[][] = [];
+    let submitted = false;
+    // retain the host agent without a configured worktree
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
+    const tmux = {
+      // retain the complete host-visible attachment reference
+      pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, text: string) => { pasted.push(text); return true; },
+      // expose an exact collapsed draft before acceptance
+      capture: async () => submitted || pasted.length === 0 ? '› ' : `› [Pasted Content ${[...pasted[0]!].length} chars]`,
+      // mark the prompt as actually submitted
+      sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
+    };
+    const service = new PromptService(discovery as never, tmux as never, history, queue, undefined, undefined, undefined, { workspace, hostWorkspace });
+    try {
+      await queue.enqueue(`agent:${agent.id}`, '', [attachment]);
+      await service.observe(agent);
+      expect(sent).toEqual([['Enter']]);
+      expect(pasted[0]).toMatch(/^Attached files:\n@\/host\/console-checkout\/node_modules\/\.remote-agent-console\/attachments\/[^/]+\/report final\.csv /u);
+      const relativePath = pasted[0]!.slice(`Attached files:\n@${hostWorkspace}/`.length).trimEnd();
+      await expect(readFile(join(workspace, relativePath), 'utf8')).resolves.toBe('scratch attachment');
+      await expect(access(join(home, 'node_modules'))).rejects.toThrow();
+      await expect(service.listQueued(agent.id)).resolves.toEqual([]);
+      await expect(history.list(`agent:${agent.id}`)).resolves.toMatchObject([{ text: pasted[0]!.trimEnd() }]);
+    } finally {
+      // remove the isolated queue and shared staging fixture
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // clean the writer namespace when delivery rejects an absolute host reference
+  it('removes shared Scratch staging after a failed paste while retaining the queue', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-scratch-attachment-failure-'));
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/host/unmounted-home', title: 'Ready' });
+    // expose an idle unmounted host folder
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
+    // reject delivery after the files were staged
+    const tmux = { pastePrompt: async () => false };
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue, undefined, undefined, undefined, { workspace: directory, hostWorkspace: '/host/console-checkout' });
+    try {
+      await service.submit(agent.id, '', [{ name: 'image.png', data: Buffer.from('image bytes').toString('base64') }]);
+      await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ attachments: [{ name: 'image.png' }] }]);
+      await expect(readdir(join(directory, 'node_modules/.remote-agent-console/attachments'))).resolves.toEqual([]);
+    } finally {
+      // remove the isolated failure fixture
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // leave queued attachments durable until their host-visible root is known
+  it.each([undefined, 'relative/checkout'])('does not paste Scratch attachments with unresolved host mapping=%s', async hostWorkspace => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-scratch-attachment-unmapped-'));
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: directory, title: 'Ready' });
+    let pasted = false;
+    // retain one idle Scratch agent
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
+    // record accidental delivery into an unmapped namespace
+    const tmux = { pastePrompt: async () => { pasted = true; return true; }, sendKeys: async () => true };
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue, undefined, undefined, undefined, { workspace: directory, hostWorkspace });
+    try {
+      await expect(service.submit(agent.id, '', [{ name: 'image.png', data: Buffer.from('image bytes').toString('base64') }])).resolves.toBe(true);
+      expect(pasted).toBe(false);
+      await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ attachments: [{ name: 'image.png' }] }]);
+      await expect(access(join(directory, 'node_modules'))).rejects.toThrow();
+      // text-only prompts must still work when no attachment mapping is available
+      const textAgent = { ...agent, id: 'socket:%2', paneId: '%2' };
+      const textDiscovery = { worktreesNow: () => [], target: async () => ({ agent: textAgent, socket }) };
+      const textService = new PromptService(textDiscovery as never, tmux as never, undefined, queue, undefined, undefined, undefined, { workspace: directory, hostWorkspace });
+      await expect(textService.submit(textAgent.id, 'text-only prompt')).resolves.toBe(true);
+      expect(pasted).toBe(true);
+    } finally {
+      // remove the isolated unmapped queue
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // deliver attached prompts when the staged path wraps inside the composer
+  it.each(['codex', 'omx'] as const)('submits an idle %s attachment prompt with a wrapped staged reference', async kind => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-submit-wrapped-attachment-'));
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const history = new PromptHistoryService(join(directory, 'history.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', kind, home: directory, title: 'Ready' });
+    const attachment = { name: 'notes.txt', data: Buffer.from('attachment body').toString('base64') };
+    const pasted: string[] = [];
+    const sent: string[][] = [];
+    let submitted = false;
+    // retain one idle pane throughout delivery
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
+    const tmux = {
+      // retain the complete staged prompt
+      pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, text: string) => { pasted.push(text); return true; },
+      // reproduce Codex's narrow composer and its acceptance redraw
+      capture: async () => submitted ? '› Ask Codex to do anything' : [
+        '› Review this attachment.', '', '  Attached files:',
+        '  @node_modules/.remote-agent-console/attachments/',
+        `  ${pasted[0]!.split('/attachments/')[1]!.trim()}`, '',
+        '  GPT-6.1-Sol xhigh fast · ~/repo · main'
+      ].join('\n'),
+      // acknowledge only the actual submit key
+      sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
+    };
+    const service = new PromptService(discovery as never, tmux as never, history, queue);
+    try {
+      await expect(service.submit(agent.id, 'Review this attachment.', [attachment])).resolves.toBe(true);
+      expect(pasted).toHaveLength(1);
+      expect(sent).toEqual([['Enter']]);
+      await expect(service.listQueued(agent.id)).resolves.toEqual([]);
+      await expect(history.list(`agent:${agent.id}`)).resolves.toMatchObject([{ text: pasted[0]!.trimEnd() }]);
+    } finally {
+      // remove the staged file and durable stores
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   // trust fresh structured receipts through hidden composers and stale redraws
   it.each([['hidden', false], ['stale', false], ['stale', true]] as const)('records an accepted prompt with a %s composer and delayed receipt=%s instead of recovering it to Notes', async (redraw, delayed) => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-submit-receipt-'));

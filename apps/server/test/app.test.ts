@@ -10,10 +10,11 @@ import { testProject, testWorktree } from './helpers/config.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
 import { resolveReviewConfig } from '../src/review-runs/config.js';
 import type { ReviewRunProgress } from '../src/review-runs/runner.js';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QueuedPromptService } from '../src/prompts/queue.js';
+import { PromptHistoryService } from '../src/prompt-history/service.js';
 import { WorktreeNoteService } from '../src/notes/service.js';
 import { ReviewTourStore } from '../src/review-tour/store.js';
 import type { ReviewTour } from '../src/review-tour/contracts.js';
@@ -1565,6 +1566,51 @@ describe('code review API', () => {
 });
 
 describe('queued prompt API', () => {
+  // pair shared attachment storage with the repository's host namespace
+  it('uses the host repository rather than a different stack workspace for Scratch attachments', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-scratch-attachment-api-'));
+    vi.stubEnv('RAC_SERVER_CHECKOUT', directory);
+    vi.stubEnv('RAC_HOST_TMUX_DIR', '/fixture/host-tmux');
+    vi.stubEnv('RAC_HOST_REPOSITORY', '/host/console-checkout');
+    vi.stubEnv('RAC_HOST_WORKSPACE', '/host/stack-workspace');
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/host/unmounted-home', title: 'Ready' });
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    let pasted = '';
+    let submitted = false;
+    const queuedApp = await buildApp(config, {
+      auth: new AuthService(hash, Buffer.alloc(32, 35).toString('base64url')),
+      // discover a host-side Scratch pane without a mapped worktree
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [] } as never,
+      queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
+      promptHistory: new PromptHistoryService(join(directory, 'history.json')),
+      tmux: {
+        // retain the actual outbound host reference
+        pastePrompt: async (_socket: typeof socket, _pane: string, _buffer: string, prompt: string) => { pasted = prompt; return true; },
+        // acknowledge only the submitted draft
+        capture: async () => submitted ? '› ' : `› [Pasted Content ${[...pasted].length} chars]`,
+        // accept one idle prompt
+        sendKeys: async () => { submitted = true; return true; }
+      } as never
+    });
+    try {
+      const boot = await queuedApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await queuedApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      const response = await queuedApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: '', attachments: [{ name: 'report.csv', data: Buffer.from('report bytes').toString('base64') }] } });
+      expect(response.statusCode).toBe(204);
+      const hostPrefix = 'Attached files:\n@/host/console-checkout/';
+      expect(pasted.startsWith(hostPrefix)).toBe(true);
+      await expect(readFile(join(directory, pasted.slice(hostPrefix.length).trimEnd()), 'utf8')).resolves.toBe('report bytes');
+      const listed = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+      expect(listed.json().prompts).toEqual([]);
+    } finally {
+      // release the app and its isolated shared checkout
+      await queuedApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it('accepts a durable prompt when immediate agent acknowledgement is missing', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-unacknowledged-prompt-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });

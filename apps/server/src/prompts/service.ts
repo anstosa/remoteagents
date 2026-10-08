@@ -5,7 +5,7 @@ import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { failedTurnFromCapture, lastPromptFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from '../adapters/codex-turns.js';
 import { adapterFor } from '../adapters/registry.js';
-import type { Adapter, AgentKind, CompletionBaseline, CompletionEvent, PaneSnapshot, SubmissionDraftState, SubmissionMode, TmuxKey } from '../adapters/types.js';
+import { codexFamily, type Adapter, type AgentKind, type CompletionBaseline, type CompletionEvent, type PaneSnapshot, type SubmissionDraftState, type SubmissionMode, type TmuxKey } from '../adapters/types.js';
 import { isReviewRun, type Agent } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
@@ -58,6 +58,8 @@ type PromptCompletion = 'completed' | 'failed' | 'pending';
 type PromptReconciliation = 'pending' | 'settled' | 'recorded';
 type PromptPhase = { state: 'awaiting-start' | 'working' | 'awaiting-answer' | 'halted'; changedAt: number; historyEntryId?: string; historyPrompt?: string; baselineCompletion?: string; rolloutBaseline?: CompletionBaseline };
 type DiscoveredTarget = NonNullable<Awaited<ReturnType<DiscoveryService['target']>>>;
+// pair the shared staging directory with its agent-visible host namespace
+export type AttachmentStagingWorkspace = { workspace: string; hostWorkspace: string | undefined };
 // keep reset readiness and its first-turn boundary separate from model completion
 type ConversationReset = ResetBoundary & { observed: PaneSnapshot[]; state: 'pending' | 'ready' | 'expired' };
 // share the adapter's reset and readiness snapshot shape
@@ -80,7 +82,8 @@ export class PromptService {
   private readonly mutationVersions = new Map<string, number>();
   private lifecycleMutationVersion = 0;
 
-  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly drainUndelivered?: UndeliveredDrain, private readonly resolveAdapter: (kind: AgentKind) => AdapterView | undefined = adapterFor, private readonly teardownFor: (kind: AgentKind) => string | undefined = () => undefined) {}
+  // bind queue delivery and optional shared host staging
+  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly drainUndelivered?: UndeliveredDrain, private readonly resolveAdapter: (kind: AgentKind) => AdapterView | undefined = adapterFor, private readonly teardownFor: (kind: AgentKind) => string | undefined = () => undefined, private readonly attachmentStaging?: AttachmentStagingWorkspace) {}
 
   // submit or durably queue one prompt. `resetAt` marks the prompt as the first
   // turn of a conversation just reset with the Adapter's new-conversation command
@@ -430,10 +433,17 @@ export class PromptService {
     // reset commands have no model answer, even when startup briefly looks busy
     const instant = reset || (adapter.submission.completesWithoutWork?.(prompt) ?? false);
     const scope = this.historyScope(first.agent, agentId);
-    const workspace = this.workspaceFor(first.agent.home);
+    // codex can read shared files outside an unmounted scratch home
+    const sharedStaging = attachments.length > 0 && codexFamily(first.agent.kind) && configuredWorktreeForWorkspace(this.discovery.worktreesNow(), first.agent.home) === undefined ? this.attachmentStaging : undefined;
+    const hostWorkspace = sharedStaging?.hostWorkspace;
+    // never paste a container-only path when the host mapping is unavailable
+    if (sharedStaging !== undefined && (hostWorkspace === undefined || !isAbsolute(hostWorkspace))) return false;
+    const workspace = sharedStaging?.workspace ?? this.workspaceFor(first.agent.home);
     const staged = await this.stageAttachments(workspace, attachments);
     if (staged === undefined) return false;
-    const attachmentPrompt = staged.length === 0 ? prompt : `${prompt}${prompt ? '\n\n' : ''}Attached files:\n${staged.map(path => `@${path}`).join('\n')}`;
+    // name shared files in the agent's namespace while retaining local cleanup paths
+    const references = staged.map(path => `@${hostWorkspace === undefined ? path : join(hostWorkspace, path)}`);
+    const attachmentPrompt = staged.length === 0 ? prompt : `${prompt}${prompt ? '\n\n' : ''}Attached files:\n${references.join('\n')}`;
     const shellMode = attachments.length === 0 && prompt.startsWith('!');
     const mode: SubmissionMode = shellMode ? 'shell' : 'prompt';
     const composed = adapter.submission.prepare(attachmentPrompt, mode);

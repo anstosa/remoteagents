@@ -41,6 +41,34 @@ describe('Codex draft observation', () => {
     expect(codexDraftState(capture(animated(composer)), prompt)).toBe('visible');
   });
 
+  // reproduce attachment paths wrapped inside a single token
+  it.each([24, 40, 60])('matches attachment paths wrapped across %s-column composer rows', width => {
+    const path = '@node_modules/.remote-agent-console/attachments/abcdefghijklmnop/notes[final].txt';
+    const prompt = `Review this attachment.\n\nAttached files:\n${path} `;
+    // preserve row boundaries from the narrow terminal
+    const rows = Array.from({ length: Math.ceil(path.length / width) }, (_value, index) => `  ${path.slice(index * width, (index + 1) * width)}`);
+    const composer = ['› Review this attachment.', '', '  Attached files:', ...rows].join('\n');
+    expect(codexDraftState(capture(composer), prompt)).toBe('visible');
+    expect(codexDraftState(capture(composer), prompt.replace('final', 'other'))).toBe('cleared');
+    expect(codexDraftState(capture(composer), prompt.replace('notes', 'no tes'))).toBe('cleared');
+  });
+
+  // preserve filename spaces and Unicode through multiple visual wraps
+  it('matches wrapped attachment filenames containing spaces and emoji', () => {
+    const path = '@node_modules/.remote-agent-console/attachments/abcdefghijklmnop/weather 🌤 notes.txt';
+    const composer = ['› Read this.', '', '  Attached files:', '  @node_modules/.remote-agent-console/attach', '  ments/abcdefghijklmnop/weather', '  🌤 notes.txt'].join('\n');
+    expect(codexDraftState(capture(composer), `Read this.\n\nAttached files:\n${path} `)).toBe('visible');
+    expect(codexDraftState(capture(composer), `Read this.\n\nAttached files:\n${path.replace('notes', 'other')} `)).toBe('cleared');
+  });
+
+  // distinguish terminal wrapping from authored spaces within tokens
+  it('matches wrapped short tokens without accepting different text', () => {
+    expect(codexDraftState(capture('› abc\n  def'), 'abcdef ')).toBe('visible');
+    expect(codexDraftState(capture('› abc def'), 'abcdef ')).toBe('cleared');
+    expect(codexDraftState(capture('› abc\n  deg'), 'abcdef ')).toBe('cleared');
+    expect(codexDraftState(capture('› abcdef'), 'abc def ')).toBe('cleared');
+  });
+
   // recognize the same animated blanks in collapsed paste labels and shell mode
   it('matches collapsed drafts and shell commands', () => {
     expect(codexDraftState(capture(animated('›⠁[Pasted⠂Content⠄80⠈chars]')), 'x'.repeat(80))).toBe('visible');
