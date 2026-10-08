@@ -1,8 +1,9 @@
-import { open, readFile, readdir, readlink, realpath } from 'node:fs/promises';
+import { readFile, readdir, readlink, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readFileTail } from './bounded-file.js';
+import { readFileHead, readFileTail } from './bounded-file.js';
 import { queueReadyPrompt } from './codex-turns.js';
+import { FileChangeCache } from './file-change-cache.js';
 import type { CompletionBaseline, CompletionEvent, Conversation, ConversationSummary } from './types.js';
 
 /**
@@ -48,6 +49,8 @@ const maxListTailBytes = 256 * 1024;
 
 type RolloutRef = { id: string; relativePath: string };
 type RolloutMetadata = { id: string; cwd: string; parentThreadId?: string; createdAt?: number };
+type SidecarName = { id: string; name: string };
+type SessionIndex = { byId: Record<string, string>; named: Record<string, string> };
 
 function procRoot(): string {
   return process.env.RAC_HOST_PROC ?? '/proc';
@@ -104,13 +107,10 @@ export async function openRollouts(root: number): Promise<RolloutRef[]> {
   return [...rollouts.values()];
 }
 
-// read bounded metadata from one Codex rollout
-async function rolloutMetadata(file: string): Promise<RolloutMetadata | undefined> {
-  const handle = await open(file, 'r');
+// parse bounded metadata from one Codex rollout
+function parseRolloutMetadata(lines: readonly string[]): RolloutMetadata | undefined {
   try {
-    const buffer = Buffer.alloc(maxMetadataBytes);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    const firstLine = buffer.subarray(0, bytesRead).toString('utf8').split('\n', 1)[0];
+    const [firstLine] = lines;
     // reject missing records
     if (!firstLine) return undefined;
     const record = JSON.parse(firstLine) as { type?: unknown; payload?: unknown };
@@ -124,10 +124,14 @@ async function rolloutMetadata(file: string): Promise<RolloutMetadata | undefine
     return { id: payload.id, cwd: payload.cwd, ...(typeof payload.parent_thread_id === 'string' ? { parentThreadId: payload.parent_thread_id } : {}), ...(Number.isFinite(createdAt) ? { createdAt } : {}) };
   } catch {
     return undefined;
-  } finally {
-    await handle.close();
   }
 }
+
+// cover one full cwd scan without evicting its earliest metadata entries
+const rolloutMetadataCache = new FileChangeCache<RolloutMetadata | undefined>(
+  async file => parseRolloutMetadata(await readFileHead(file, maxMetadataBytes)),
+  { maxEntries: 1_024 }
+);
 
 // normalize a user message into a compact title, ignoring injected session context
 function messageTitle(text: string): string | undefined {
@@ -150,10 +154,11 @@ function userMessage(payload: unknown): string | undefined {
   return messageTitle(text);
 }
 
-// find the latest useful user message in one rollout's bounded tail
-async function rolloutTitle(file: string): Promise<string | undefined> {
+// parse the latest useful user message in one rollout's bounded tail
+function rolloutTitleFromRecords(lines: Iterable<string>): string | undefined {
   let title: string | undefined;
-  for (const line of await readFileTail(file, maxTitleScanBytes)) {
+  // inspect every record in tail order
+  for (const line of lines) {
     try {
       const record = JSON.parse(line) as { type?: unknown; payload?: unknown };
       // retain the newest visible user request
@@ -165,6 +170,12 @@ async function rolloutTitle(file: string): Promise<string | undefined> {
   return title;
 }
 
+// retain compact titles for a full bounded rollout scan
+const rolloutTitleCache = new FileChangeCache<string | undefined>(
+  async file => rolloutTitleFromRecords(await readFileTail(file, maxTitleScanBytes)),
+  { maxEntries: 1_024 }
+);
+
 // locate the pane's one top-level rollout, failing closed on ambiguity
 async function selectTopLevelRollout(refs: RolloutRef[]): Promise<{ id: string; file: string } | undefined> {
   const home = codexHome();
@@ -174,7 +185,7 @@ async function selectTopLevelRollout(refs: RolloutRef[]): Promise<{ id: string; 
     // reject malformed rollout paths before opening them
     if (!validRolloutRef(ref)) continue;
     const file = join(home, ref.relativePath);
-    const metadata = await rolloutMetadata(file).catch(() => undefined);
+    const metadata = await rolloutMetadataCache.get(file).catch(() => undefined);
     // retain top-level conversations only
     if (metadata !== undefined && metadata.parentThreadId === undefined && metadata.id === ref.id) matches.push({ id: metadata.id, file });
   }
@@ -197,7 +208,7 @@ export async function discoverCodexConversation(pane: { pid: number; cwd?: strin
   const selected = await paneRollout(pane);
   // require one exact pane-to-conversation mapping
   if (selected === undefined) return undefined;
-  const title = await rolloutTitle(selected.file).catch(() => undefined);
+  const title = await rolloutTitleCache.get(selected.file).catch(() => undefined);
   return { id: selected.id, ...(title === undefined ? {} : { title }) };
 }
 
@@ -248,7 +259,7 @@ async function* walkRollouts(home: string): AsyncGenerator<{ file: string; metad
       if (inspected >= maxCwdRolloutScans) break;
       inspected += 1;
       const file = join(directory, name);
-      yield { file, metadata: await rolloutMetadata(file).catch(() => undefined) };
+      yield { file, metadata: await rolloutMetadataCache.get(file).catch(() => undefined) };
     }
     // ascending push + LIFO pop visits the highest-numbered (most recent) partition first
     pending.push(...subdirectories);
@@ -319,6 +330,12 @@ export function latestCodexMessageFromRecords(lines: Iterable<string>): string |
   return latest;
 }
 
+// retain parsed latest replies while their rollout bytes remain unchanged
+const latestMessageCache = new FileChangeCache<string | undefined>(
+  async file => latestCodexMessageFromRecords(await readFileTail(file, maxLatestMessageScanBytes)),
+  { maxEntries: 1_024 }
+);
+
 /** read the latest unanswered assistant message from one exact pane rollout */
 export async function codexLatestMessage(pane: { pid: number; cwd?: string; conversationId?: string }): Promise<string | undefined> {
   // reject a malformed reported identity before any filesystem scan
@@ -326,8 +343,7 @@ export async function codexLatestMessage(pane: { pid: number; cwd?: string; conv
   const selected = await paneRollout(pane).catch(() => undefined);
   // fail closed when the pane no longer matches its reported conversation
   if (selected === undefined || (pane.conversationId !== undefined && selected.id !== pane.conversationId)) return undefined;
-  const lines = await readFileTail(selected.file, maxLatestMessageScanBytes).catch(() => undefined);
-  return lines === undefined ? undefined : latestCodexMessageFromRecords(lines);
+  return latestMessageCache.get(selected.file).catch(() => undefined);
 }
 
 // normalize whitespace and clamp a Codex display string to the shared bound, so
@@ -337,6 +353,27 @@ function compactName(text: string): string | undefined {
   if (normalized === '') return undefined;
   return normalized.length <= maxTitleLength ? normalized : `${normalized.slice(0, maxTitleLength - 1).trimEnd()}…`;
 }
+
+// index one account sidecar for constant-time by-id and listing lookups
+function indexSessionNames(lines: Iterable<string>): SessionIndex {
+  const byId: Record<string, string> = {};
+  const named: Record<string, string> = {};
+  // preserve each reader's whitespace handling while folding once
+  for (const record of sidecarNameLines(lines)) {
+    const name = compactName(record.name);
+    // by-id treats a whitespace-only final rename as unnamed
+    if (name === undefined) delete byId[record.id]; else byId[record.id] = name;
+    // listing ignores a later whitespace-only rename and retains the prior valid name
+    if (name !== undefined) named[record.id] = name;
+  }
+  return { byId, named };
+}
+
+// share one derived account index across by-id and listing reads
+const sessionIndexCache = new FileChangeCache<SessionIndex>(
+  async path => indexSessionNames(await readFileTail(path, maxIndexScanBytes)),
+  { maxEntries: 64 }
+);
 
 /**
  * The current Conversation name of an already-known Codex/OMX thread, read from
@@ -349,18 +386,14 @@ function compactName(text: string): string | undefined {
 export async function codexConversationName(id: string): Promise<string | undefined> {
   // reject material before it reaches a comparison
   if (!validCodexThreadId(id)) return undefined;
-  const lines = await readFileTail(join(codexHome(), 'session_index.jsonl'), maxIndexScanBytes).catch(() => undefined);
-  if (lines === undefined) return undefined;
-  let name: string | undefined;
-  // append-only, last write wins: keep the newest name recorded for this id
-  for (const record of sidecarNameLines(lines)) if (record.id === id) name = record.name;
-  return name === undefined ? undefined : compactName(name);
+  const index = await sessionIndexCache.get(join(codexHome(), 'session_index.jsonl')).catch(() => undefined);
+  return index?.byId[id];
 }
 
 // every valid, non-empty `{ id, thread_name }` entry of the session-index sidecar, in file
 // order — the shared parse the by-id read (`codexConversationName`) and the enumerate-all read
 // (`codexConversationNames`) both fold in their own way.
-function* sidecarNameLines(lines: Iterable<string>): Generator<{ id: string; name: string }> {
+function* sidecarNameLines(lines: Iterable<string>): Generator<SidecarName> {
   for (const line of lines) {
     let record: { id?: unknown; thread_name?: unknown };
     // skip unparseable or truncated lines
@@ -378,24 +411,19 @@ function* sidecarNameLines(lines: Iterable<string>): Generator<{ id: string; nam
  * thread whose name predates the `maxIndexScanBytes` tail is likewise treated as unnamed
  * (fails safe to a generic label, never a wrong name).
  */
-async function codexConversationNames(env: NodeJS.ProcessEnv): Promise<Map<string, string>> {
-  const lines = await readFileTail(join(codexHome(env), 'session_index.jsonl'), maxIndexScanBytes).catch(() => undefined);
-  const names = new Map<string, string>();
-  if (lines === undefined) return names;
-  // append-only, last write wins: a later line for the id supersedes its earlier name
-  for (const record of sidecarNameLines(lines)) {
-    const name = compactName(record.name);
-    if (name !== undefined) names.set(record.id, name);
-  }
-  return names;
+async function codexConversationNames(env: NodeJS.ProcessEnv): Promise<Readonly<Record<string, string>>> {
+  const index = await sessionIndexCache.get(join(codexHome(env), 'session_index.jsonl')).catch(() => undefined);
+  // missing or unreadable sidecars list no names
+  return index?.named ?? {};
 }
 
 // the newest record timestamp in a rollout's bounded tail (epoch ms), never the file mtime —
 // Codex appends open/close bookkeeping that would move mtime past the last real activity.
 // Every rollout record carries a top-level ISO `timestamp`; 0 when none is readable.
-async function rolloutLastActiveAt(file: string): Promise<number> {
+function rolloutLastActiveAtFromRecords(lines: Iterable<string>): number {
   let latest = 0;
-  for (const line of await readFileTail(file, maxListTailBytes).catch(() => [])) {
+  // retain the newest valid timestamp in the bounded tail
+  for (const line of lines) {
     let record: { timestamp?: unknown };
     // skip unparseable or truncated lines
     try { record = JSON.parse(line) as typeof record; } catch { continue; }
@@ -404,6 +432,17 @@ async function rolloutLastActiveAt(file: string): Promise<number> {
     if (!Number.isNaN(at) && at > latest) latest = at;
   }
   return latest;
+}
+
+// cover all 512 rollout candidates without scan-order churn
+const rolloutLastActiveAtCache = new FileChangeCache(
+  async file => rolloutLastActiveAtFromRecords(await readFileTail(file, maxListTailBytes)),
+  { maxEntries: 1_024 }
+);
+
+// preserve a zero recency fallback on transient read errors
+async function rolloutLastActiveAt(file: string): Promise<number> {
+  return rolloutLastActiveAtCache.get(file).catch(() => 0);
 }
 
 /**
@@ -437,7 +476,7 @@ export async function codexConversationSummaries(directories: readonly string[],
     const startedIn = directoryByPath.get(metadata.cwd);
     if (startedIn === undefined) continue;
     // list only Named conversations — an unnamed rollout has no sidecar line
-    const conversationName = names.get(metadata.id);
+    const conversationName = names[metadata.id];
     if (conversationName === undefined) continue;
     summaries.push({ id: metadata.id, name: conversationName, lastActiveAt: await rolloutLastActiveAt(file), directory: startedIn });
   }
@@ -596,7 +635,7 @@ export async function codexRolloutBaseline(pane: { pid: number; cwd?: string }, 
   }
   // prefer an already-open fresh rollout over the deferred reset lookup
   if (resetAt !== undefined && selected !== undefined) {
-    const metadata = await rolloutMetadata(selected.file).catch(() => undefined);
+    const metadata = await rolloutMetadataCache.get(selected.file).catch(() => undefined);
     // require a session created no earlier than the submitted reset
     if (metadata?.createdAt !== undefined && metadata.createdAt >= resetAt) {
       const ordinal = await rolloutOrdinal(selected.file);

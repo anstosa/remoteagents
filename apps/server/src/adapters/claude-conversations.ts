@@ -2,6 +2,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { readFileHead, readFileTail } from './bounded-file.js';
+import { FileChangeCache } from './file-change-cache.js';
 import type { ConversationSummary } from './types.js';
 
 /**
@@ -90,19 +91,53 @@ type TranscriptRecord = {
   message?: { content?: unknown };
 };
 
-// the per-session `custom-title.json` sidecar's human name, when present. Claude
-// writes it next to the transcript (`projects/<enc>/<id>/custom-title.json`) on a
-// `/rename` or `--name`, but a `-p --name` run writes only the transcript record,
-// so an absent sidecar is "unnamed", not an error.
-async function sidecarCustomTitle(transcriptPath: string, id: string): Promise<string | undefined> {
-  const lines = await readFileHead(join(dirname(transcriptPath), id, 'custom-title.json'), maxSidecarBytes).catch(() => undefined);
-  if (lines === undefined) return undefined;
+type TranscriptTitle = { customTitle?: string; aiTitle?: string; firstPrompt?: string };
+
+// parse the bounded title window without retaining raw transcript text
+function transcriptTitle(lines: Iterable<string>): TranscriptTitle {
+  let customTitle: string | undefined;
+  let aiTitle: string | undefined;
+  let firstPrompt: string | undefined;
+  // inspect each record in file order
+  for (const line of lines) {
+    // skip empty separators
+    if (line === '') continue;
+    let record: TranscriptRecord;
+    // preserve earlier valid records across malformed lines
+    try { record = JSON.parse(line) as TranscriptRecord; } catch { continue; }
+    // several records of each kind per file; the last in the scanned window wins
+    if (record.type === 'custom-title' && typeof record.customTitle === 'string' && record.customTitle.length > 0) customTitle = record.customTitle;
+    else if (record.type === 'ai-title' && typeof record.aiTitle === 'string' && record.aiTitle.length > 0) aiTitle = record.aiTitle;
+    // retain the first typed human prompt as the fallback
+    else if (firstPrompt === undefined && record.type === 'user' && record.promptSource === 'typed' && record.origin?.kind === 'human' && typeof record.message?.content === 'string' && record.message.content.length > 0) firstPrompt = record.message.content;
+  }
+  return { customTitle, aiTitle, firstPrompt };
+}
+
+// reuse title fields while the transcript fingerprint is unchanged
+const transcriptTitleCache = new FileChangeCache(
+  async path => transcriptTitle(await readFileHead(path, maxTitleScanBytes)),
+  { maxEntries: 512 }
+);
+
+// reuse the small parsed sidecar independently from its transcript
+const sidecarTitleCache = new FileChangeCache<string | undefined>(async path => {
+  const lines = await readFileHead(path, maxSidecarBytes);
+  // malformed sidecars are a stable unnamed result until their bytes change
   try {
     const parsed = JSON.parse(lines.join('\n')) as { customTitle?: unknown };
     return typeof parsed.customTitle === 'string' && parsed.customTitle.length > 0 ? parsed.customTitle : undefined;
   } catch {
     return undefined;
   }
+}, { maxEntries: 512 });
+
+// the per-session `custom-title.json` sidecar's human name, when present. Claude
+// writes it next to the transcript (`projects/<enc>/<id>/custom-title.json`) on a
+// `/rename` or `--name`, but a `-p --name` run writes only the transcript record,
+// so an absent sidecar is "unnamed", not an error.
+async function sidecarCustomTitle(transcriptPath: string, id: string): Promise<string | undefined> {
+  return sidecarTitleCache.get(join(dirname(transcriptPath), id, 'custom-title.json')).catch(() => undefined);
 }
 
 /**
@@ -118,24 +153,12 @@ async function sidecarCustomTitle(transcriptPath: string, id: string): Promise<s
 export async function claudeConversationName(id: string, cwd: string | undefined, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
   if (!validClaudeSessionId(id) || cwd === undefined) return undefined;
   const path = transcriptPath(id, cwd, env);
-  const lines = await readFileHead(path, maxTitleScanBytes).catch(() => undefined);
-  if (lines === undefined) return undefined;
-  let customTitle: string | undefined;
-  let aiTitle: string | undefined;
-  let firstPrompt: string | undefined;
-  for (const line of lines) {
-    if (line === '') continue;
-    let record: TranscriptRecord;
-    try { record = JSON.parse(line) as TranscriptRecord; } catch { continue; }
-    // several records of each kind per file; the last in the scanned window wins (a rename re-emits its title)
-    if (record.type === 'custom-title' && typeof record.customTitle === 'string' && record.customTitle.length > 0) customTitle = record.customTitle;
-    else if (record.type === 'ai-title' && typeof record.aiTitle === 'string' && record.aiTitle.length > 0) aiTitle = record.aiTitle;
-    // the fallback is the first typed human prompt whose content is a plain string
-    else if (firstPrompt === undefined && record.type === 'user' && record.promptSource === 'typed' && record.origin?.kind === 'human' && typeof record.message?.content === 'string' && record.message.content.length > 0) firstPrompt = record.message.content;
-  }
+  const title = await transcriptTitleCache.get(path).catch(() => undefined);
+  // unreadable transcripts remain unknown and are retried on the next request
+  if (title === undefined) return undefined;
   // the sidecar is an equal source for the human name, and survives a bounded head
   // scan that missed a re-emitted `custom-title` deep in a long transcript
-  return compactTitle((customTitle ?? await sidecarCustomTitle(path, id)) ?? aiTitle ?? firstPrompt ?? '');
+  return compactTitle((title.customTitle ?? await sidecarCustomTitle(path, id)) ?? title.aiTitle ?? title.firstPrompt ?? '');
 }
 
 // what one transcript's bounded head+tail scan yields for listing
@@ -162,14 +185,36 @@ function scanTranscript(lines: Iterable<string>, scan: TranscriptScan): void {
   }
 }
 
+// parse one bounded listing window into compact fields
+function transcriptScan(lines: Iterable<string>): TranscriptScan {
+  const scan: TranscriptScan = { lastActiveAt: 0, sdk: false };
+  scanTranscript(lines, scan);
+  return scan;
+}
+
+// reuse bounded listing fields for up to two full 200-row directory scans
+const summaryHeadCache = new FileChangeCache(
+  async path => transcriptScan(await readFileHead(path, maxListHeadBytes)),
+  { maxEntries: 512 }
+);
+const summaryTailCache = new FileChangeCache(
+  async path => transcriptScan(await readFileTail(path, maxListTailBytes)),
+  { maxEntries: 512 }
+);
+
 // summarize one transcript, or undefined when it is an SDK run or carries no name
 async function summarizeTranscript(path: string, size: number, id: string, directory: string): Promise<ConversationSummary | undefined> {
-  const scan: TranscriptScan = { lastActiveAt: 0, sdk: false };
-  const head = await readFileHead(path, maxListHeadBytes).catch(() => undefined);
+  const head = await summaryHeadCache.get(path).catch(() => undefined);
+  // an unreadable head cannot identify a conversation
   if (head === undefined) return undefined;
-  scanTranscript(head, scan);
   // read the tail too only when the file exceeds the head window; a smaller file was read whole
-  if (size > maxListHeadBytes) scanTranscript(await readFileTail(path, maxListTailBytes).catch(() => []), scan);
+  const tail = size > maxListHeadBytes ? await summaryTailCache.get(path).catch(() => undefined) : undefined;
+  const scan: TranscriptScan = {
+    customTitle: tail?.customTitle ?? head.customTitle,
+    aiTitle: tail?.aiTitle ?? head.aiTitle,
+    lastActiveAt: Math.max(head.lastActiveAt, tail?.lastActiveAt ?? 0),
+    sdk: head.sdk || tail?.sdk === true
+  };
   if (scan.sdk) return undefined;
   // the sidecar is an equal source for the human name (as in `claudeConversationName`):
   // it recovers a `custom-title` set long ago that fell outside the bounded window with no
@@ -307,6 +352,18 @@ export function lastAssistantTextFromRecords(lines: Iterable<string>): string | 
   return text.trim() === '' ? undefined : text;
 }
 
+// reuse parsed final replies without retaining their bounded raw tails
+const lastAssistantTextCache = new FileChangeCache<string | undefined>(
+  async path => lastAssistantTextFromRecords(await readFileTail(path, maxFinalMessageScanBytes)),
+  { maxEntries: 512 }
+);
+
+// reuse the latest visible reply while discovery continues checking file metadata
+const latestMessageCache = new FileChangeCache<string | undefined>(
+  async path => latestClaudeMessageFromRecords(await readFileTail(path, maxLatestMessageScanBytes)),
+  { maxEntries: 512 }
+);
+
 /**
  * The last assistant message's text of a known Claude Conversation (an interactive Review
  * run's reply, ADR 0010), read from a bounded tail of its transcript. `undefined` on an
@@ -314,14 +371,12 @@ export function lastAssistantTextFromRecords(lines: Iterable<string>): string | 
  */
 export async function claudeLastAssistantText(id: string, cwd: string | undefined, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
   if (!validClaudeSessionId(id) || cwd === undefined) return undefined;
-  const lines = await readFileTail(transcriptPath(id, cwd, env), maxFinalMessageScanBytes).catch(() => undefined);
-  return lines === undefined ? undefined : lastAssistantTextFromRecords(lines);
+  return lastAssistantTextCache.get(transcriptPath(id, cwd, env)).catch(() => undefined);
 }
 
 /** read the latest unanswered message from claude's reported conversation */
 export async function claudeConversationLatestMessage(pane: { pid: number; cwd?: string; conversationId?: string }, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
   // require the reported id and raw pane cwd that key Claude's transcript
   if (pane.conversationId === undefined || !validClaudeSessionId(pane.conversationId) || pane.cwd === undefined) return undefined;
-  const lines = await readFileTail(transcriptPath(pane.conversationId, pane.cwd, env), maxLatestMessageScanBytes).catch(() => undefined);
-  return lines === undefined ? undefined : latestClaudeMessageFromRecords(lines);
+  return latestMessageCache.get(transcriptPath(pane.conversationId, pane.cwd, env)).catch(() => undefined);
 }

@@ -1,5 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { FileChangeCache } from './file-change-cache.js';
 import { inlineQuestionId } from './inline-questions.js';
 import type { InlineQuestion } from './types.js';
 
@@ -25,20 +26,64 @@ const readOmxQuestion = (raw: OmxRecord, paneId: string): InlineQuestion | undef
     : undefined;
 };
 
-/**
- * The structured OMX question currently addressed at `paneId`, read from the
- * workspace's `.omx/state` question files. `targetPaneId` is OMX's renderer pane
- * — where the answer keys are sent, which is not always the agent's own pane.
- */
-export async function pendingOmxQuestion(workspace: string, paneId: string): Promise<InlineQuestion | undefined> {
+// index the pane address with each stable parsed question rather than the raw json
+const questionFiles = new FileChangeCache(async (path: string) => {
+  const contents = await readFile(path, 'utf8');
+  let parsed: unknown;
+  // malformed in-progress writes remain unavailable until the file changes
+  try { parsed = JSON.parse(contents) as unknown; } catch { return undefined; }
+  // only structured records can address a pane
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const raw = parsed as OmxRecord;
+  const paneId = raw.renderer?.return_target;
+  // never index a malformed return address
+  if (typeof paneId !== 'string') return undefined;
+  const question = readOmxQuestion(raw, paneId);
+  return question === undefined ? undefined : { paneId, question };
+}, { maxEntries: 1_024 });
+
+const workspaceScans = new Map<string, Promise<Map<string, string[]>>>();
+
+// rebuild inventory each scan so new and removed sessions are immediately visible
+async function scanWorkspace(workspace: string): Promise<Map<string, string[]>> {
+  const questions = new Map<string, string[]>();
   const root = join(workspace, '.omx', 'state');
   const directories = [join(root, 'questions')];
   const sessions = await readdir(join(root, 'sessions'), { withFileTypes: true }).catch(() => []);
+  // retain root-before-session precedence
   for (const session of sessions) if (session.isDirectory()) directories.push(join(root, 'sessions', session.name, 'questions'));
+  // share one directory walk and file lookup across every pane in this workspace
   for (const directory of directories) for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+    // ignore non-question entries as before
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-    const parsed = await readFile(join(directory, entry.name), 'utf8').then(value => JSON.parse(value) as OmxRecord).catch(() => undefined);
-    const question = parsed && readOmxQuestion(parsed, paneId); if (question) return question;
+    const path = join(directory, entry.name);
+    const indexed = await questionFiles.get(path).catch(() => undefined);
+    // keep every valid candidate in precedence order for post-scan revalidation
+    if (indexed === undefined) continue;
+    const candidates = questions.get(indexed.paneId) ?? [];
+    candidates.push(path);
+    questions.set(indexed.paneId, candidates);
+  }
+  return questions;
+}
+
+// coalesce concurrent pane lookups without delaying subsequent answer validation
+export async function pendingOmxQuestion(workspace: string, paneId: string): Promise<InlineQuestion | undefined> {
+  const key = resolve(workspace);
+  let scan = workspaceScans.get(key);
+  // completed scans are never reused without checking the current inventory
+  if (scan === undefined) {
+    scan = scanWorkspace(key).finally(() => { workspaceScans.delete(key); });
+    workspaceScans.set(key, scan);
+  }
+  // resolved candidates must neither return nor hide a still-pending successor
+  for (const path of (await scan).get(paneId) ?? []) {
+    const indexed = await questionFiles.get(path).catch(() => undefined);
+    // skip candidates answered, removed or retargeted while other files were scanned
+    if (indexed?.paneId !== paneId) continue;
+    const question = indexed.question;
+    // keep callers from mutating the retained parsed question
+    return { ...question, choices: [...question.choices] };
   }
   return undefined;
 }
