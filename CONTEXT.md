@@ -142,7 +142,7 @@ A prompt accepted while the Agent was busy, held durably until it can be dispatc
 _Avoid_: Pending prompt, backlog
 
 **Note**:
-Operator text kept with a Project, or with a Scratch directory, and edited in the console. The console's only saved text: what gets sent as a prompt, given a Schedule, or simply kept.
+Operator text kept with a Project, or with a Scratch directory, and edited in the console. A Note can opt into visibility in all Workspaces while retaining one original record. The console's only saved text: what gets sent as a prompt, given a Schedule, or simply kept.
 _Avoid_: Saved prompt (retired), sticky note, snippet
 
 **Schedule**:

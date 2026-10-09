@@ -247,7 +247,7 @@ const isQueuedPrompt = (value: unknown): value is QueuedPrompt => value !== null
   && typeof (value as QueuedPrompt).createdAt === 'string'
   && ((value as QueuedPrompt).attachments === undefined || Array.isArray((value as QueuedPrompt).attachments) && (value as QueuedPrompt).attachments!.every(attachment => attachment !== null && typeof attachment === 'object' && typeof attachment.name === 'string' && Number.isInteger(attachment.size) && attachment.size >= 0));
 type NoteAttachment = { name: string; size: number };
-type WorktreeNote = { id: string; text: string; title?: string; locked?: boolean; attachments?: NoteAttachment[]; source?: 'queued-prompt'; schedule?: Schedule; nextRun?: string };
+type WorktreeNote = { id: string; text: string; title?: string; locked?: boolean; allWorkspaces?: boolean; attachments?: NoteAttachment[]; source?: 'queued-prompt'; schedule?: Schedule; nextRun?: string };
 // the Adapter and target a new Schedule pre-fills with, plus the launcher rows the note pane's
 // Adapter and target pickers offer, all resolved from the dashboard for the active tab's context
 type SchedulePrefill = { kind: AgentKind; target: ScheduleTarget; runsOnText: string; adapters: ScheduleAdapterOption[]; targets: ScheduleTargetOption[]; liveAgentIds: string[] };
@@ -2939,6 +2939,7 @@ const isWorktreeNote = (value: unknown): value is WorktreeNote => {
   const attachments = note.attachments;
   return typeof note.id === 'string' && typeof note.text === 'string' && (note.title === undefined || typeof note.title === 'string')
     && (note.locked === undefined || typeof note.locked === 'boolean')
+    && (note.allWorkspaces === undefined || typeof note.allWorkspaces === 'boolean')
     && (attachments === undefined || Array.isArray(attachments) && attachments.every(
       // require valid file metadata before exposing note actions
       attachment => attachment !== null && typeof attachment === 'object' && typeof attachment.name === 'string' && Number.isSafeInteger(attachment.size) && attachment.size > 0
@@ -3420,9 +3421,10 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   // hold split restoration until the saved note has been checked
   const [initialNotesLoaded, setInitialNotesLoaded] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [lockPending, setLockPending] = useState(false);
-  const [lockError, setLockError] = useState('');
-  const lockMutation = useRef<{ noteId: string; resourceBase: string } | undefined>(undefined);
+  const [noteMetadataPending, setNoteMetadataPending] = useState(false);
+  const [noteMetadataError, setNoteMetadataError] = useState('');
+  // serialize note options with other metadata writes
+  const noteMetadataMutation = useRef<{ noteId: string; resourceBase: string; option: 'locked' | 'allWorkspaces' } | undefined>(undefined);
   const [menuRenameDraft, setMenuRenameDraft] = useState<{ id: string; title: string }>();
   const [menuRenamingId, setMenuRenamingId] = useState<string>();
   const [menuDeletingId, setMenuDeletingId] = useState<string>();
@@ -3584,9 +3586,9 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
     setMenuRenameDraft(undefined);
     setMenuRenamingId(undefined);
     setMenuDeletingId(undefined);
-    lockMutation.current = undefined;
-    setLockPending(false);
-    setLockError('');
+    noteMetadataMutation.current = undefined;
+    setNoteMetadataPending(false);
+    setNoteMetadataError('');
     setMenuError('');
     setNoteAttachmentError('');
     setDraggingNoteFiles(false);
@@ -3637,22 +3639,24 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
     });
     return () => { cancelled = true; };
   }, [noteViewId, resourceBase]);
-  // refresh recovered-note badges and locks even while closed; schedule-only changes stay lazy
+  // refresh recovered notes and visibility even while closed; schedule-only changes stay lazy
   useEffect(() => {
     // require a current snapshot and persistence context
     if (resourceBase === undefined || noteViewId === undefined || dashboardGeneration === undefined) return;
-    // let foreground loads and lock writes settle before consuming revisions
-    if (loading || lockPending) return;
+    // let foreground loads and option writes settle before consuming revisions
+    if (loading || noteMetadataPending) return;
     const previous = seenGeneration.current;
     const notesChanged = notesRevisionKey !== seenNotesRevision.current;
     // establish the baseline on the first snapshot without refetching (the mount load already fetched)
     if (previous === undefined && !notesChanged) { seenGeneration.current = dashboardGeneration; return; }
     // skip snapshots whose notes have already been fetched
     if (previous === dashboardGeneration && !notesChanged) return;
-    // keep schedule refreshes lazy without hiding new notes or lock changes
+    // keep schedule refreshes lazy without hiding note metadata changes
     if (!menuOpen && activeNote === undefined && !notesChanged) return;
     let cancelled = false;
     const sequence = ++noteLoadSequence.current;
+    // capture a clean editor before allowing shared text to refresh
+    const cleanAtLoad = activeNoteRef.current !== undefined && !dirtyTexts.current.has(activeNoteRef.current.id) ? activeNoteRef.current : undefined;
     // preserve drafts while refreshing server-owned note metadata
     void fetchWorktreeNotes(resourceBase).then(loaded => {
       // discard obsolete requests without consuming their refresh boundary
@@ -3667,16 +3671,29 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
       const fresh = current === undefined ? undefined : loaded.find(candidate => candidate.id === current.id);
       // keep the active editor attached to refreshed metadata
       if (current !== undefined && fresh !== undefined) {
-        const updated = { ...current, locked: fresh.locked, schedule: fresh.schedule, nextRun: fresh.nextRun, ...(attachmentMutation.current ? {} : { attachments: fresh.attachments }), ...(fresh.title === undefined ? {} : { title: fresh.title }) };
+        const refreshText = (current.allWorkspaces || fresh.allWorkspaces) && current === cleanAtLoad && !dirtyTexts.current.has(current.id);
+        // synchronize shared text only when no local edit raced the request
+        if (refreshText) {
+          acknowledgedTexts.current.set(current.id, fresh.text);
+          draftRef.current = fresh.text;
+          setDraft(fresh.text);
+        }
+        const updated = { ...current, ...(refreshText ? { text: fresh.text } : {}), locked: fresh.locked, allWorkspaces: fresh.allWorkspaces, schedule: fresh.schedule, nextRun: fresh.nextRun, ...(attachmentMutation.current ? {} : { attachments: fresh.attachments }), ...(fresh.title === undefined ? {} : { title: fresh.title }) };
         activeNoteRef.current = updated;
         setActiveNote(updated);
+      }
+      // remove revoked shared notes while preserving unsaved text for recovery
+      if (current?.allWorkspaces && fresh === undefined) {
+        // keep a dirty editor available for copying instead of discarding its draft
+        if (dirtyTexts.current.has(current.id)) setNoteMetadataError('This note is no longer available in this workspace. Copy your unsaved text before closing.');
+        else forgetNote(current, false);
       }
     }).catch(() => undefined).finally(() => {
       // the latest read also releases any foreground indicator it superseded
       if (!cancelled && sequence === noteLoadSequence.current) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [dashboardGeneration, notesRevisionKey, resourceBase, noteViewId, menuOpen, activeNote, loading, lockPending]);
+  }, [dashboardGeneration, notesRevisionKey, resourceBase, noteViewId, menuOpen, activeNote, loading, noteMetadataPending]);
   // let a sibling component (the queued panel's Save as note, which lives in Prompt) force this
   // note view's list to refetch, so a newly saved Note appears when the fly-out is next opened
   useEffect(() => {
@@ -3718,7 +3735,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   // open one note without abandoning pending metadata writes
   const open = (note: WorktreeNote, edit?: boolean, keepExpansion = false) => {
     // keep metadata mutations attached to the visible note
-    if (attachmentMutation.current || lockMutation.current !== undefined) return;
+    if (attachmentMutation.current || noteMetadataMutation.current !== undefined) return;
     flush();
     const text = dirtyTexts.current.get(note.id) ?? note.text;
     const opened = { ...note, text };
@@ -3739,12 +3756,15 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
     setCopyState('idle');
     setSendState('idle');
     setNoteAttachmentError('');
-    setLockError('');
+    setNoteMetadataError('');
     setSaveStatus(failedNotes.current.has(note.id) ? 'error' : dirtyTexts.current.has(note.id) ? 'saving' : 'saved');
     setMenuOpen(false);
     if (dirtyTexts.current.has(note.id)) persist(note.id, text);
   };
+  // preserve the saved snapshot while visibility may revoke this workspace's access
   const updateDraft = (note: WorktreeNote, text: string) => {
+    // block editor and selection-driven changes during visibility writes
+    if (noteMetadataMutation.current?.option === 'allWorkspaces') return;
     draftRef.current = text;
     activeNoteRef.current = { ...note, text };
     setDraft(text);
@@ -3798,7 +3818,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   // create an optionally titled note
   const create = async (text = '', title?: string): Promise<boolean> => {
     // require one idle persistence context
-    if (resourceBase === undefined || loading) return false;
+    if (resourceBase === undefined || loading || noteMetadataMutation.current !== undefined) return false;
     setLoading(true);
     try {
       const response = await request(`${resourceBase}/notes`, { method: 'POST', ...(title === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) }) });
@@ -3836,7 +3856,8 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
     if (note === undefined || !text || next.length > 30_000) return;
     updateDraft(note, next);
   };
-  const canAppendToActive = (text: string) => activeNoteRef.current !== undefined && appendTextBlock(draftRef.current, text).length <= 30_000;
+  // disallow selection appends while visibility is being saved
+  const canAppendToActive = (text: string) => noteMetadataMutation.current?.option !== 'allWorkspaces' && activeNoteRef.current !== undefined && appendTextBlock(draftRef.current, text).length <= 30_000;
   const copy = async () => {
     try {
       await copyText(draftRef.current);
@@ -3860,7 +3881,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   const changeNoteAttachments = async (filesOrName: File[] | string) => {
     const note = activeNoteRef.current;
     // serialize file changes with actions that consume or delete the note
-    if (resourceBase === undefined || note === undefined || attachmentMutation.current || lockMutation.current !== undefined || deleting || sendState === 'sending' || menuRunningId !== undefined) return;
+    if (resourceBase === undefined || note === undefined || attachmentMutation.current || noteMetadataMutation.current !== undefined || deleting || sendState === 'sending' || menuRunningId !== undefined) return;
     attachmentMutation.current = true;
     setAttachmentPending(true);
     setNoteAttachmentError('');
@@ -3918,7 +3939,9 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
     }
     void changeNoteAttachments(selected);
   };
-  const noteFilesDisabled = attachmentPending || lockPending || deleting || sendState === 'sending' || menuRunningId !== undefined;
+  // block actions while note options are being saved
+  const noteVisibilityPending = noteMetadataPending && noteMetadataMutation.current?.option === 'allWorkspaces';
+  const noteFilesDisabled = attachmentPending || noteMetadataPending || deleting || sendState === 'sending' || menuRunningId !== undefined;
   // accept files without changing ordinary text and link dragging
   const dragNoteFiles = (event: React.DragEvent<HTMLElement>) => {
     // browser file contents remain protected until drop
@@ -4083,44 +4106,62 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
       setMenuRenamingId(undefined);
     }
   };
-  // change only deletion protection without replacing the current draft
-  const toggleNoteLock = async () => {
+  // change one note option without replacing the current draft
+  const toggleNoteOption = async (option: 'locked' | 'allWorkspaces') => {
     const note = activeNoteRef.current;
-    // serialize protection changes with deletes and attachment writes
-    if (resourceBase === undefined || note === undefined || lockMutation.current !== undefined || deleting || menuDeletingId !== undefined || attachmentMutation.current) return;
-    const mutation = { noteId: note.id, resourceBase };
-    const locked = !note.locked;
-    lockMutation.current = mutation;
-    setLockPending(true);
-    setLockError('');
+    // serialize options with deletes, renames, schedules and attachment writes
+    if (resourceBase === undefined || note === undefined || noteMetadataMutation.current !== undefined || deleting || menuDeletingId !== undefined || renamePending || menuRenamingId !== undefined || scheduleBusy || scheduleRunning || attachmentMutation.current) return;
+    const mutation = { noteId: note.id, resourceBase, option };
+    const enabled = !note[option];
+    noteMetadataMutation.current = mutation;
+    setNoteMetadataPending(true);
+    setNoteMetadataError('');
     try {
-      const response = await request(`${resourceBase}/notes/${encodeURIComponent(note.id)}/lock`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ locked }) });
-      // retain the last confirmed lock state after rejected writes
-      if (!response.ok) throw new Error('note lock unavailable');
+      // save before unsharing can remove this workspace's access
+      if (option === 'allWorkspaces') {
+        flush();
+        await saveQueue.current;
+        // keep unsaved content accessible after a failed autosave
+        if (dirtyTexts.current.has(note.id)) throw new Error('note save unavailable');
+        // do not write after switching persistence contexts
+        if (noteMetadataMutation.current !== mutation || noteContext.current !== mutation.resourceBase) return;
+      }
+      const route = option === 'locked' ? 'lock' : 'visibility';
+      const response = await request(`${resourceBase}/notes/${encodeURIComponent(note.id)}/${route}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ [option]: enabled }) });
+      // retain the last confirmed state after rejected writes
+      if (!response.ok) throw new Error('note option unavailable');
       const saved: unknown = await response.json();
-      // require confirmation of the requested protection state
-      if (!isWorktreeNote(saved) || saved.id !== mutation.noteId || Boolean(saved.locked) !== locked) throw new Error('invalid note lock response');
+      // require confirmation of the requested option
+      if (!isWorktreeNote(saved) || saved.id !== mutation.noteId || Boolean(saved[option]) !== enabled) throw new Error('invalid note option response');
+      const visibleHere = (saved as WorktreeNote & { visibleHere?: unknown }).visibleHere;
+      // visibility responses must confirm access after the change
+      if (option === 'allWorkspaces' && typeof visibleHere !== 'boolean') throw new Error('invalid note visibility response');
       // ignore responses from a replaced worktree or scratch context
-      if (lockMutation.current !== mutation || noteContext.current !== mutation.resourceBase) return;
+      if (noteMetadataMutation.current !== mutation || noteContext.current !== mutation.resourceBase) return;
       noteLoadSequence.current += 1;
       setLoading(false);
-      // merge only protection metadata so concurrent edits remain intact
-      setNotes(current => current?.map(candidate => candidate.id === note.id ? { ...candidate, locked } : candidate));
+      // close a shared note removed from this workspace without deleting its original
+      if (option === 'allWorkspaces' && !visibleHere) {
+        forgetNote(note, true);
+        return;
+      }
+      // merge only the changed option so concurrent edits remain intact
+      setNotes(current => current?.map(candidate => candidate.id === note.id ? { ...candidate, [option]: enabled } : candidate));
       const current = activeNoteRef.current;
       // preserve the active note's live text and other metadata
       if (current?.id === note.id) {
-        const updated = { ...current, locked };
+        const updated = { ...current, [option]: enabled };
         activeNoteRef.current = updated;
         setActiveNote(updated);
       }
     } catch {
       // surface failures only in their originating context
-      if (lockMutation.current === mutation && noteContext.current === mutation.resourceBase) setLockError(locked ? 'Unable to lock note. Please try again.' : 'Unable to unlock note. Please try again.');
+      if (noteMetadataMutation.current === mutation && noteContext.current === mutation.resourceBase) setNoteMetadataError(option === 'allWorkspaces' ? 'Unable to change note visibility. Your draft is preserved. Please try again.' : enabled ? 'Unable to lock note. Please try again.' : 'Unable to unlock note. Please try again.');
     } finally {
       // do not release a newer context's pending operation
-      if (lockMutation.current === mutation) {
-        lockMutation.current = undefined;
-        setLockPending(false);
+      if (noteMetadataMutation.current === mutation) {
+        noteMetadataMutation.current = undefined;
+        setNoteMetadataPending(false);
       }
     }
   };
@@ -4150,7 +4191,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   // delete one note after pending saves settle
   const deleteNote = async (note: WorktreeNote, restoreFocusAfterClose: boolean) => {
     // keep every local deletion path behind the confirmed protection state
-    if (note.locked || lockMutation.current !== undefined) throw new Error('note is locked');
+    if (note.locked || noteMetadataMutation.current !== undefined) throw new Error('note is locked');
     // discard a pending autosave for this note
     if (activeNoteRef.current?.id === note.id && saveTimer.current !== undefined) {
       window.clearTimeout(saveTimer.current);
@@ -4168,7 +4209,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   const remove = () => {
     const note = activeNoteRef.current;
     // serialize pane deletes
-    if (resourceBase === undefined || note === undefined || note.locked || lockMutation.current !== undefined || deleting || attachmentMutation.current) return;
+    if (resourceBase === undefined || note === undefined || note.locked || noteMetadataMutation.current !== undefined || deleting || attachmentMutation.current) return;
     setDeleting(true);
     void deleteNote(note, true).catch(() => {
       // preserve dirty state after a failed pane delete
@@ -4180,7 +4221,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   // delete one note from the flyout
   const removeFromMenu = async (note: WorktreeNote) => {
     // serialize menu deletes
-    if (note.locked || lockMutation.current !== undefined || menuDeletingId !== undefined || menuRenamingId !== undefined) return;
+    if (note.locked || noteMetadataMutation.current !== undefined || menuDeletingId !== undefined || menuRenamingId !== undefined) return;
     setMenuDeletingId(note.id);
     setMenuError('');
     try {
@@ -4191,12 +4232,12 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
       setMenuDeletingId(undefined);
     }
   };
-  // retain locked and attachment-only notes when closing the pane
+  // retain shared, locked and attachment-only notes when closing the pane
   const close = () => {
     // wait for metadata writes before deciding whether a blank note is disposable
-    if (attachmentMutation.current || lockMutation.current !== undefined) return;
-    // remove only unlocked notes without text or files
-    if (!activeNoteRef.current?.locked && !noteHasContent({ text: draftRef.current, attachments: activeNoteRef.current?.attachments })) {
+    if (attachmentMutation.current || noteMetadataMutation.current !== undefined) return;
+    // remove only local unlocked notes without text or files
+    if (!activeNoteRef.current?.locked && !activeNoteRef.current?.allWorkspaces && !noteHasContent({ text: draftRef.current, attachments: activeNoteRef.current?.attachments })) {
       remove();
       return;
     }
@@ -4284,7 +4325,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   const latestResponseAvailable = notes !== undefined && substantialResponse !== undefined && !notes.some(note => note.text === substantialResponse);
   const highlightLatestResponse = latestResponseAvailable && substantialResponse === latestAssistantMessage && latestAssistantMessageOverflows;
   const notesLabel = dirtyCount === 0 ? `Notes (${noteCount})` : `Notes (${noteCount}; ${dirtyCount} unsaved)`;
-  const noteMenuBusy = attachmentPending || lockPending || menuRenamingId !== undefined || menuDeletingId !== undefined || menuRunningId !== undefined;
+  const noteMenuBusy = attachmentPending || noteMetadataPending || menuRenamingId !== undefined || menuDeletingId !== undefined || menuRunningId !== undefined;
   // pulse recovered prompts until the notes list acknowledges them
   const control = <div className="notes-control" ref={anchorRef}>
     <button ref={triggerRef} className={`log-control page-arrow notes-toggle toolbar-button${unreadQueuedNotes ? ' unread-queued-prompts' : ''}${menuOpen || activeNote !== undefined ? ' active' : ''}${activeNote !== undefined ? ' panel-open' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={`${notesLabel}${unreadQueuedNotes ? ' — unread queued prompts' : ''}`} data-context-flyout aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}><span className="flyout-caret" aria-hidden="true" />{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}<span className="toolbar-label">Notes</span>{noteCount > 0 && <span className={`saved-prompts-count notes-count${unreadQueuedNotes ? ' unread' : ''}`} aria-hidden="true">{noteCount}</span>}</button>
@@ -4402,9 +4443,9 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   const lastRunAgentId = activeNote?.schedule?.lastRun?.agentId;
   const openAgentId = lastRunAgentId !== undefined && schedulePrefill?.liveAgentIds.includes(lastRunAgentId) ? lastRunAgentId : undefined;
   // show the schedule sentence only after this note has a schedule
-  const scheduleArea = schedulePrefill === undefined || activeNote?.schedule === undefined ? null : <div className="schedule-area"><ScheduleEditor key={activeNote?.id} schedule={activeNote.schedule} nextRun={activeNote.nextRun} prefill={{ kind: schedulePrefill.kind, target: schedulePrefill.target }} runsOnText={schedulePrefill.runsOnText} adapterOptions={schedulePrefill.adapters} targetOptions={schedulePrefill.targets} onSet={payload => void applySchedule(payload)} onRemove={() => void removeSchedule()} onRunNow={() => void runScheduleNow()} running={scheduleRunning} {...(openAgentId === undefined ? {} : { openAgentId })} preview={previewSchedule} busy={scheduleBusy || attachmentPending} /></div>;
-  // offer unscheduled notes a flyout-only action at every panel width
-  const scheduleMenu = schedulePrefill !== undefined && activeNote?.schedule === undefined ? () => <button className="panel-header-action panel-header-row" type="button" disabled={scheduleBusy || attachmentPending} onClick={() => { /* start with the editor's daily default */ void applySchedule({ cron: defaultScheduleCron, kind: schedulePrefill.kind, target: schedulePrefill.target, enabled: true }); }}><svg className="panel-header-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg><span>Schedule note</span></button> : undefined;
+  const scheduleArea = schedulePrefill === undefined || activeNote?.schedule === undefined ? null : <div className="schedule-area"><ScheduleEditor key={activeNote?.id} schedule={activeNote.schedule} nextRun={activeNote.nextRun} prefill={{ kind: schedulePrefill.kind, target: schedulePrefill.target }} runsOnText={schedulePrefill.runsOnText} adapterOptions={schedulePrefill.adapters} targetOptions={schedulePrefill.targets} onSet={payload => void applySchedule(payload)} onRemove={() => void removeSchedule()} onRunNow={() => void runScheduleNow()} running={scheduleRunning} {...(openAgentId === undefined ? {} : { openAgentId })} preview={previewSchedule} busy={scheduleBusy || attachmentPending || noteMetadataPending} /></div>;
+  // keep note visibility and scheduling in the existing actions menu
+  const noteOptionsMenu = () => <><button className="panel-header-action panel-header-row" type="button" aria-pressed={Boolean(activeNote?.allWorkspaces)} disabled={noteFilesDisabled || renamePending || menuRenamingId !== undefined || scheduleBusy || scheduleRunning} onClick={() => { /* persist the shared visibility option */ void toggleNoteOption('allWorkspaces'); }}><PanelIcon path={activeNote?.allWorkspaces ? 'M3 3h18v18H3zM7 12l3 3 7-7' : 'M3 3h18v18H3z'} /><span>Show in all workspaces</span></button>{schedulePrefill !== undefined && activeNote?.schedule === undefined && <button className="panel-header-action panel-header-row" type="button" disabled={scheduleBusy || attachmentPending || noteMetadataPending} onClick={() => { /* start with the editor's daily default */ void applySchedule({ cron: defaultScheduleCron, kind: schedulePrefill.kind, target: schedulePrefill.target, enabled: true }); }}><svg className="panel-header-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg><span>Schedule note</span></button>}</>;
   // keep the picker mounted even when the attachments area is empty
   const noteAttachmentPicker = <input ref={noteAttachmentInput} className="attachment-input" type="file" multiple aria-label="Note attachment files" disabled={noteFilesDisabled} onChange={event => { /* allow selecting the same file again after removal */ chooseNoteFiles(event.target.files); event.target.value = ''; }} />;
   const visibleNoteAttachments = activeNote?.attachments ?? [];
@@ -4422,7 +4463,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   // the title pill: the note picker (with the count of notes at this Place) or the rename field
   const noteTitlePill = activeNote === undefined ? null : renaming
     ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form>
-    : <><button ref={picker.anchorRef} type="button" className="note-picker" aria-label={`Switch note (${noteCount} here): ${noteTitle}`} data-context-flyout aria-expanded={pickerOpen} title={noteTitle} disabled={noteFilesDisabled} onClick={() => setPickerOpen(value => !value)} onKeyDown={event => { if (event.key === 'Escape' && pickerOpen) { event.preventDefault(); event.stopPropagation(); setPickerOpen(false); } }}><strong>{noteTitle}</strong>{noteCount > 1 && <span className="note-picker-count" aria-hidden="true">{noteCount}</span>}<svg className="note-picker-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button><span className="panel-header-sub">{activeNote.schedule === undefined ? 'Note' : 'Scheduled'}</span>{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}</>;
+    : <><button ref={picker.anchorRef} type="button" className="note-picker" aria-label={`Switch note (${noteCount} here): ${noteTitle}`} data-context-flyout aria-expanded={pickerOpen} title={noteTitle} disabled={noteFilesDisabled} onClick={() => setPickerOpen(value => !value)} onKeyDown={event => { if (event.key === 'Escape' && pickerOpen) { event.preventDefault(); event.stopPropagation(); setPickerOpen(false); } }}><strong>{noteTitle}</strong>{noteCount > 1 && <span className="note-picker-count" aria-hidden="true">{noteCount}</span>}<svg className="note-picker-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button><span className="panel-header-sub">{activeNote.allWorkspaces ? 'All workspaces' : activeNote.schedule === undefined ? 'Note' : 'Scheduled'}</span>{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}</>;
   const notePicker = pickerOpen && activeNote !== undefined && <FlyoutPortal onDismiss={() => setPickerOpen(false)}><div ref={picker.flyoutRef} className="more-menu note-picker-menu" style={picker.style} role="group" aria-label="Notes here" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setPickerOpen(false); } }}>
     {notes?.map(note => <button key={note.id} type="button" className="note-picker-choice" aria-current={note.id === activeNote.id ? 'true' : undefined} onClick={() => { setPickerOpen(false); if (note.id !== activeNote.id) open(note, undefined, true); }}>{note.schedule !== undefined && <svg className="note-picker-scheduled" viewBox="0 0 24 24" aria-label="Scheduled"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>}<span>{noteName(note)}</span></button>)}
     <button type="button" className="note-picker-new" disabled={noteMenuBusy} onClick={() => { setPickerOpen(false); void create(); }}>+ New note</button>
@@ -4436,8 +4477,8 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
     // open the note-specific file picker
     { key: 'attach', label: 'Attach files to note', title: 'Attach files', className: 'note-attach', disabled: noteFilesDisabled, icon: <MoreMenuIcon name="attachment" />, onSelect: () => noteAttachmentInput.current?.click() },
     { key: 'copy', label: copyState === 'copied' ? 'Note copied' : 'Copy note', title: copyState === 'copied' ? 'Copied' : 'Copy note', className: `note-copy${copyState === 'copied' ? ' copied' : ''}`, disabled: deleting, icon: <PanelIcon path={copyState === 'copied' ? panelIcons.check : panelIcons.copy} />, onSelect: () => void copy() },
-    { key: 'rename', label: 'Rename note', className: 'note-rename', disabled: deleting || renamePending, icon: <PanelIcon path={actionIconPaths.pencil} />, onSelect: () => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); } },
-    { key: 'lock', label: activeNote.locked ? 'Unlock note' : 'Lock note', className: 'note-lock', pressed: Boolean(activeNote.locked), disabled: noteFilesDisabled || menuDeletingId !== undefined, icon: lockPending ? <span className="spinner" /> : <PanelIcon path={activeNote.locked ? actionIconPaths.lock : actionIconPaths.unlock} />, onSelect: () => void toggleNoteLock() },
+    { key: 'rename', label: 'Rename note', className: 'note-rename', disabled: noteFilesDisabled || renamePending, icon: <PanelIcon path={actionIconPaths.pencil} />, onSelect: () => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); } },
+    { key: 'lock', label: activeNote.locked ? 'Unlock note' : 'Lock note', className: 'note-lock', pressed: Boolean(activeNote.locked), disabled: noteFilesDisabled || menuDeletingId !== undefined, icon: noteMetadataPending && noteMetadataMutation.current?.option === 'locked' ? <span className="spinner" /> : <PanelIcon path={activeNote.locked ? actionIconPaths.lock : actionIconPaths.unlock} />, onSelect: () => void toggleNoteOption('locked') },
     // a locked note must be unlocked before it can be removed
     ...(activeNote.locked ? [] : [{ key: 'delete', label: 'Delete note', className: 'note-delete', disabled: noteFilesDisabled, icon: deleting ? <span className="spinner" /> : <PanelIcon path={actionIconPaths.trash} />, onSelect: remove }])
   ];
@@ -4445,8 +4486,8 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   // expansion with its view
   const paneExpanded = expanded || expansion.immersive;
   // Esc closes the note, unless it is expanded: then the Workspace restores its siblings first
-  const pane = activeNote === undefined ? null : <><section className={`note-pane${paneExpanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onAuxClickCapture={event => closeOnMiddleClick(event, () => { /* preserve pending note mutations */ if (!noteFilesDisabled) close(); })} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={openNoteContextMenu} onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !paneExpanded && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><PanelHeader panelKey="note" label="note" title={noteTitlePill} actions={noteSendAction} secondary={noteSecondary} menuContent={scheduleMenu} expandDisabled={noteFilesDisabled} close={{ key: 'close', label: 'Close note', className: 'note-close', disabled: noteFilesDisabled, icon: <PanelIcon path={panelIcons.close} />, onSelect: close }} /><div className="note-pane-head">{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={event => { flush(); /* menu focus must not unmount the source editor */ if (!contextMenuOwnsFocus(event.currentTarget)) setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}{notePicker}</>;
-  return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, canClose: activeNote !== undefined && !noteFilesDisabled, close, initialNotesLoaded, control, createWithText: create, pane, toggleMenu: toggle };
+  const pane = activeNote === undefined ? null : <><section className={`note-pane${paneExpanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onAuxClickCapture={event => closeOnMiddleClick(event, () => { /* preserve pending note mutations */ if (!noteFilesDisabled) close(); })} onPointerDownCapture={preserveContextMenuPress} onMouseDownCapture={preserveContextMenuPress} onContextMenu={openNoteContextMenu} onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !paneExpanded && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><PanelHeader panelKey="note" label="note" title={noteTitlePill} actions={noteSendAction} secondary={noteSecondary} menuContent={noteOptionsMenu} expandDisabled={noteFilesDisabled} close={{ key: 'close', label: 'Close note', className: 'note-close', disabled: noteFilesDisabled, icon: <PanelIcon path={panelIcons.close} />, onSelect: close }} /><div className="note-pane-head">{noteMetadataError && <p className="note-lock-error" role="alert">{noteMetadataError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting || noteVisibilityPending} onChange={event => changeDraft(event.target.value)} onBlur={event => { flush(); /* menu focus must not unmount the source editor */ if (!contextMenuOwnsFocus(event.currentTarget)) setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}{notePicker}</>;
+  return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading && !noteMetadataPending, canClose: activeNote !== undefined && !noteFilesDisabled, close, initialNotesLoaded, control, createWithText: create, pane, toggleMenu: toggle };
 }
 type WorktreeNotes = ReturnType<typeof useWorktreeNotes>;
 

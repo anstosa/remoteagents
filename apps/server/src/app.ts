@@ -825,6 +825,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // follow an overlapping refresh when it captured the prior revision
     void dashboardUpdates.refresh().then(snapshot => snapshot?.notesRevision === notesRevision ? undefined : dashboardUpdates.refresh()).catch(() => undefined);
   };
+  // publish mutations that can change another workspace's visible note
+  const publishSharedNoteRevision = (note: WorktreeNote) => {
+    // keep isolated note autosaves local
+    if (note.allWorkspaces === true) publishNotesRevision();
+  };
   // preview one stored attachment without filesystem resolution
   const previewNoteAttachment = async (saveKey: string, noteId: string, path: string) => {
     const attachments = await notes.attachments(saveKey, noteId);
@@ -965,9 +970,38 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       : await notes.createWithText(saveKey, title as string, typeof text === 'string' ? text : '', undefined, attachments);
     return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(decorateNote(note));
   });
-  app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = await placeSaveKey(id); const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(saveKey, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  // update one worktree note's text
+  app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const saveKey = await placeSaveKey(id);
+    const text = body(request).text;
+    // require one current place
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
+    // require bounded note content
+    if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' });
+    const note = await notes.update(saveKey, noteId, text);
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
+  });
   // rename one note
-  app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = await placeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(saveKey, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const saveKey = await placeSaveKey(id);
+    const title = body(request).title;
+    // require one current place
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
+    // require one bounded title
+    if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' });
+    const note = await notes.rename(saveKey, noteId, title);
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
+  });
   // set one worktree note's deletion lock
   app.put('/api/worktrees/:id/notes/:noteId/lock', async (request, reply) => {
     controlled(request, true);
@@ -984,6 +1018,22 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     publishNotesRevision();
     return decorateNote(note);
   });
+  // set one worktree note's cross-workspace visibility
+  app.put('/api/worktrees/:id/notes/:noteId/visibility', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const saveKey = await placeSaveKey(id);
+    const allWorkspaces = body(request).allWorkspaces;
+    // require one current place
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
+    // require an explicit boolean state
+    if (typeof allWorkspaces !== 'boolean') return reply.code(400).send({ error: 'invalid note visibility' });
+    const resolved = await notes.setVisibility(saveKey, noteId, allWorkspaces);
+    // hide unknown and inaccessible notes
+    if (resolved === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishNotesRevision();
+    return { ...decorateNote(resolved.note), visibleHere: resolved.key === saveKey || resolved.note.allWorkspaces === true };
+  });
   // delete one unlocked worktree note
   app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => {
     controlled(request, true);
@@ -996,6 +1046,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (note === 'locked') return reply.code(409).send({ error: 'note is locked' });
     // hide unknown notes
     if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishNotesRevision();
     return decorateNote(note);
   });
   // read full attachment payloads for one worktree note
@@ -1030,7 +1081,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (attachments === undefined || attachments.length === 0 || !validPromptAttachments(attachments)) return reply.code(400).send({ error: 'invalid attachments' });
     const note = await notes.appendAttachments(saveKey, noteId, attachments);
     if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
-    return note === 'invalid' ? reply.code(400).send({ error: 'invalid attachments' }) : decorateNote(note);
+    // reject additions that exceed note or storage limits
+    if (note === 'invalid') return reply.code(400).send({ error: 'invalid attachments' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
   });
   // remove one normalized attachment name from a worktree note
   app.delete('/api/worktrees/:id/notes/:noteId/attachments', async (request, reply) => {
@@ -1041,12 +1095,40 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
     if (typeof name !== 'string' || promptAttachmentName(name) === undefined) return reply.code(400).send({ error: 'invalid attachment name' });
     const note = await notes.removeAttachment(saveKey, noteId, name);
-    return note === undefined ? reply.code(404).send({ error: 'attachment unavailable' }) : decorateNote(note);
+    // hide unknown attachments
+    if (note === undefined) return reply.code(404).send({ error: 'attachment unavailable' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
   });
   // set or replace one note's Schedule
-  app.put('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = await placeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' }); const schedule = buildSchedule(body(request)); if (typeof schedule === 'string') return reply.code(400).send({ error: schedule }); const note = await notes.setSchedule(saveKey, noteId, schedule); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  app.put('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const saveKey = await placeSaveKey(id);
+    // require one current place
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
+    const schedule = buildSchedule(body(request));
+    // reject malformed schedules
+    if (typeof schedule === 'string') return reply.code(400).send({ error: schedule });
+    const note = await notes.setSchedule(saveKey, noteId, schedule);
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
+  });
   // remove one note's Schedule, keeping the note
-  app.delete('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = await placeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' }); const note = await notes.removeSchedule(saveKey, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  app.delete('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const saveKey = await placeSaveKey(id);
+    // require one current place
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
+    const note = await notes.removeSchedule(saveKey, noteId);
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
+  });
   // run one worktree note's Schedule now, exactly as the scheduler will
   app.post('/api/worktrees/:id/notes/:noteId/schedule/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = await placeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' }); return await runScheduleNow(saveKey, noteId, reply); });
   // list one live agent's notes
@@ -1092,7 +1174,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require bounded note content
     if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' });
     const note = await notes.update(persistence.saveKey, noteId, text);
-    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
   });
   // rename one live agent note
   app.patch('/api/agents/:id/notes/:noteId', async (request, reply) => {
@@ -1105,7 +1190,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require one bounded title
     if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' });
     const note = await notes.rename(persistence.saveKey, noteId, title);
-    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
   });
   // set one live agent note's deletion lock
   app.put('/api/agents/:id/notes/:noteId/lock', async (request, reply) => {
@@ -1123,6 +1211,22 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     publishNotesRevision();
     return decorateNote(note);
   });
+  // set one live agent note's cross-workspace visibility
+  app.put('/api/agents/:id/notes/:noteId/visibility', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const persistence = await agentPersistence(id);
+    const allWorkspaces = body(request).allWorkspaces;
+    // require one current persistence group
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    // require an explicit boolean state
+    if (typeof allWorkspaces !== 'boolean') return reply.code(400).send({ error: 'invalid note visibility' });
+    const resolved = await notes.setVisibility(persistence.saveKey, noteId, allWorkspaces);
+    // hide unknown and inaccessible notes
+    if (resolved === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishNotesRevision();
+    return { ...decorateNote(resolved.note), visibleHere: resolved.key === persistence.saveKey || resolved.note.allWorkspaces === true };
+  });
   // delete one unlocked live agent note
   app.delete('/api/agents/:id/notes/:noteId', async (request, reply) => {
     controlled(request, true);
@@ -1135,6 +1239,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (note === 'locked') return reply.code(409).send({ error: 'note is locked' });
     // hide unknown notes
     if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishNotesRevision();
     return decorateNote(note);
   });
   // read full attachment payloads for one live agent note
@@ -1169,7 +1274,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (attachments === undefined || attachments.length === 0 || !validPromptAttachments(attachments)) return reply.code(400).send({ error: 'invalid attachments' });
     const note = await notes.appendAttachments(persistence.saveKey, noteId, attachments);
     if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
-    return note === 'invalid' ? reply.code(400).send({ error: 'invalid attachments' }) : decorateNote(note);
+    // reject additions that exceed note or storage limits
+    if (note === 'invalid') return reply.code(400).send({ error: 'invalid attachments' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
   });
   // remove one normalized attachment name from a live agent note
   app.delete('/api/agents/:id/notes/:noteId/attachments', async (request, reply) => {
@@ -1180,7 +1288,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
     if (typeof name !== 'string' || promptAttachmentName(name) === undefined) return reply.code(400).send({ error: 'invalid attachment name' });
     const note = await notes.removeAttachment(persistence.saveKey, noteId, name);
-    return note === undefined ? reply.code(404).send({ error: 'attachment unavailable' }) : decorateNote(note);
+    // hide unknown attachments
+    if (note === undefined) return reply.code(404).send({ error: 'attachment unavailable' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
   });
   // set or replace one live agent note's Schedule
   app.put('/api/agents/:id/notes/:noteId/schedule', async (request, reply) => {
@@ -1191,7 +1302,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const schedule = buildSchedule(body(request));
     if (typeof schedule === 'string') return reply.code(400).send({ error: schedule });
     const note = await notes.setSchedule(persistence.saveKey, noteId, schedule);
-    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
   });
   // remove one live agent note's Schedule, keeping the note
   app.delete('/api/agents/:id/notes/:noteId/schedule', async (request, reply) => {
@@ -1200,7 +1314,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const persistence = await agentPersistence(id);
     if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
     const note = await notes.removeSchedule(persistence.saveKey, noteId);
-    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishSharedNoteRevision(note);
+    return decorateNote(note);
   });
   // run one live agent note's Schedule now, exactly as the scheduler will
   app.post('/api/agents/:id/notes/:noteId/schedule/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
@@ -2013,14 +2130,16 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // for infrastructure failures. Returns the updated Note, or why nothing ran (Scheduled prompts).
   const scheduleRunsInFlight = new Set<string>();
   const recordedScheduleRun = async (saveKey: string, noteId: string, at: string, unattended: boolean): Promise<{ note: WorktreeNote } | 'in-flight' | 'gone'> => {
-    const note = (await notes.list(saveKey))?.find(candidate => candidate.id === noteId);
+    const resolved = await notes.resolve(saveKey, noteId);
     // gone: an unknown Note or a Note without a Schedule to run
-    if (note === undefined || note.schedule === undefined) return 'gone';
-    const flightKey = `${saveKey}:${noteId}`;
+    if (resolved === undefined || resolved.note.schedule === undefined) return 'gone';
+    const note = resolved.note;
+    const schedule = resolved.note.schedule;
+    const canonicalSaveKey = resolved.key;
+    const flightKey = `${canonicalSaveKey}:${noteId}`;
     if (scheduleRunsInFlight.has(flightKey)) return 'in-flight';
     scheduleRunsInFlight.add(flightKey);
     try {
-      const schedule = note.schedule;
       let lastRun: ScheduleLastRun;
       try {
         const outcome = await performRun({
@@ -2043,9 +2162,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         console.warn(`[schedule] run errored for ${flightKey}:`, error);
         lastRun = { at, status: 'failed', detail: 'run error' };
       }
-      const updated = await notes.recordLastRun(saveKey, noteId, lastRun);
+      const updated = await notes.recordLastRun(canonicalSaveKey, noteId, lastRun);
       // the Schedule may have been removed mid-run; the outcome is then dropped, notification and all
       if (updated === undefined) return 'gone';
+      publishSharedNoteRevision(updated);
       // a launched/running/completed Run stays quiet; the reconciler notifies the terminal outcome
       notifyScheduleRun(schedule, noteId, note.title, lastRun);
       return { note: updated };
@@ -2060,11 +2180,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // a terminal outcome and close the pane. Shares the per-Note flight guard with dispatch so a manual Run
   // now and this reconcile can never mutate the one Note at once (Scheduled prompts).
   const reconcileScheduleRun = async (saveKey: string, noteId: string): Promise<void> => {
-    const flightKey = `${saveKey}:${noteId}`;
+    const resolved = await notes.resolve(saveKey, noteId);
+    // stop when the note is no longer visible from the requested scope
+    if (resolved === undefined) return;
+    const canonicalSaveKey = resolved.key;
+    const flightKey = `${canonicalSaveKey}:${noteId}`;
     if (scheduleRunsInFlight.has(flightKey)) return;
     scheduleRunsInFlight.add(flightKey);
     try {
-      const note = (await notes.list(saveKey))?.find(candidate => candidate.id === noteId);
+      const note = resolved.note;
       const schedule = note?.schedule;
       const lastRun = schedule?.lastRun;
       if (note === undefined || schedule === undefined || lastRun?.status !== 'running') return;
@@ -2096,8 +2220,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       if (closeId !== undefined) await prompts.close(closeId).catch(() => undefined);
       const record = terminal ?? progressed;
       if (record === undefined) return;
-      const updated = await notes.recordLastRun(saveKey, noteId, record);
-      if (updated === undefined || terminal === undefined) return;
+      const updated = await notes.recordLastRun(canonicalSaveKey, noteId, record);
+      // stop when the schedule changed during reconciliation
+      if (updated === undefined) return;
+      publishSharedNoteRevision(updated);
+      // progress changes need no terminal notification
+      if (terminal === undefined) return;
       notifyScheduleRun(schedule, noteId, note.title, terminal);
     } finally {
       scheduleRunsInFlight.delete(flightKey);

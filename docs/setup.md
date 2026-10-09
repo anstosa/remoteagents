@@ -687,6 +687,14 @@ agents opened in the same directory share entries across restarts; resuming a
 Conversation requires a configured Project (scratch agents can name and list
 their Conversations but cannot resume them).
 
+Open a note's **More note actions** menu and enable **Show in all workspaces**
+to make that same note available across Projects and Scratch. Edits, attachments,
+and deletion affect the original note everywhere; sharing does not copy the note
+or change its Schedule's target. Turn the option off to keep the note only in its
+original Project or Scratch group. Doing so from another Workspace closes it
+there after saving any draft. Shared notes, including empty ones, are retained
+when closed.
+
 Use the lock button beside **Delete** in a note's header to protect it from
 deletion. Its icon is open when unlocked and closed when locked.
 Locked notes hide the header's delete button and show a disabled lock

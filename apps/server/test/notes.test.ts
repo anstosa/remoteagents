@@ -274,4 +274,77 @@ describe('worktree notes', () => {
       await expect(new WorktreeNoteService(join(directory, 'empty.json')).scheduled()).resolves.toEqual([]);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
+
+  // expose shared notes after local notes while retaining one canonical stored record
+  it('persists all-workspace visibility without duplicating the original note', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-shared-notes-'));
+    const file = join(directory, 'notes.json');
+    try {
+      const service = new WorktreeNoteService(file);
+      const shared = await service.create('cora', 'Shared note');
+      const local = await service.create('owen', 'Local note');
+      await expect(service.setVisibility('cora', shared!.id, true)).resolves.toEqual({ key: 'cora', note: { ...shared, allWorkspaces: true } });
+
+      await expect(service.list('cora')).resolves.toEqual([{ ...shared, allWorkspaces: true }]);
+      await expect(service.list('owen')).resolves.toEqual([local, { ...shared, allWorkspaces: true }]);
+      await expect(new WorktreeNoteService(file).list('owen')).resolves.toEqual([local, { ...shared, allWorkspaces: true }]);
+
+      const persisted = JSON.parse(await readFile(file, 'utf8')) as Record<string, Array<{ id: string }>>;
+      expect(persisted.cora?.map(note => note.id)).toEqual([shared!.id]);
+      expect(persisted.owen?.map(note => note.id)).toEqual([local!.id]);
+      expect(Object.values(persisted).flat().filter(note => note.id === shared!.id)).toHaveLength(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // mutate one shared note through an alias while preserving its original key and schedule identity
+  it('resolves shared note operations to the original persistence key', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-shared-note-operations-'));
+    const file = join(directory, 'notes.json');
+    const attachment = { name: 'context.txt', data: Buffer.from('context').toString('base64') };
+    const daily = { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true, updatedAt: '2026-09-06T09:00:00-07:00' } as const;
+    try {
+      const service = new WorktreeNoteService(file);
+      const note = await service.create('cora', 'Original title');
+      await service.setVisibility('cora', note!.id, true);
+
+      await expect(service.update('owen', note!.id, 'Edited elsewhere')).resolves.toMatchObject({ text: 'Edited elsewhere', allWorkspaces: true });
+      await expect(service.rename('owen', note!.id, 'Renamed elsewhere')).resolves.toMatchObject({ title: 'Renamed elsewhere', allWorkspaces: true });
+      await expect(service.appendAttachments('owen', note!.id, [attachment])).resolves.toMatchObject({ attachments: [attachment], allWorkspaces: true });
+      await expect(service.attachments('owen', note!.id)).resolves.toEqual([attachment]);
+      await expect(service.setSchedule('owen', note!.id, daily)).resolves.toMatchObject({ schedule: daily, allWorkspaces: true });
+      await expect(service.setLocked('owen', note!.id, true)).resolves.toMatchObject({ locked: true, allWorkspaces: true });
+      await expect(service.delete('owen', note!.id)).resolves.toBe('locked');
+      await service.setLocked('owen', note!.id, false);
+
+      await expect(service.resolve('owen', note!.id)).resolves.toMatchObject({ key: 'cora', note: { id: note!.id } });
+      await expect(service.scheduled()).resolves.toMatchObject([{ key: 'cora', note: { id: note!.id, schedule: daily } }]);
+      await expect(service.setVisibility('owen', note!.id, false)).resolves.toMatchObject({ key: 'cora', note: { id: note!.id } });
+      await expect(service.list('owen')).resolves.toEqual([]);
+      await expect(service.update('owen', note!.id, 'Hidden edit')).resolves.toBeUndefined();
+      await expect(service.list('cora')).resolves.toMatchObject([{ id: note!.id, text: 'Edited elsewhere', title: 'Renamed elsewhere', schedule: daily, attachments: [attachment] }]);
+
+      await service.setVisibility('cora', note!.id, true);
+      await expect(service.removeAttachment('owen', note!.id, 'context.txt')).resolves.toMatchObject({ allWorkspaces: true });
+      await expect(service.removeSchedule('owen', note!.id)).resolves.toMatchObject({ allWorkspaces: true });
+      await expect(service.delete('owen', note!.id)).resolves.toMatchObject({ id: note!.id, allWorkspaces: true });
+      await expect(service.list('cora')).resolves.toEqual([]);
+      await expect(service.list('owen')).resolves.toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // reject malformed visibility metadata at the persistence boundary
+  it('rejects persisted non-boolean all-workspace flags', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-invalid-note-visibility-'));
+    const file = join(directory, 'notes.json');
+    try {
+      await writeFile(file, JSON.stringify({ cora: [{ id: 'note-identifier-000', title: 'Invalid', text: '', allWorkspaces: 'yes' }] }));
+      await expect(new WorktreeNoteService(file).list('cora')).rejects.toThrow('invalid notes file');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });

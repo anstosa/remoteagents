@@ -285,6 +285,48 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
     } finally { await server.close(); }
   }, 15_000);
 
+  // canonicalize shared aliases before applying the per-note flight guard
+  it('refuses a concurrent Run through another workspace alias of the same shared Schedule', async () => {
+    let reached!: () => void;
+    const reachedGate = new Promise<void>(resolve => { reached = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const base = launchFake();
+    const launch = {
+      ...base,
+      // hold the first launch inside the shared flight
+      launch: async (worktreeId: string, kind?: string) => {
+        reached();
+        await gate;
+        return base.launch(worktreeId, kind);
+      }
+    };
+    const alias = testWorktree({ id: 'wt-alias', projectId: 'other', label: 'Other · main', path: '/other', identity: '/other', main: true });
+    const appearing = appearingDiscovery({ worktree, agent: { ...codexPane, attention: 'finished' }, socket: testSocket });
+    const discovery = {
+      ...appearing,
+      // expose both note scopes to route resolution
+      worktreesNow: () => [worktree, alias],
+      worktrees: async () => [worktree, alias]
+    };
+    const { notes, queued, noteId } = await scheduledNote({ target: { worktreeId: 'wt-main' } });
+    await notes.setVisibility('proj', noteId, true);
+    const projects = [testProject({ id: 'proj' }), testProject({ id: 'other', label: 'Other', path: '/other', identity: '/other/.git' })];
+    const server = await runApp({ notes, queued, tmux: recordingTmux(), launch, discovery, projects });
+    try {
+      const first = server.inject(runNow(noteId, 'wt-main'));
+      await reachedGate;
+      const aliasRun = await server.inject(runNow(noteId, 'wt-alias'));
+      expect(aliasRun.statusCode).toBe(409);
+      release();
+      expect((await first).statusCode).toBe(200);
+      expect(base.kinds).toEqual(['codex']);
+    } finally {
+      release();
+      await server.close();
+    }
+  }, 15_000);
+
   it('launches fresh for a Scratch target through launchHome', async () => {
     const tmux = recordingTmux();
     const launch = launchFake();

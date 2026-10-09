@@ -4,7 +4,8 @@ import { dirname } from 'node:path';
 import { maxStoredAttachmentFootprintBytes, promptAttachmentBytes, promptAttachmentName, promptAttachmentsStorageFootprint, validPromptAttachments, type PromptAttachment } from '../prompts/validation.js';
 import { type Schedule, type ScheduleLastRun, validSchedule } from '../schedule/types.js';
 
-export type WorktreeNote = { id: string; text: string; title?: string; source?: 'queued-prompt'; schedule?: Schedule; attachments?: PromptAttachment[]; locked?: boolean };
+export type WorktreeNote = { id: string; text: string; title?: string; source?: 'queued-prompt'; schedule?: Schedule; attachments?: PromptAttachment[]; locked?: boolean; allWorkspaces?: boolean };
+export type WorktreeNoteLocation = { key: string; note: WorktreeNote };
 type StoredNotes = Record<string, WorktreeNote[]>;
 
 const maxNotesPerWorktree = 50;
@@ -34,9 +35,9 @@ const normalizedAttachments = (attachments: PromptAttachment[]): PromptAttachmen
 // validate persisted note data
 const validNote = (value: unknown): value is WorktreeNote => {
   if (value === null || typeof value !== 'object') return false;
-  const note = value as { id?: unknown; text?: unknown; title?: unknown; source?: unknown; schedule?: unknown; attachments?: unknown; locked?: unknown };
+  const note = value as { id?: unknown; text?: unknown; title?: unknown; source?: unknown; schedule?: unknown; attachments?: unknown; locked?: unknown; allWorkspaces?: unknown };
   const attachments = note.attachments === undefined ? [] : note.attachments;
-  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text) && (note.title === undefined || typeof note.title === 'string' && validTitle(note.title)) && (note.source === undefined || note.source === 'queued-prompt') && (note.schedule === undefined || validSchedule(note.schedule)) && (note.locked === undefined || typeof note.locked === 'boolean') && Array.isArray(attachments) && attachments.every(attachment => attachment !== null && typeof attachment === 'object' && typeof (attachment as { name?: unknown }).name === 'string' && typeof (attachment as { data?: unknown }).data === 'string') && validPromptAttachments(attachments as PromptAttachment[]) && (attachments as PromptAttachment[]).every(attachment => promptAttachmentName(attachment.name) === attachment.name);
+  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text) && (note.title === undefined || typeof note.title === 'string' && validTitle(note.title)) && (note.source === undefined || note.source === 'queued-prompt') && (note.schedule === undefined || validSchedule(note.schedule)) && (note.locked === undefined || typeof note.locked === 'boolean') && (note.allWorkspaces === undefined || typeof note.allWorkspaces === 'boolean') && Array.isArray(attachments) && attachments.every(attachment => attachment !== null && typeof attachment === 'object' && typeof (attachment as { name?: unknown }).name === 'string' && typeof (attachment as { data?: unknown }).data === 'string') && validPromptAttachments(attachments as PromptAttachment[]) && (attachments as PromptAttachment[]).every(attachment => promptAttachmentName(attachment.name) === attachment.name);
 };
 const totalNoteLength = (stored: StoredNotes) => Object.values(stored).flat().reduce((total, note) => total + note.text.length + (note.title?.length ?? 0), 0);
 // total decoded attachment bytes
@@ -50,10 +51,29 @@ export class WorktreeNoteService {
   // bind note storage and its decoded and serialized attachment budgets
   constructor(private readonly file = process.env.RAC_NOTES_FILE ?? '.data/notes.json', private readonly attachmentStorageLimit = defaultAttachmentStorageLimit, private readonly attachmentFootprintLimit = maxStoredAttachmentFootprintBytes) {}
 
+  // list owned notes first, followed by notes shared from other keys
   async list(worktreeId: string): Promise<WorktreeNote[] | undefined> {
+    // reject invalid persistence keys
     if (!validWorktreeId(worktreeId)) return undefined;
     await this.mutation;
-    return [...((await this.read())[worktreeId] ?? [])];
+    const stored = await this.read();
+    const own = stored[worktreeId] ?? [];
+    const shared: WorktreeNote[] = [];
+    // append shared notes from every other persistence key
+    for (const [key, notes] of Object.entries(stored)) {
+      // keep original notes in their existing leading position
+      if (key === worktreeId) continue;
+      shared.push(...notes.filter(note => note.allWorkspaces === true));
+    }
+    return [...own, ...shared];
+  }
+
+  // resolve one note visible from a persistence key to its original storage key
+  async resolve(worktreeId: string, noteId: string): Promise<WorktreeNoteLocation | undefined> {
+    // reject malformed identifiers before reading storage
+    if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
+    await this.mutation;
+    return this.visibleNote(await this.read(), worktreeId, noteId);
   }
 
   // every scheduled note across all keys, paired with its persistence key — the scheduler's
@@ -106,8 +126,8 @@ export class WorktreeNoteService {
     // reject invalid identifiers
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
     await this.mutation;
-    const note = (await this.read())[worktreeId]?.find(candidate => candidate.id === noteId);
-    return note === undefined ? undefined : [...(note.attachments ?? [])];
+    const resolved = this.visibleNote(await this.read(), worktreeId, noteId);
+    return resolved === undefined ? undefined : [...(resolved.note.attachments ?? [])];
   }
 
   // append attachments atomically
@@ -116,7 +136,7 @@ export class WorktreeNoteService {
     // reject malformed additions
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId) || normalized === undefined || normalized.length === 0) return 'invalid';
     return await this.mutate(stored => {
-      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      const note = this.visibleNote(stored, worktreeId, noteId)?.note;
       // require an existing note
       if (note === undefined) return undefined;
       const combined = normalizedAttachments([...(note.attachments ?? []), ...normalized]);
@@ -139,7 +159,7 @@ export class WorktreeNoteService {
     // reject invalid identifiers and names
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId) || normalizedName === undefined) return undefined;
     return await this.mutate(stored => {
-      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      const note = this.visibleNote(stored, worktreeId, noteId)?.note;
       // require an existing matching attachment
       if (note === undefined || note.attachments === undefined) return undefined;
       const next = note.attachments.filter(attachment => attachment.name !== normalizedName);
@@ -151,11 +171,15 @@ export class WorktreeNoteService {
     });
   }
 
+  // update one owned or shared note at its canonical storage location
   async update(worktreeId: string, noteId: string, text: string): Promise<WorktreeNote | undefined> {
+    // reject malformed identifiers and content
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId) || !validText(text)) return undefined;
     return await this.mutate(stored => {
-      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      const note = this.visibleNote(stored, worktreeId, noteId)?.note;
+      // hide notes outside the requesting scope
       if (note === undefined) return undefined;
+      // preserve the aggregate text budget
       if (totalNoteLength(stored) - note.text.length + text.length > maxTotalNoteLength) return undefined;
       note.text = text;
       return { ...note };
@@ -166,7 +190,7 @@ export class WorktreeNoteService {
   async rename(worktreeId: string, noteId: string, title: string): Promise<WorktreeNote | undefined> {
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId) || !validTitle(title)) return undefined;
     return await this.mutate(stored => {
-      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      const note = this.visibleNote(stored, worktreeId, noteId)?.note;
       if (note === undefined) return undefined;
       if (totalNoteLength(stored) - (note.title?.length ?? 0) + title.length > maxTotalNoteLength) return undefined;
       note.title = title;
@@ -179,7 +203,7 @@ export class WorktreeNoteService {
     // reject invalid identifiers
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
     return await this.mutate(stored => {
-      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      const note = this.visibleNote(stored, worktreeId, noteId)?.note;
       // require an existing note
       if (note === undefined) return undefined;
       // omit the false default for legacy-compatible storage
@@ -193,14 +217,32 @@ export class WorktreeNoteService {
   async delete(worktreeId: string, noteId: string): Promise<WorktreeNote | 'locked' | undefined> {
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
     return await this.mutate(stored => {
-      const notes = stored[worktreeId] ?? [];
+      const resolved = this.visibleNote(stored, worktreeId, noteId);
+      // hide notes outside the requesting scope
+      if (resolved === undefined) return undefined;
+      const notes = stored[resolved.key] ?? [];
       const index = notes.findIndex(note => note.id === noteId);
       if (index < 0) return undefined;
       // refuse locks before changing the stored collection
       if (notes[index]!.locked === true) return 'locked';
       const [note] = notes.splice(index, 1);
-      if (notes.length === 0) delete stored[worktreeId];
+      if (notes.length === 0) delete stored[resolved.key];
       return note;
+    });
+  }
+
+  // set global visibility while retaining the note under its original persistence key
+  async setVisibility(worktreeId: string, noteId: string, allWorkspaces: boolean): Promise<WorktreeNoteLocation | undefined> {
+    // reject malformed identifiers before entering the mutation queue
+    if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
+    return await this.mutate(stored => {
+      const resolved = this.visibleNote(stored, worktreeId, noteId);
+      // hide notes outside the requesting scope
+      if (resolved === undefined) return undefined;
+      // omit the false default for legacy-compatible storage
+      if (allWorkspaces) resolved.note.allWorkspaces = true;
+      else delete resolved.note.allWorkspaces;
+      return { key: resolved.key, note: { ...resolved.note } };
     });
   }
 
@@ -209,7 +251,7 @@ export class WorktreeNoteService {
   async setSchedule(worktreeId: string, noteId: string, schedule: Schedule): Promise<WorktreeNote | undefined> {
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId) || !validSchedule(schedule)) return undefined;
     return await this.mutate(stored => {
-      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      const note = this.visibleNote(stored, worktreeId, noteId)?.note;
       if (note === undefined) return undefined;
       note.schedule = schedule;
       return { ...note };
@@ -221,7 +263,7 @@ export class WorktreeNoteService {
   async recordLastRun(worktreeId: string, noteId: string, lastRun: ScheduleLastRun): Promise<WorktreeNote | undefined> {
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
     return await this.mutate(stored => {
-      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      const note = this.visibleNote(stored, worktreeId, noteId)?.note;
       if (note === undefined || note.schedule === undefined) return undefined;
       note.schedule = { ...note.schedule, lastRun };
       return { ...note };
@@ -232,11 +274,27 @@ export class WorktreeNoteService {
   async removeSchedule(worktreeId: string, noteId: string): Promise<WorktreeNote | undefined> {
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
     return await this.mutate(stored => {
-      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      const note = this.visibleNote(stored, worktreeId, noteId)?.note;
       if (note === undefined) return undefined;
       delete note.schedule;
       return { ...note };
     });
+  }
+
+  // prefer a note owned by the requesting key, then allow shared notes from other keys
+  private visibleNote(stored: StoredNotes, worktreeId: string, noteId: string): WorktreeNoteLocation | undefined {
+    const own = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+    // preserve owner access regardless of visibility
+    if (own !== undefined) return { key: worktreeId, note: own };
+    // search only explicitly shared foreign notes
+    for (const [key, notes] of Object.entries(stored)) {
+      // skip the already-searched owner collection
+      if (key === worktreeId) continue;
+      const shared = notes.find(candidate => candidate.id === noteId && candidate.allWorkspaces === true);
+      // return the canonical persistence key with the note
+      if (shared !== undefined) return { key, note: shared };
+    }
+    return undefined;
   }
 
   private async mutate<T>(change: (stored: StoredNotes) => T | Promise<T>): Promise<T> {
