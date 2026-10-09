@@ -83,7 +83,7 @@ const adapterUpdates = z.object({ current: command, latest: command, run: comman
 const adapterEntry = z.object({ program: adapterProgram, args: z.array(adapterArgument).max(64).optional(), env: z.record(adapterEnvName, adapterArgument).optional(), setup: command.optional(), teardown: command.optional(), updates: adapterUpdates.optional() }).strict();
 // keyed by kind, one strict entry each; an omitted block is observe-only (nothing launches)
 const adaptersSchema = z.object({ codex: adapterEntry.optional(), omx: adapterEntry.optional(), claude: adapterEntry.optional(), pi: adapterEntry.optional(), opencode: adapterEntry.optional() }).strict();
-// constrain icons to bundled artwork
+// constrain icons to supported aliases
 const instanceIcon = z.enum(instanceIconNames);
 const remoteServer = z.object({ url: z.string(), name: serverName.optional(), icon: instanceIcon.optional() }).strict();
 const davoName = z.string().trim().min(1).max(80).refine(value => !value.includes('\0'), 'NUL is forbidden');

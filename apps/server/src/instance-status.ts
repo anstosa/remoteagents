@@ -60,7 +60,7 @@ function publishedIdentity(value: unknown): PublishedIdentity | undefined {
   // require one metadata object
   if (value === null || typeof value !== 'object') return undefined;
   const metadata = value as { name?: unknown; icon?: unknown };
-  // require a safe name and bundled icon
+  // require a safe name and supported icon alias
   if (typeof metadata.name !== 'string' || metadata.name !== metadata.name.trim() || metadata.name.length === 0 || metadata.name.length > 80 || metadata.name.includes('\0') || (metadata.icon !== undefined && (typeof metadata.icon !== 'string' || !isInstanceIcon(metadata.icon)))) return undefined;
   return { name: metadata.name, ...(metadata.icon === undefined ? {} : { icon: metadata.icon }) };
 }

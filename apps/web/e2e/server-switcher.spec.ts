@@ -53,9 +53,10 @@ test('shows and switches the configured server on authentication and output scre
     const url = new URL(request.url());
     // complete remote navigation without network access
     if (url.hostname === 'framework.santosa.dev') return route.fulfill({ contentType: 'text/html', body: '<title>Framework target</title><h1>Framework target</h1>' });
-    // render the bundled icon artwork rather than Vite's HTML fallback
+    // render the shared icon fallback instead of vite html
     const icon = /^\/instance-icons\/(\w+)\.svg$/u.exec(url.pathname)?.[1];
-    if (icon !== undefined && isInstanceIcon(icon)) return route.fulfill({ contentType: 'image/svg+xml', body: instanceIconSvg(icon) });
+    // keep fixture aliases independent of local artwork
+    if (icon !== undefined && isInstanceIcon(icon)) return route.fulfill({ contentType: 'image/svg+xml', body: instanceIconSvg() });
     if (!url.pathname.startsWith('/api/')) return route.continue();
     if (url.pathname === '/api/auth/session') {
       if (screen === 'login') return route.fulfill({ status: 401, json: { error: 'unauthorized' } });
@@ -254,37 +255,6 @@ test('shows and switches the configured server on authentication and output scre
   await remote.click();
   await expect(page).toHaveURL('https://framework.santosa.dev/');
   await expect(page.getByRole('heading', { name: 'Framework target' })).toBeVisible();
-});
-
-test('keeps the heart and potato artwork clear of the server status corner', async ({ page }) => {
-  const overlaps = await page.evaluate(async icons => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 64;
-    canvas.height = 64;
-    const context = canvas.getContext('2d')!;
-    const counts: number[] = [];
-    // sample the selector dot footprint in the SVG viewbox
-    for (const { svg, colors } of icons) {
-      const image = new Image();
-      image.src = `data:image/svg+xml,${encodeURIComponent(svg)}`;
-      await image.decode();
-      context.clearRect(0, 0, 64, 64);
-      context.drawImage(image, 0, 0, 64, 64);
-      const pixels = context.getImageData(49, 6, 10, 10).data;
-      let count = 0;
-      // count ornament-colored pixels under the status dot
-      for (let index = 0; index < pixels.length; index += 4) {
-        // ignore the shared background and frame colors
-        if (colors.some(color => color.every((channel, part) => Math.abs(pixels[index + part]! - channel) < 25))) count++;
-      }
-      counts.push(count);
-    }
-    return counts;
-  }, [
-    { svg: instanceIconSvg('heart'), colors: [[166, 227, 161]] },
-    { svg: instanceIconSvg('potato'), colors: [[198, 138, 82], [135, 91, 82], [230, 185, 120]] },
-  ]);
-  expect(overlaps).toEqual([0, 0]);
 });
 
 test('leads the empty console tab row with the server selector', async ({ page }) => {

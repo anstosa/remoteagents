@@ -67,7 +67,7 @@ import { INTERACTIVE_REVIEW_GENERATION_TIMEOUT_MS, parseReviewRequestId, parseRe
 import { configuredWorktreeForWorkspace, projectIdOf, worktreeById, worktreeHostRoot, worktreeMatchesWorkspace, worktreePathOf, worktreePrBase, worktreeWireId } from './workspaces/resolver.js';
 import { previewFileBytes, WorkspaceFileService } from './workspace-files/service.js';
 import { ComparisonService, type ComparisonScope } from './git/comparison-service.js';
-import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
+import { loadInstanceIconSvg, isInstanceIcon } from './instance-icon.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest, type InstanceStatus } from './instance-status.js';
 import { createHmac, randomBytes } from 'node:crypto';
 import { defaultIntegrationConfig, parseDavoSettings, resolveClaudeProgram, resolveCodexProgram, reviewConfig } from './config/schema.js';
@@ -539,14 +539,14 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return { name: server.name, ...(server.icon === undefined ? {} : { icon: server.icon }), attention: await localInstanceAttention() };
   });
   // serve the configured favicon before authentication
-  app.get('/favicon.svg', async (request, reply) => { browser(request); return reply.type('image/svg+xml').send(instanceIconSvg(config.icon)); });
-  // serve bundled artwork for the server menu
+  app.get('/favicon.svg', async (request, reply) => { browser(request); return reply.type('image/svg+xml').send(await loadInstanceIconSvg(config.icon)); });
+  // serve local artwork or the portable server menu fallback
   app.get('/instance-icons/:icon.svg', async (request, reply) => {
     browser(request);
     const icon = (request.params as { icon: string }).icon;
     // reject unknown icon paths
     if (!isInstanceIcon(icon)) return reply.code(404).send({ error: 'icon unavailable' });
-    return reply.type('image/svg+xml').send(instanceIconSvg(icon));
+    return reply.type('image/svg+xml').send(await loadInstanceIconSvg(icon));
   });
   app.get('/preview/:token', temporaryPreview);
   app.get('/preview/:token/*', temporaryPreview);

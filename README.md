@@ -281,6 +281,15 @@ their canonical URL; each server publishes its own name and icon through the
 authenticated peer-status API. The login, control, and output screens show one
 direct navigation button for each server.
 
+Only the terminal icon is bundled. Custom `heart` and `potato` SVGs are
+server-local files named `heart.svg` and `potato.svg` in an `instance-icons/`
+directory beside the file selected by `RAC_CONFIG`. The favicon and server menu
+load those files at request time; a missing file uses the terminal icon instead.
+Keep custom artwork out of Git and provision it separately on each host. The
+Compose checkout's `config/instance-icons/` directory is ignored by Git and
+excluded from the build context; its runtime bind mount makes the files available
+without baking them into the image.
+
 Upgrading from an older `worktrees[]` configuration is automatic: start the
 console once and it migrates the config and its `.data` stores to Projects,
 leaving `*.pre-projects.bak` backups. Preview the plan with

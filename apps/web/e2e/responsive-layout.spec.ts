@@ -229,7 +229,8 @@ test('desktop flyout triggers show edge carets and remain clickable', async ({ p
   await page.setViewportSize({ width: 1400, height: 900 });
   await installPaneMock(page);
   // serve the bundled server artwork instead of Vite's html fallback
-  await page.route('**/instance-icons/terminal.svg', route => route.fulfill({ contentType: 'image/svg+xml', body: instanceIconSvg('terminal') }));
+  // serve the shared terminal artwork
+  await page.route('**/instance-icons/terminal.svg', route => route.fulfill({ contentType: 'image/svg+xml', body: instanceIconSvg() }));
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());

@@ -3,6 +3,7 @@
 .omx
 .env
 compose.override.yaml
+config/instance-icons
 node_modules
 **/node_modules
 **/dist
