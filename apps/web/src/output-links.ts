@@ -231,7 +231,6 @@ export const createOutputLinkOverlays = (container: HTMLElement, onOpen: () => v
           anchor.style.background = 'transparent';
           anchor.style.cursor = 'pointer';
           anchor.addEventListener('mousedown', event => event.stopPropagation());
-          anchor.addEventListener('mouseup', event => event.stopPropagation());
           anchor.addEventListener('click', event => {
             event.stopPropagation();
             onOpen();

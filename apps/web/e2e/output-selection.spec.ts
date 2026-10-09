@@ -738,6 +738,31 @@ test('ordinary Windows selection survives an immediate streamed row update', asy
   expect.soft(toolbarVisible).toBe(true);
 });
 
+// xterm ends a drag only when the mouseup reaches the document
+test('ends a terminal drag selection released over an output link', async ({ page }) => {
+  await installPaneMock(page);
+  await routeSelectionApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', '\r\n\r\nSelectable output then src/app.ts and a long tail of more text\r\n');
+  const screen = page.locator('.log-canvas .xterm-screen');
+  const fileLink = page.locator('.log-canvas .output-link-overlay[data-output-file-path="src/app.ts"]');
+  await expect(fileLink).toBeVisible();
+  const [screenBounds, linkBounds] = await Promise.all([screen.boundingBox(), fileLink.boundingBox()]);
+  const y = linkBounds!.y + linkBounds!.height / 2;
+  await page.mouse.move(screenBounds!.x + 2, y);
+  await page.mouse.down();
+  await page.mouse.move(linkBounds!.x + linkBounds!.width / 2, y, { steps: 4 });
+  await page.mouse.up();
+  const selection = page.locator('.log-canvas .xterm-selection > div');
+  const selectedWidth = () => selection.evaluateAll(boxes => boxes.reduce((total, box) => total + box.getBoundingClientRect().width, 0));
+  await expect.poll(selectedWidth).toBeGreaterThan(0);
+  const released = await selectedWidth();
+  await page.mouse.move(screenBounds!.x + screenBounds!.width - 4, y + linkBounds!.height * 3, { steps: 4 });
+  await page.waitForTimeout(100);
+  expect(await selectedWidth()).toBe(released);
+});
+
 // let a Windows output drag cross semantic file and URL overlays without becoming a link drag
 test('ordinary Windows drag selects Codex output starting on a file link', async ({ page }, testInfo) => {
   await page.addInitScript(() => Object.defineProperty(navigator, 'platform', { get: () => 'Win32' }));
