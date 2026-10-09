@@ -51,6 +51,25 @@ const swipe = async (page: Page, control: Locator, dx: number, dy = 0, cancel = 
   } finally { await session.detach(); }
 };
 
+// open the chooser with an upward gesture without changing the active workspace
+test('swipes up to open workspaces without switching and selects normally', async ({ page }) => {
+  const dropdown = page.getByRole('tab', { selected: true });
+  const sheet = page.getByRole('dialog', { name: 'Workspaces' });
+  await swipe(page, dropdown, 0, -90);
+  await expect(dropdown).toHaveAccessibleName(/^Cora —/u);
+  await expect(page.getByRole('tabpanel')).toHaveAccessibleName(/^Cora —/u);
+  await expect(sheet).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(sheet).toHaveCount(0);
+  await swipe(page, dropdown, -20, -70);
+  await expect(dropdown).toHaveAccessibleName(/^Cora —/u);
+  await expect(page.getByRole('tabpanel')).toHaveAccessibleName(/^Cora —/u);
+  await expect(sheet).toBeVisible();
+  await sheet.getByRole('button', { name: /^Dave\s/u }).tap();
+  await expect(dropdown).toHaveAccessibleName(/^Dave —/u);
+  await expect(sheet).toHaveCount(0);
+});
+
 // navigate by one menu entry per gesture without wrapping or opening the chooser
 test('swipes one worktree in either direction and stops at both ends', async ({ page }) => {
   test.setTimeout(60_000);
@@ -71,19 +90,33 @@ test('swipes one worktree in either direction and stops at both ends', async ({ 
   await expect(sheet).toHaveCount(0);
 });
 
-// ignore short, vertical and interrupted gestures without disabling taps or keyboard activation
-test('ignores non-horizontal and canceled gestures', async ({ page }) => {
+// ignore incomplete and non-dominant gestures without disabling taps or keyboard activation
+test('ignores downward, short, diagonal and canceled gestures', async ({ page }) => {
   const dropdown = page.getByRole('tab', { selected: true });
   const sheet = page.getByRole('dialog', { name: 'Workspaces' });
+  await swipe(page, dropdown, 0, 90);
+  await expect(dropdown).toHaveAccessibleName(/^Cora —/u);
+  await expect(sheet).toHaveCount(0);
+  await swipe(page, dropdown, 0, -20);
+  await expect(dropdown).toHaveAccessibleName(/^Cora —/u);
+  await expect(sheet).toHaveCount(0);
   await swipe(page, dropdown, -15);
   await expect(dropdown).toHaveAccessibleName(/^Cora —/u);
-  // a short gesture may legitimately count as a tap
+  // a short horizontal gesture may still count as a tap
   await page.keyboard.press('Escape');
-  await swipe(page, dropdown, -20, -70);
+  await expect(sheet).toHaveCount(0);
+  await swipe(page, dropdown, -70, -70);
   await expect(dropdown).toHaveAccessibleName(/^Cora —/u);
   await expect(sheet).toHaveCount(0);
   await swipe(page, dropdown, -90, 0, true);
   await expect(dropdown).toHaveAccessibleName(/^Cora —/u);
+  await expect(sheet).toHaveCount(0);
+  await swipe(page, dropdown, 0, -90, true);
+  await expect(dropdown).toHaveAccessibleName(/^Cora —/u);
+  await expect(sheet).toHaveCount(0);
+  await dropdown.tap();
+  await expect(sheet).toBeVisible();
+  await page.keyboard.press('Escape');
   await expect(sheet).toHaveCount(0);
   await dropdown.press('Enter');
   await expect(sheet).toBeVisible();

@@ -28,13 +28,19 @@ const saveSplit = (worktreeId: string | undefined, key: string | undefined) => {
   catch { /* browser storage is optional */ }
 };
 
-// move one ordered item for a deliberate horizontal touch, leaving taps and vertical scrolling alone
-export function usePanelSwipe(carousel: { panels: readonly { key: string }[]; visibleKey: string | undefined; show: (key: string) => void }) {
+// move one ordered item horizontally, optionally handling an upward gesture on a chooser
+export function usePanelSwipe(carousel: { panels: readonly { key: string }[]; visibleKey: string | undefined; show: (key: string) => void; onSwipeUp?: () => void }) {
   const start = useRef<{ pointerId: number; x: number; y: number } | undefined>(undefined);
   const touchStart = useRef<{ identifier: number; x: number; y: number } | undefined>(undefined);
   const swiped = useRef(false);
-  // move one split only for a deliberate horizontal gesture
+  // handle one deliberate gesture without turning its release into a click
   const finishSwipe = (dx: number, dy: number) => {
+    // reserve upward gestures only for controls that explicitly opt in
+    if (carousel.onSwipeUp !== undefined && dy <= -40 && -dy > Math.abs(dx) * 1.25) {
+      swiped.current = true;
+      carousel.onSwipeUp();
+      return;
+    }
     // preserve taps and vertical content scrolling
     if (Math.abs(dx) < 40 || Math.abs(dx) <= Math.abs(dy) * 1.25) return;
     swiped.current = true;

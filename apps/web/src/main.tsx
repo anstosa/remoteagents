@@ -7727,9 +7727,7 @@ function workspaceSheetDetail(entry: DashboardItem): string {
   return [...(splits.length === 0 ? ['Empty'] : splits), ...(state === undefined ? [] : [state])].join(' · ');
 }
 
-// The phone tab row's one tab, the current Workspace as a dropdown: its marks, label and rolled-up
-// state, with a badge counting the Agents in other Workspaces that wait on the operator. It opens a
-// bottom sheet listing every Workspace, then New Workspace…, which opens the + menu.
+// show the current workspace on phones, opening its chooser on a tap or upward swipe
 function WorkspaceDropdown({ items, current, onSelect, onNewWorkspace, onRenameWorktree, renameDisabled, onContextMenu, onTurnOff }: { items: readonly DashboardItem[]; current: number; onSelect: (index: number) => void; onNewWorkspace: () => void; onRenameWorktree: (worktreeId: string) => void; renameDisabled: boolean; onContextMenu: (event: React.MouseEvent<HTMLButtonElement>, entry: DashboardItem) => void; onTurnOff: (entry: DashboardItem) => void }) {
   const [open, setOpen] = useState(false);
   const entry = items[current];
@@ -7738,7 +7736,9 @@ function WorkspaceDropdown({ items, current, onSelect, onNewWorkspace, onRenameW
     panels: items,
     visibleKey: entry?.key,
     // use the same selection path as the workspace sheet
-    show: key => { setOpen(false); onSelect(items.findIndex(candidate => candidate.key === key)); }
+    show: key => { setOpen(false); onSelect(items.findIndex(candidate => candidate.key === key)); },
+    // open rather than toggle so a swipe never closes the chooser
+    onSwipeUp: () => setOpen(true)
   });
   // omit the selector when no workspace remains
   if (entry === undefined) return null;

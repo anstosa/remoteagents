@@ -302,6 +302,7 @@ test('the split indicator swipes in both directions without opening its menu', a
   await expect(page.getByRole('menu', { name: 'Splits' })).toBeVisible();
 });
 
+// preserve note navigation and the mobile editor's unsaved draft
 test('swiping a note in preview or edit mode changes splits', async ({ page }) => {
   await toolbar(page).getByRole('button', { name: 'Notes (1)' }).click();
   await page.getByRole('button', { name: 'Phone checklist…', exact: true }).click();
@@ -327,7 +328,9 @@ test('swiping a note in preview or edit mode changes splits', async ({ page }) =
   await swipe(page, editor, 300);
   await expect(agentPanel(page)).toBeInViewport({ ratio: 0.99 });
   await chooseSplit(page, 'Note');
-  await expect(note.locator('.note-markdown')).toContainText('Swipe draft');
+  // a native mobile blur retains the editor rather than returning to preview
+  await expect(editor).toBeVisible();
+  await expect(editor).toHaveValue('Phone checklist\nSwipe draft');
 });
 
 test('with only the agent panel, and so no dots, the phone toolbar still keeps to one row', async ({ page }) => {
