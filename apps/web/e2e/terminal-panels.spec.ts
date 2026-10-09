@@ -125,6 +125,8 @@ const expectFullSplitHeight = async (panel: Locator) => {
 
 // the toolbar's Terminal button: labelled on desktop, a square icon button on the phone
 test('terminal picker is the toolbar’s Terminal button on desktop and phone', async ({ page }) => {
+  // opt in for terminal picker marker checks
+  await page.addInitScript(() => localStorage.setItem('rac.flyout-markers', 'enabled'));
   await installPaneMock(page);
   await routeApi(page);
   await page.goto('/');
@@ -139,6 +141,7 @@ test('terminal picker is the toolbar’s Terminal button on desktop and phone', 
     await expect(trigger).toHaveAttribute('title', 'Open a terminal');
     await expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
     await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await expect(trigger.locator('.flyout-caret')).toBeVisible();
     await expect(trigger.locator('svg[aria-hidden="true"]')).toBeVisible();
     await expect(trigger.locator('.terminal-minimized-count')).toHaveText('1');
     // match the terminal glyph to its neighboring action icons
@@ -1995,6 +1998,7 @@ const routePlace = (page: Page, panes: Pane[], requests: string[], options: { ag
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
+// keep directory-shell creation on its direct empty-state path
 test('a directory-Project Agent opens Terminals and notes at its Place', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await installPaneMock(page);
@@ -2008,9 +2012,10 @@ test('a directory-Project Agent opens Terminals and notes at its Place', async (
   // the Agent's notes are the Place's notes
   await expect.poll(() => requests).toContain(`GET ${notesPlacePath}/notes`);
 
-  // New shell creates a Console shell at the Place and opens it as a Terminal
+  // no pickable pane means the button creates and opens a shell directly
   await openPicker(page);
-  await page.getByRole('menuitem', { name: 'New shell' }).click();
+  await expect.poll(() => requests).toContain(`POST ${notesPlacePath}/shells`);
+  await expect(page.getByRole('menu', { name: 'Open a terminal' })).toHaveCount(0);
   await seedPaneSize(page, '%9', 80, 24);
   await pushBytes(page, '%9', 'shell at the notes place\r\n');
   await expect(page.locator('.terminal-pane[data-panel-key="%9"]')).toBeVisible();

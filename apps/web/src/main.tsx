@@ -5646,7 +5646,7 @@ const openNewShell = async (worktreeId: string, { refreshPanes, openPane }: Work
   return undefined;
 };
 
-// render the terminal icon button and worktree pane picker
+// render the terminal action and available pane picker
 function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; terminals: WorktreeTerminals }) {
   const { open, panes, refreshPanes, openPane, endPane } = terminals;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -5655,6 +5655,8 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
   const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(menuOpen, { placement: 'above', align: 'start' });
   const openIds = new Set(open.map(terminal => terminal.paneId));
   const claimedWindows = claimedTerminalWindows(panes, openIds);
+  // match the marker and menu semantics to the click path
+  const hasFlyout = menuOpen || panes.some(pane => pickableTerminalPane(pane, openIds, claimedWindows));
   const createShell = () => openNewShell(worktreeId, terminals);
   const newShell = async () => {
     setBusy(true);
@@ -5664,18 +5666,20 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
       if (failure === undefined) setMenuOpen(false);
     } finally { setBusy(false); }
   };
-  // with nothing to pick, the menu's only choice is a new shell, so make one without it; a
-  // failed listing or shell opens the menu instead
+  // honor the displayed action even when panes change before a click
+  // failed shell creation still opens the picker for recovery
   const toggle = async () => {
     if (menuOpen) { setMenuOpen(false); return; }
     if (busy) return;
     setBusy(true);
     setError(undefined);
     try {
-      const list = await refreshPanes();
-      if (list === undefined) { setMenuOpen(true); return; }
-      const listedClaims = claimedTerminalWindows(list, openIds);
-      if (list.some(pane => pickableTerminalPane(pane, openIds, listedClaims))) { setMenuOpen(true); return; }
+      // refresh picker contents without switching to direct shell creation
+      if (hasFlyout) {
+        await refreshPanes();
+        setMenuOpen(true);
+        return;
+      }
       const failure = await createShell();
       if (failure !== undefined) { setError(failure); setMenuOpen(true); }
     } finally { setBusy(false); }
@@ -5703,7 +5707,7 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
       {showEnd && <button type="button" className="terminal-picker-end" aria-label={`End ${terminalPaneLabel(pane)}`} title="End this shell" disabled={busy} onClick={() => void endShell(pane)}><LauncherRowIcon name="trash" /></button>}
     </div>;
   };
-  return <><span className="terminal-picker-wrap" ref={anchorRef}><button type="button" className={`terminal-picker-toggle toolbar-button${open.length > 0 ? ' panel-open' : ''}`} aria-haspopup="menu" data-context-flyout aria-expanded={menuOpen} aria-busy={busy && !menuOpen} aria-label="Open a terminal" aria-description={minimizedDescription} title="Open a terminal" onClick={() => void toggle()}><span className="flyout-caret" aria-hidden="true" /><LauncherRowIcon name="terminal" /><span className="toolbar-label">Terminal</span>{minimizedCount > 0 && <span className="saved-prompts-count terminal-minimized-count" aria-hidden="true">{minimizedCount}</span>}</button></span>
+  return <><span className="terminal-picker-wrap" ref={anchorRef}><button type="button" className={`terminal-picker-toggle toolbar-button${open.length > 0 ? ' panel-open' : ''}`} aria-haspopup={hasFlyout ? 'menu' : undefined} data-context-flyout={hasFlyout || undefined} aria-expanded={hasFlyout ? menuOpen : undefined} aria-busy={busy && !menuOpen} aria-label="Open a terminal" aria-description={minimizedDescription} title="Open a terminal" onClick={() => void toggle()}>{hasFlyout && <span className="flyout-caret" aria-hidden="true" />}<LauncherRowIcon name="terminal" /><span className="toolbar-label">Terminal</span>{minimizedCount > 0 && <span className="saved-prompts-count terminal-minimized-count" aria-hidden="true">{minimizedCount}</span>}</button></span>
     {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="terminal-picker flyout-menu" ref={flyoutRef} style={style} role="menu" aria-label="Open a terminal">
       {error !== undefined && <div className="terminal-picker-empty" role="alert">{error}</div>}
       {panes.length === 0 && <div className="terminal-picker-empty">No panes yet</div>}

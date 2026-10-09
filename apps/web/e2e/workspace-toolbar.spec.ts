@@ -199,6 +199,96 @@ test('Terminal opens a new shell at once when there is nothing to pick', async (
   await expect(page.getByRole('menu', { name: 'Open a terminal' })).toHaveCount(0);
 });
 
+// match terminal markers to real picker availability on desktop and phone
+for (const width of [1440, 390]) {
+  // follow empty, open-only and minimized shell states
+  test(`Terminal marker follows picker availability at ${width}px`, async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('rac.flyout-markers', 'enabled'));
+    const harness = await mount(page);
+    await page.getByRole('tab', { name: /^Idle/u }).click();
+    await page.setViewportSize({ width, height: 900 });
+    const terminal = toolbar(page).getByRole('button', { name: 'Open a terminal' });
+    const emptyTerminal = page.getByRole('region', { name: 'Empty workspace' }).getByRole('button', { name: 'Open a terminal' });
+    // both empty-workspace controls create a shell without advertising a menu
+    for (const trigger of [terminal, emptyTerminal]) {
+      await expect(trigger.locator('.flyout-caret')).toHaveCount(0);
+      await expect(trigger).not.toHaveAttribute('aria-haspopup', 'menu');
+      await expect(trigger).not.toHaveAttribute('data-context-flyout', 'true');
+      await expect(trigger).not.toHaveAttribute('aria-expanded', /./u);
+    }
+    await emptyTerminal.click();
+    await expect.poll(harness.shells).toHaveLength(1);
+    await expect(page.getByRole('menu', { name: 'Open a terminal' })).toHaveCount(0);
+    await expect(terminal.locator('.flyout-caret')).toHaveCount(0);
+    await expect(terminal).not.toHaveAttribute('aria-haspopup', 'menu');
+    // a minimized shell becomes a real picker choice
+    await page.getByRole('button', { name: /^Minimize terminal zsh/u }).click();
+    await expect(terminal.locator('.flyout-caret')).toBeVisible();
+    await expect(terminal).toHaveAttribute('aria-haspopup', 'menu');
+    await terminal.click();
+    const picker = page.getByRole('menu', { name: 'Open a terminal' });
+    await expect(picker).toBeVisible();
+    await expect(picker.getByRole('menuitem', { name: /^zsh/u })).toBeEnabled();
+    expect(harness.shells()).toHaveLength(1);
+    await page.keyboard.press('Escape');
+    await expect(picker).toHaveCount(0);
+  });
+}
+
+// stale picker availability must not turn a right-click into shell creation
+test('Terminal keeps its advertised picker when panes disappear', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('rac.flyout-markers', 'enabled'));
+  await mount(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const terminal = toolbar(page).getByRole('button', { name: 'Open a terminal' });
+  await expect(terminal.locator('.flyout-caret')).toBeVisible();
+  const shells: string[] = [];
+  // remove the cached choice at the network boundary before the next click
+  await page.route('**/api/**', async route => {
+    const path = decodeURIComponent(new URL(route.request().url()).pathname);
+    // return an empty fresh listing without changing the rendered snapshot first
+    if (path === `/api/worktrees/${cora}/panes`) return route.fulfill({ json: { panes: [] } });
+    // detect unintended creation rather than relying on a missing mock
+    if (path === `/api/worktrees/${cora}/shells` && route.request().method() === 'POST') {
+      shells.push(path);
+      return route.fulfill({ json: { paneId: '%13' } });
+    }
+    return route.fallback();
+  });
+  await terminal.click({ button: 'right' });
+  const picker = page.getByRole('menu', { name: 'Open a terminal' });
+  await expect(picker).toBeVisible();
+  await expect(picker.getByRole('menuitem', { name: 'New shell', exact: true })).toBeVisible();
+  expect(shells).toEqual([]);
+});
+
+// a new external pane must not replace the advertised direct action
+test('Terminal keeps direct shell creation when panes appear', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('rac.flyout-markers', 'enabled'));
+  const harness = await mount(page);
+  // settle the empty listing before changing the network snapshot
+  const listed = page.waitForResponse(response => decodeURIComponent(new URL(response.url()).pathname) === `/api/worktrees/${idle}/panes`);
+  await page.getByRole('tab', { name: /^Idle/u }).click();
+  await listed;
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const terminal = toolbar(page).getByRole('button', { name: 'Open a terminal' });
+  await expect(terminal.locator('.flyout-caret')).toHaveCount(0);
+  // expose an external shell while preserving the cached empty state
+  await page.route('**/api/**', async route => {
+    const path = decodeURIComponent(new URL(route.request().url()).pathname);
+    // retain the newly created pane for the post-create refresh
+    if (path === `/api/worktrees/${idle}/panes`) return route.fulfill({ json: { panes: [
+      { paneId: '%13', session: '$13', window: '@13', role: 'shell', name: 'external', command: 'zsh', path: '/repo/wts/idle', title: '', agent: false },
+      ...(harness.shells().length > 0 ? [{ paneId: '%12', session: '$12', window: '@12', role: 'shell', command: 'zsh', path: '/repo/wts/idle', title: 'zsh', agent: false }] : [])
+    ] } });
+    return route.fallback();
+  });
+  await terminal.click();
+  await expect.poll(harness.shells).toHaveLength(1);
+  await expect(page.getByRole('menu', { name: 'Open a terminal' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Minimize terminal zsh/u })).toBeVisible();
+});
+
 test('the toolbar fits a 1440px desktop on one row', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await mount(page);

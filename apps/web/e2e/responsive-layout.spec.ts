@@ -23,6 +23,8 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
         projects: []
       }
     });
+    // provide a real terminal choice for the flyout marker geometry
+    if (url.pathname === '/api/worktrees/remote-agents/panes') return route.fulfill({ json: { panes: [{ paneId: '%7', session: '$7', window: '@7', role: 'shell', name: 'build', command: 'zsh', path: '/worktrees/remote-agents', title: '', agent: false }] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (/^\/api\/agents\/agent-[1-5]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (/^\/api\/agents\/agent-[1-5]\/saved-prompts$/u.test(url.pathname) && request.method() === 'GET') return route.fulfill({ json: { prompts: [{ id: 'saved-1', text: 'Saved prompt' }] } });
@@ -237,6 +239,8 @@ test('desktop flyout triggers show edge carets and remain clickable', async ({ p
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', branch: 'feature/carets', gitStatus: { files: 2, staged: 1, unstaged: 1, untracked: 0, conflicted: 0 }, displayLabel: '🥔 Cora', title: 'Ready', attention: 'finished', stack: { actions: ['start'], tunnel: false } }], projects: [] } });
     // skip optional push setup
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // exercise the terminal flyout with an actual selectable shell
+    if (url.pathname === '/api/worktrees/cora/panes') return route.fulfill({ json: { panes: [{ paneId: '%7', session: '$7', window: '@7', role: 'shell', name: 'build', command: 'zsh', path: '/worktrees/cora', title: '', agent: false }] } });
     // connect the visible agent output
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     // make prompt-history controls available
