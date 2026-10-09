@@ -7466,9 +7466,7 @@ function PanelNotice({ busy = false, ariaLabel, heading, detail, className = '',
   return <div className={`log-loading inactive${className === '' ? '' : ` ${className}`}`} role={role ?? (busy ? 'status' : undefined)} aria-label={ariaLabel}>{busy ? <span className="spinner" /> : null}<strong>{heading}</strong><span>{detail}</span></div>;
 }
 
-// A Workspace with no panel open: the Place, the toolbar's controls repeated where the eye lands,
-// and, given `onPin` (unpinned, with nothing running here), the warning that it closes when the
-// operator switches away. Notes opens the toolbar's own notes menu.
+// render empty workspace actions and an optional pin warning
 function EmptyWorkspace({ workspace, label, detail, launch, onPin }: { workspace: WorkspaceState; label: string; detail: string; launch?: ToolbarLaunch; onPin?: () => void }) {
   const toggleNotes = workspace.notes.toggleMenu;
   return <div className="empty-workspace" role="region" aria-label="Empty workspace"><div className="empty-workspace-card">
@@ -7476,7 +7474,7 @@ function EmptyWorkspace({ workspace, label, detail, launch, onPin }: { workspace
     <h2>{label}</h2>
     <p className="empty-workspace-detail">{detail}</p>
     <div className="empty-workspace-actions">
-      {launch !== undefined && <LaunchSplitButton label={launch.label} resolution={launch.resolution} disabled={launch.disabled} disabledReason={launch.disabledReason} pending={launch.pending} placeActions onLaunch={launch.start} />}
+      {/* keep agent choices available on the empty card */}{launch !== undefined && <LaunchSplitButton label={launch.label} resolution={launch.resolution} disabled={launch.disabled} disabledReason={launch.disabledReason} pending={launch.pending} placeActions alwaysShowMenu onLaunch={launch.start} />}
       {workspace.terminals.control}
       {toggleNotes !== undefined && <button type="button" className="toolbar-button" aria-label="Notes" title="Open the notes here" onClick={() => void toggleNotes()}><svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg><span className="toolbar-label">Notes</span></button>}
       <BrowserToggle browser={workspace.browser} />

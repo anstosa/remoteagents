@@ -47,6 +47,35 @@ test('launches the resolved kind in one click and lists every configured kind in
   await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'codex', sandboxed: false } }]);
 });
 
+// keep the empty card's chooser beside its one-click launch
+test('empty worktree Launch dropdown chooses another configured agent', async ({ page }) => {
+  const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }] });
+  const empty = page.getByRole('region', { name: 'Empty workspace' });
+  await expect(empty.getByRole('button', { name: 'Launch Cora' })).toBeEnabled();
+  const chooser = empty.getByRole('button', { name: 'More workspace actions' });
+  await expect(chooser).toHaveAttribute('aria-haspopup', 'menu');
+  await chooser.click();
+  await expect(chooser).toHaveAttribute('aria-expanded', 'true');
+  const menu = page.getByRole('menu', { name: 'More workspace actions' });
+  await expect(menu.getByRole('group', { name: 'Claude agent' }).getByRole('menuitem', { name: /^Claude/u })).toContainText('last used here');
+  // opening and dismissing the selector never starts an agent
+  expect(posts).toEqual([]);
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(chooser).toHaveAttribute('aria-expanded', 'false');
+  await chooser.click();
+  await menu.getByRole('group', { name: 'Codex agent' }).getByRole('menuitem', { name: /^Codex/u }).click();
+  await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'codex', sandboxed: false } }]);
+  await expect(menu).toHaveCount(0);
+});
+
+// retain the resolved default on the desktop primary
+test('empty worktree primary still launches its resolved agent in one click', async ({ page }) => {
+  const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }] });
+  await page.getByRole('region', { name: 'Empty workspace' }).getByRole('button', { name: 'Launch Cora' }).click();
+  await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'claude', sandboxed: false } }]);
+});
+
 // a phone has one full-size Launch target; choosing a row, not tapping the target, starts an Agent
 test('mobile Launch is one menu button in the toolbar and empty Workspace', async ({ page }) => {
   // opt in for marker geometry checks
@@ -71,12 +100,17 @@ test('mobile Launch is one menu button in the toolbar and empty Workspace', asyn
   expect(posts).toEqual([]);
   await page.mouse.click(4, 4);
 
-  // the empty card retains one direct action; agent selection stays in the toolbar
-  const emptyLaunch = page.getByRole('region', { name: 'Empty workspace' }).getByRole('button', { name: 'Launch Cora' });
+  // the empty card shares the phone chooser instead of launching immediately
+  const empty = page.getByRole('region', { name: 'Empty workspace' });
+  const emptyLaunch = empty.getByRole('button', { name: 'Launch agent' });
   await expect(emptyLaunch).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Empty workspace' }).getByRole('button', { name: 'Choose agent' })).toHaveCount(0);
+  await expect(empty.locator('.launch-menu-only button')).toHaveCount(1);
+  await expect(emptyLaunch).toHaveAttribute('aria-haspopup', 'menu');
+  await expect(empty.locator('.launch-primary, .launch-chevron')).toHaveCount(0);
   await emptyLaunch.click();
-  await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'claude', sandboxed: false } }]);
+  expect(posts).toEqual([]);
+  await page.getByRole('menu', { name: 'More workspace actions' }).getByRole('group', { name: 'Codex agent' }).getByRole('menuitem', { name: /^Codex/u }).click();
+  await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'codex', sandboxed: false } }]);
 });
 
 // even without a resolved default, the phone Launch target opens the configured-agent chooser
