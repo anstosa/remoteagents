@@ -245,8 +245,13 @@ export function terminalBindingCommand(keys: KeysConfig | undefined, table: stri
   return { command: binding.terminal, reuse: binding.reuse === true };
 }
 
-// The name a binding's Terminal goes by: its program's basename (`/usr/bin/gh dash` is `gh`).
-export const terminalProgramName = (command: string): string => command.trim().split(/\s+/u)[0]!.split('/').pop() || command;
+// The name a binding's Terminal goes by: its program's basename (`/usr/bin/gh dash` is `gh`), past
+// any `env` and `VAR=value` assignments, which may hold secrets, within the pane-name limit.
+export const terminalProgramName = (command: string): string => {
+  const words = command.trim().split(/\s+/u);
+  const program = words.find((word, index) => !(index === 0 && word === 'env') && !/^[A-Za-z_][A-Za-z0-9_]*=/u.test(word)) ?? 'terminal';
+  return (program.split('/').pop() || 'terminal').slice(0, 120);
+};
 
 // The operator's tables as the browser receives them: each terminal command reduced to its
 // program name, which the bindings sheet shows, so no command line leaves the server.

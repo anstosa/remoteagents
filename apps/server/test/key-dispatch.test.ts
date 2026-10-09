@@ -58,10 +58,10 @@ describe('key dispatcher', () => {
     expect(press(',')).toBe('handled');
   });
 
-  it('sends the leader through when it is pressed twice', () => {
+  it('sends the leader on when it is pressed twice', () => {
     const { press, ran, dispatcher } = setup();
     press('C-b');
-    expect(press('C-b')).toBe('pass');
+    expect(press('C-b')).toBe('send');
     expect(ran).toEqual([]);
     expect(dispatcher.state()).toBeUndefined();
   });
@@ -70,7 +70,7 @@ describe('key dispatcher', () => {
     const rebound = setup({ root: { 'C-a': { table: 'prefix' }, 'C-b': null } });
     expect(rebound.press('C-b')).toBe('pass');
     rebound.press('C-a');
-    expect(rebound.press('C-a')).toBe('pass');
+    expect(rebound.press('C-a')).toBe('send');
     const bound = setup({ prefix: { 'C-b': 'last-panel' } });
     bound.press('C-b');
     expect(bound.press('C-b')).toBe('handled');
@@ -154,6 +154,17 @@ describe('key dispatcher', () => {
     expect(press('y')).toBe('handled');
     expect(yes).toHaveBeenCalledOnce();
     expect(dispatcher.state()).toBeUndefined();
+  });
+
+  it('drops an unanswered question after the table timeout', () => {
+    // with nothing selected, copy declines y, so an expired question lets it through
+    const { press, dispatcher } = setup({}, ['copy-selection']);
+    const yes = vi.fn();
+    dispatcher.confirm('Close panel Terminal 1?', yes);
+    vi.advanceTimersByTime(keyTableTimeoutMs);
+    expect(dispatcher.state()).toBeUndefined();
+    expect(press('y')).toBe('pass');
+    expect(yes).not.toHaveBeenCalled();
   });
 
   it('cancels a pending table on reset', () => {

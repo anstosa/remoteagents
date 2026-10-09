@@ -5461,14 +5461,14 @@ function useWorktreeTerminals(worktreeId: string | undefined) {
     setPanes(current => current.filter(pane => pane.paneId !== paneId));
   }, [closePane]);
   // share managed-shell deletion between the header and picker
-  const endPane = useCallback(async (pane: WorktreePane, confirmed = false): Promise<boolean | undefined> => {
+  const endPane = useCallback(async (pane: WorktreePane): Promise<boolean | undefined> => {
     // never delete agent panes or unmanaged session panes
     if (worktreeId === undefined || pane.role !== 'shell' || pane.agent) return false;
     const operationKey = `shell-delete:${worktreeId}:${pane.paneId}`;
     // exclude workspace shutdown and replacement during standalone deletion
     if (!beginPendingOperation(operationKey, placeItemKey(worktreeId))) return undefined;
     try {
-      const ended = await endConsoleShell(worktreeId, pane, confirmed);
+      const ended = await endConsoleShell(worktreeId, pane);
       // retain rejected or cancelled shells
       if (ended !== true) return ended;
       forgetPane(pane.paneId);
@@ -5776,7 +5776,7 @@ function useTerminalViews(worktreeId: string | undefined, onOperationFeedback?: 
   // end a Console shell the keyboard already confirmed (a busy one still asks); minimize any other
   const end = (paneId: string) => {
     const pane = terminals.panes.find(candidate => candidate.paneId === paneId);
-    if (pane !== undefined && isConsoleShell(pane)) void terminals.endPane(pane, true);
+    if (pane !== undefined && isConsoleShell(pane)) void terminals.endPane(pane);
     else terminals.closePane(paneId);
   };
   if (worktreeId === undefined) return { closeAll, openFocused, end };

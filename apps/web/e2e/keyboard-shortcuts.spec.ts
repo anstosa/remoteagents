@@ -104,6 +104,7 @@ test('the bindings sheet opens from C-?, the toolbar and the palette, and shows 
   await page.keyboard.press('Control+?');
   await expect(sheet).toBeVisible();
   const root = sheet.getByRole('region', { name: 'root' });
+  await expect(root.getByRole('row').filter({ hasText: 'Show key bindings' })).toContainText(/Default$/u);
   await expect(root.getByRole('row').filter({ hasText: 'C-a' })).toContainText('Config');
   const removed = root.getByRole('row').filter({ hasText: 'C-b' });
   await expect(removed).toContainText('Default, removed by config');
@@ -133,6 +134,26 @@ test('the bindings sheet opens from C-?, the toolbar and the palette, and shows 
   await expect(sheet).toBeVisible();
 });
 
+test('a root binding swallows its key, and send-prefix reaches only a terminal', async ({ page }) => {
+  const shells: unknown[] = [];
+  await page.addInitScript(() => {
+    // keep the last C-g and C-b keydowns, read once dispatch is over
+    window.addEventListener('keydown', event => { if (event.ctrlKey && (event.key === 'g' || event.key === 'b')) Object.assign(window, { [`__last_${event.key}`]: event }); }, true);
+  });
+  await openWithTerminal(page, { shells, keys: { root: { 'C-g': { table: 'git' } }, git: { l: { terminal: 'lazygit' } } } });
+  await page.keyboard.press('Control+g');
+  await page.keyboard.press('l');
+  await expect.poll(() => shells).toEqual([{ binding: { table: 'git', key: 'l' } }]);
+  expect(await page.evaluate(() => (window as unknown as { __last_g: KeyboardEvent }).__last_g.defaultPrevented)).toBe(true);
+  expect(await paneInputText(page, '%5')).not.toContain('\u0007');
+
+  // from the composer the leader goes nowhere, rather than to the browser (Firefox's bookmarks)
+  await page.getByRole('textbox', { name: 'Prompt' }).focus();
+  await page.keyboard.press('Control+b');
+  await page.keyboard.press('Control+b');
+  expect(await page.evaluate(() => (window as unknown as { __last_b: KeyboardEvent }).__last_b.defaultPrevented)).toBe(true);
+});
+
 test('a terminal binding names the binding, never the command', async ({ page }) => {
   const shells: unknown[] = [];
   await openWithTerminal(page, { shells });
@@ -156,7 +177,8 @@ test('closing a panel asks first, and only y closes it', async ({ page }) => {
   await page.keyboard.press('Control+b');
   await page.keyboard.press('x');
   await page.keyboard.press('y');
-  await expect.poll(() => deleted).toEqual(['%5?confirm=1']);
+  // an idle shell ends at once; a busy one would still ask before its DELETE is confirmed
+  await expect.poll(() => deleted).toEqual(['%5']);
 });
 
 test('prefix keys move between panels and the Workspace picker lists them', async ({ page }) => {

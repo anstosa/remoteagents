@@ -45,7 +45,8 @@ export function useKeyActions(actions: Record<string, KeyActionHandler>) {
   latest.current = actions;
   const names = Object.keys(actions).join('\n');
   useEffect(() => {
-    const unregister = names.split('\n').map(name => registerKeyAction(name, (event, context) => latest.current[name]?.(event, context) ?? false));
+    // a handler that returns nothing handled the key; only an explicit false declines it
+    const unregister = names.split('\n').map(name => registerKeyAction(name, (event, context) => latest.current[name] === undefined ? false : latest.current[name]!(event, context)));
     return () => unregister.forEach(release => release());
   }, [names]);
 }
@@ -63,8 +64,10 @@ export const keyTarget = (event: KeyboardEvent | undefined): Element | null => {
   const target = event?.composedPath()[0] ?? document.activeElement;
   return target instanceof Element ? target : null;
 };
-// whether a key goes to a text field other than a terminal's own input, where it is typing
+// whether a key goes to a text field other than a terminal's own input, where it is typing; an
+// action the palette runs has no key, so it is never typing
 export const typingOutsideTerminal = (event: KeyboardEvent | undefined): boolean => {
+  if (event === undefined) return false;
   const target = keyTarget(event);
   const editable = target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
   return editable && target.closest('.xterm') === null;
@@ -73,7 +76,12 @@ export const typingOutsideTerminal = (event: KeyboardEvent | undefined): boolean
 // The one keydown listener for app shortcuts. It runs first (window, capture phase) and swallows
 // only the keys the dispatcher handles; every other key reaches xterm, the composer or the control.
 const onKeyDown = (event: KeyboardEvent) => {
-  if (dispatcher.handle(eventChord(event), event) !== 'handled') return;
+  const chord = eventChord(event);
+  // holding the leader auto-repeats it; the repeats must not send it on or re-enter the table
+  const held = event.repeat && chord !== undefined && chord === dispatcher.state()?.chord;
+  const result = held ? 'handled' : dispatcher.handle(chord, event);
+  // send-prefix reaches a terminal only; elsewhere the browser would act on it (C-b, Firefox's bookmarks)
+  if (result === 'pass' || (result === 'send' && keyTarget(event)?.closest('.xterm') != null)) return;
   event.preventDefault();
   event.stopImmediatePropagation();
 };
@@ -93,10 +101,12 @@ const useOverlay = () => useSyncExternalStore(listener => { overlayListeners.add
 
 registerKeyAction('show-bindings', () => setOverlay(overlay === 'bindings' ? undefined : 'bindings'));
 registerKeyAction('command-palette', () => setOverlay('palette'));
-// font size steps from anywhere but a text field, so Ctrl+- still edits a field's own way
-registerKeyAction('font-larger', event => { if (typingOutsideTerminal(event)) return false; stepTerminalFontSize(1); });
-registerKeyAction('font-smaller', event => { if (typingOutsideTerminal(event)) return false; stepTerminalFontSize(-1); });
-registerKeyAction('font-reset', event => { if (typingOutsideTerminal(event)) return false; resetTerminalFontSize(); });
+// font size steps while a terminal shows, from anywhere but a text field; otherwise the browser
+// zooms the page as it always has
+const fontKeyDeclines = (event: KeyboardEvent | undefined) => document.querySelector('.xterm') === null || typingOutsideTerminal(event);
+registerKeyAction('font-larger', event => { if (fontKeyDeclines(event)) return false; stepTerminalFontSize(1); });
+registerKeyAction('font-smaller', event => { if (fontKeyDeclines(event)) return false; stepTerminalFontSize(-1); });
+registerKeyAction('font-reset', event => { if (fontKeyDeclines(event)) return false; resetTerminalFontSize(); });
 
 // how a binding reads in the sheet and the palette
 const describeBinding = (binding: KeyBinding): string => typeof binding === 'string'

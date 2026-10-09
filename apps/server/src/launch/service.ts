@@ -2,7 +2,7 @@ import { mkdir, open, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { resolveCodexProgram, type ValidatedConfig } from '../config/schema.js';
-import { run, tmuxFormatLiteral } from '../tmux/command.js';
+import { run, tmuxFormatLiteral, tmuxLiteralArg } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, interactiveShellName, interactiveShellPath } from '../tmux/interactive-shell.js';
 import { availableSessionName, startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
@@ -781,7 +781,7 @@ export class LaunchService {
     if (pane !== undefined && command !== '') {
       const socketPath = joined === undefined ? this.hostSocket : joined.socket.path;
       await run(this.tmux, [...(socketPath === undefined ? [] : ['-S', socketPath]), 'set-option', '-p', '-t', pane, 'remain-on-exit', 'off']);
-      if (keyBinding !== undefined) await run(this.tmux, [...(socketPath === undefined ? [] : ['-S', socketPath]), 'set-option', '-p', '-t', pane, '@rac_key_binding', keyBinding]);
+      if (keyBinding !== undefined) await run(this.tmux, [...(socketPath === undefined ? [] : ['-S', socketPath]), 'set-option', '-p', '-t', pane, '@rac_key_binding', tmuxLiteralArg(keyBinding)]);
     }
     return pane;
   }

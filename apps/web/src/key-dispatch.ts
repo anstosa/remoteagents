@@ -8,7 +8,7 @@ export const keyRepeatMs = 500;
 // while `repeat`), or a y/n question. Undefined while only `root` is active.
 export type KeyDispatchState =
   | { table: string; chord: string; repeat: boolean; expiresAt: number; confirm?: undefined }
-  | { confirm: string; onYes: () => void; expiresAt: number; table?: undefined };
+  | { confirm: string; onYes: () => void; expiresAt: number; table?: undefined; chord?: undefined };
 
 // `run` returns false when its action does not apply right now, so the key passes through.
 type KeyDispatcherOptions<Context> = {
@@ -17,7 +17,8 @@ type KeyDispatcherOptions<Context> = {
 };
 
 // The tmux-style state machine behind the one keydown listener. `handle` takes the chord a key
-// makes (undefined for a bare modifier) and says whether the listener should swallow the key.
+// makes (undefined for a bare modifier) and says whether the listener should swallow the key,
+// let it pass, or `send` it: the table's own key pressed again, for the focused terminal.
 export function createKeyDispatcher<Context>({ tables, run }: KeyDispatcherOptions<Context>) {
   let state: KeyDispatchState | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -40,7 +41,7 @@ export function createKeyDispatcher<Context>({ tables, run }: KeyDispatcherOptio
     return run(binding, { table: 'root', chord, event }) ? 'handled' : 'pass';
   };
 
-  const handle = (chord: string | undefined, event: Context): 'pass' | 'handled' => {
+  const handle = (chord: string | undefined, event: Context): 'pass' | 'handled' | 'send' => {
     // a bare modifier is on its way to a chord, so it neither matches nor ends a table
     if (chord === undefined) return 'pass';
     const current = state;
@@ -60,8 +61,8 @@ export function createKeyDispatcher<Context>({ tables, run }: KeyDispatcherOptio
     }
     if (binding === undefined) {
       set(undefined);
-      // the key that entered the table, pressed again, goes to the focused control (send-prefix)
-      return chord === current.chord ? 'pass' : 'handled';
+      // the key that entered the table, pressed again, goes to the focused terminal (send-prefix)
+      return chord === current.chord ? 'send' : 'handled';
     }
     if (isTableBinding(binding)) {
       set({ table: binding.table, chord, repeat: false, expiresAt: Date.now() + keyTableTimeoutMs });

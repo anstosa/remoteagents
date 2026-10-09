@@ -1,7 +1,7 @@
 import type { StreamedTerminalHandle } from './streamed-terminal.js';
 import { computeTerminalTheme } from './terminal-theme.js';
 import { subscribeTerminalFontSize } from './terminal-font-size.js';
-import { registerKeyAction } from './keyboard.js';
+import { registerKeyAction, type KeyActionContext } from './keyboard.js';
 
 export type TerminalSelection = { text: string; top: number; left: number };
 
@@ -567,11 +567,14 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
 
   // The copy-selection key binding (y, C-S-c, and C-c or Cmd-C over a selection): copy this pane's
   // selection, or decline so the key goes on (C-c still interrupts with nothing selected).
-  const copySelectionShortcut = (event: KeyboardEvent | undefined): boolean => {
+  const copySelectionShortcut = (event: KeyboardEvent | undefined, context: KeyActionContext | undefined): boolean => {
     // ignore late events after cleanup
     if (disposed || event === undefined) return false;
     const target = eventTargetElement(event.target);
     const localTarget = target !== null && container.contains(target);
+    // the browser's own copy chords copy a terminal selection only from inside the pane; elsewhere
+    // they copy whatever the page has selected, and C-c with nothing selected interrupts
+    if (!localTarget && (context?.chord === 'C-c' || context?.chord === 'Super-c')) return false;
     // require ownership only for body-level and other neutral targets
     if (!localTarget && shortcutOwner !== container) return false;
     // leave fields outside this terminal untouched

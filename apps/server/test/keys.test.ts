@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultKeyTables, eventChord, keyActions, parseChord, parseKeysConfig, resolveKeyTables, terminalBindingCommand } from '../src/config/keys.js';
+import { browserKeysConfig, defaultKeyTables, eventChord, keyActions, parseChord, parseKeysConfig, resolveKeyTables, terminalBindingCommand } from '../src/config/keys.js';
 
 const press = (key: string, modifiers: { ctrl?: boolean; alt?: boolean; shift?: boolean; meta?: boolean; code?: string; isComposing?: boolean } = {}) => ({ key, code: modifiers.code ?? '', ctrlKey: modifiers.ctrl ?? false, altKey: modifiers.alt ?? false, shiftKey: modifiers.shift ?? false, metaKey: modifiers.meta ?? false, isComposing: modifiers.isComposing ?? false });
 
@@ -90,13 +90,11 @@ describe('keys configuration', () => {
   });
 
   it.each([
-    ['C-t', 'Firefox and Chromium'],
-    ['C-S-n', 'Firefox and Chromium'],
-    ['C-Tab', 'never receives'],
-    ['C-PageDown', 'never receives'],
-    ['C-S-p', 'Firefox'],
+    ...['C-t', 'C-n', 'C-w', 'C-q', 'C-S-t', 'C-S-n', 'C-S-w'].map(chord => [chord, 'Firefox and Chromium both reserve it']),
+    ...['C-Tab', 'C-S-Tab', 'C-PageUp', 'C-PageDown'].map(chord => [chord, 'never receives']),
+    ['C-S-p', 'Firefox opens a private window'],
     ['C-S-u', 'IBus'],
-    ['C-]', 'Chromium']
+    ['C-]', 'Chromium never delivers']
   ])('refuses the browser-reserved chord %s', (chord, reason) => {
     expect(() => parseKeysConfig({ prefix: { [chord]: 'next-panel' } })).toThrow(reason);
   });
@@ -104,11 +102,12 @@ describe('keys configuration', () => {
   it('refuses a plain key in root but allows modifiers, function keys and removals there', () => {
     expect(() => parseKeysConfig({ root: { g: 'next-panel' } })).toThrow('keys.root.g');
     expect(() => parseKeysConfig({ root: { 'S-Left': 'next-panel' } })).toThrow('C-, M- or Super-');
-    expect(parseKeysConfig({ root: { 'M-1': 'select-panel-1', F2: 'command-palette', y: null } })).toEqual({ root: { 'M-1': 'select-panel-1', F2: 'command-palette', y: null } });
+    expect(parseKeysConfig({ root: { 'M-1': 'select-panel-1', F2: 'command-palette', 'S-F3': 'show-bindings', 'Super-k': 'next-panel', y: null } })).toEqual({ root: { 'M-1': 'select-panel-1', F2: 'command-palette', 'S-F3': 'show-bindings', 'Super-k': 'next-panel', y: null } });
   });
 
   it('refuses an unknown table, an unknown action and a malformed binding', () => {
     expect(() => parseKeysConfig({ root: { 'C-g': { table: 'git' } } })).toThrow('no table named git');
+    expect(() => parseKeysConfig({ prefix: { r: { table: 'root' } } })).toThrow('root is always active');
     expect(() => parseKeysConfig({ prefix: { q: 'quit-everything' } })).toThrow('unknown action quit-everything');
     expect(() => parseKeysConfig({ prefix: { q: { terminal: '' } } })).toThrow();
     expect(() => parseKeysConfig({ prefix: { q: { terminal: 'vim\nrm -rf ~' } } })).toThrow('newlines');
@@ -150,6 +149,14 @@ describe('resolveKeyTables', () => {
 
   it('ignores a removal of a key no default binds', () => {
     expect(resolveKeyTables(parseKeysConfig({ prefix: { q: null } })).prefix!.q).toBeUndefined();
+  });
+});
+
+describe('browserKeysConfig', () => {
+  it('reduces each terminal command to its program, past environment assignments, within the pane-name limit', () => {
+    const keys = parseKeysConfig({ git: { d: { terminal: 'GH_TOKEN=ghp_secret GH_HOST=example.com /usr/bin/gh dash' }, e: { terminal: 'env TOKEN=x htop' }, l: { terminal: 'lazygit', reuse: true }, x: { terminal: `${'a'.repeat(200)} --flag` } }, prefix: { c: 'command-palette' } });
+    expect(browserKeysConfig(keys)).toEqual({ git: { d: { terminal: 'gh' }, e: { terminal: 'htop' }, l: { terminal: 'lazygit', reuse: true }, x: { terminal: 'a'.repeat(120) } }, prefix: { c: 'command-palette' } });
+    expect(JSON.stringify(browserKeysConfig(keys))).not.toContain('secret');
   });
 });
 

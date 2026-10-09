@@ -8,7 +8,7 @@ import { testConfig, testWorktree } from './helpers/config.js';
 
 const socket = { path: '/tmp/tmux-test', fingerprint: 'one', device: 1, inode: 2 };
 // include stack metadata in the shared dashboard row
-const row = (dead = '0', status = '', cwd = '/worktree') => ['%1', '$1', 'main', '123', cwd, 'node', 'café ☕', '', '', '', '', '', '', '', 'process', '', '@1', '', 'project:/worktree', 'dev', '', dead, status, '', '/worktree'].join('\t') + '\n';
+const row = (dead = '0', status = '', cwd = '/worktree', keyBinding = '') => ['%1', '$1', 'main', '123', cwd, 'node', 'café ☕', '', '', '', '', '', '', '', 'process', '', '@1', '', 'project:/worktree', 'dev', '', dead, status, keyBinding, '/worktree'].join('\t') + '\n';
 // isolate clock and command mocks
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); vi.unstubAllEnvs(); run.mockReset(); });
 
@@ -107,6 +107,14 @@ describe('shared pane snapshots', () => {
     run.mockResolvedValueOnce({ code: 0, stdout: row(), stderr: '' });
     expect(await adapter.listPanes(socket)).toHaveLength(1);
     expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  // a key binding's Terminal reads back its tag, which reuse matches
+  it('reads the key binding a pane was opened for', async () => {
+    run.mockResolvedValue({ code: 0, stdout: row('0', '', '/worktree', 'prefix g'), stderr: '' });
+    const adapter = new TmuxAdapter();
+    await adapter.listPanes(socket);
+    expect(adapter.paneSnapshotsNow().get(socket.path)).toMatchObject({ status: 'available', panes: [{ keyBinding: 'prefix g', processWorktree: '/worktree' }] });
   });
 
   // remain-on-exit panes lose cwd but still carry their exit status
