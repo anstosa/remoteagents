@@ -1216,7 +1216,7 @@ function EmbeddedAgentOutput({ id, onMetadata }: { id: string; onMetadata: (resp
     questionRef.current = question;
     onMetadataRef.current(responseRef.current, question);
   }, []);
-  return <div className="update-advisor-output" aria-label="Update advisor output"><section className="log-shell embedded-log-shell"><div className="log embedded-log"><ResizableLogSplit output={<Log id={id} onQuestion={publishQuestion} onMetadata={publishResponse} embedded />} /></div></section><MobileTerminalKeys id={id} /></div>;
+  return <div className="update-advisor-output" aria-label="Update advisor output"><section className="log-shell embedded-log-shell"><div className="log embedded-log"><ResizableLogSplit output={<Log id={id} onQuestion={publishQuestion} onMetadata={publishResponse} codexScrollControls embedded />} /></div></section><MobileTerminalKeys id={id} /></div>;
 }
 
 // review and launch one exact server update
@@ -6291,13 +6291,13 @@ function Workspace({ workspace, output, empty, git, onAddToPrompt, onOpenWorktre
   return <SelectionActionsContext.Provider value={selectionActions}><section className="log-shell" data-workspace-key={workspace.viewKey}><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={visibleOutput} empty={empty} note={notes.pane} browser={browserPane} files={filesPane} code={codePane} stack={stackPane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onCarousel={workspace.setCarousel} initialPanelsReady={notes.initialNotesLoaded} /></div><ClientSettingsPane /></section></SelectionActionsContext.Provider>;
 }
 
-type LogProps = { id: string; onTurnOff?: () => void; embedded?: boolean; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined, overflow: boolean) => void; header?: (connection: string) => ReactNode; composer?: ReactNode; notes?: WorktreeNotes; onAddToPrompt?: (text: string) => void; onOpenUrl?: (url: string) => boolean; onOpenFile?: (path: string) => void; processingLabel?: string; processingDetail?: string };
+type LogProps = { id: string; onTurnOff?: () => void; embedded?: boolean; codexScrollControls?: boolean; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined, overflow: boolean) => void; header?: (connection: string) => ReactNode; composer?: ReactNode; notes?: WorktreeNotes; onAddToPrompt?: (text: string) => void; onOpenUrl?: (url: string) => boolean; onOpenFile?: (path: string) => void; processingLabel?: string; processingDetail?: string };
 
 // Render one Agent's live output: the streamed pane, its loading and status overlays and the
 // selection toolbar. As the agent panel it also carries the header and composer the owning card
 // hands it (the header receives the connection status to show); the embedded update advisor has
 // neither. The Workspace around it owns everything Place-scoped (notes, browser, code, Terminals, git).
-function Log({ id, onTurnOff, embedded = false, onQuestion, onMetadata, header, composer, notes, onAddToPrompt, onOpenUrl, onOpenFile, processingLabel, processingDetail }: LogProps) {
+function Log({ id, onTurnOff, embedded = false, codexScrollControls = false, onQuestion, onMetadata, header, composer, notes, onAddToPrompt, onOpenUrl, onOpenFile, processingLabel, processingDetail }: LogProps) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XTerm | undefined>(undefined);
   // A Log mounts whenever its tab becomes active. Existing agents therefore
@@ -6356,6 +6356,7 @@ function Log({ id, onTurnOff, embedded = false, onQuestion, onMetadata, header, 
     const handle = mountStreamedTerminal(canvas.current!, {
       connect: createAgentPaneConnector(id, request),
       preferNativeMouseSelection: true,
+      codexScrollControls,
       // Typed keys pass through the panel's sticky mobile modifiers before reaching the pane.
       transformInput: data => applyStickyModifiers(id, data),
       onOpenUrl: url => openOutputUrlRef.current?.(url) ?? false,
@@ -6429,7 +6430,7 @@ function Log({ id, onTurnOff, embedded = false, onQuestion, onMetadata, header, 
       if (terminalRef.current === terminal) terminalRef.current = undefined;
       handle.dispose();
     };
-  }, [embedded, id, onQuestion]);
+  }, [codexScrollControls, embedded, id, onQuestion]);
   // open agent modes and clipboard actions from any non-prompt part of the split
   const openOutputContextMenu = (event: MouseEvent) => {
     const controller = selectionControllerRef.current;
@@ -7155,7 +7156,8 @@ function AgentPanel({ agent, agents, onSelectAgent, active, displayLabel, worksp
     if (restarting || clearing || deactivating || deleting || agentPendingOperation(agent) !== undefined || pendingOperations.has(deactivateOperationKey(workspace.place.id ?? agent.id))) return;
     void (agent.worktreeId === undefined ? remove() : deactivate());
   };
-  return <Log id={agent.id} onTurnOff={turnOff} onQuestion={setQuestion} onMetadata={reportMetadata} onAddToPrompt={onAddToPrompt} header={header} composer={composer} notes={workspace.notes} onOpenUrl={onOpenUrl} onOpenFile={onOpenFile} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />;
+  // keep codex transcript shortcuts limited to codex and omx agent panels
+  return <Log id={agent.id} onTurnOff={turnOff} codexScrollControls={agent.kind === undefined || agent.kind === 'codex' || agent.kind === 'omx'} onQuestion={setQuestion} onMetadata={reportMetadata} onAddToPrompt={onAddToPrompt} header={header} composer={composer} notes={workspace.notes} onOpenUrl={onOpenUrl} onOpenFile={onOpenFile} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />;
 }
 
 // whether an Agent has something for the operator: a question, or a finished turn not yet seen

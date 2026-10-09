@@ -300,6 +300,22 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   await dialog.getByLabel('Approval or feedback').fill('Double-check the rollback steps.');
   await expect(output.locator('.log-output')).not.toHaveClass(/input-active/u);
   await expect(output.getByLabel('Terminal keys')).toBeHidden();
+  // return the embedded advisor to its tail without losing unsent feedback or focus
+  await settleBrowserFrames(page);
+  const advisorCols = Number(await output.getByLabel('Live log').getAttribute('data-cols'));
+  const returnLabel = '↓ Back to bottom · esc';
+  const returnPadding = ' '.repeat(Math.floor((advisorCols - returnLabel.length) / 2));
+  await pushBytes(page, 'update-advisor', `\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[2J\x1b[7;1H${returnPadding}${returnLabel}\x1b[8;1H> pending draft`);
+  const advisorJump = output.getByRole('button', { name: 'Jump to latest' });
+  await expect(advisorJump).toBeVisible();
+  const beforeAdvisorJump = await paneInputList(page, 'update-advisor');
+  await advisorJump.click();
+  await expect.poll(() => paneInputList(page, 'update-advisor')).toEqual([...beforeAdvisorJump, '\x1b[1;5F']);
+  await expect(dialog.getByLabel('Approval or feedback')).toBeFocused();
+  await expect(dialog.getByLabel('Approval or feedback')).toHaveValue('Double-check the rollback steps.');
+  // codex's redraw removes the return affordance after reaching the tail
+  await pushBytes(page, 'update-advisor', '\x1b[7;1H\x1b[2K');
+  await expect(advisorJump).toBeHidden();
   await dialog.getByRole('button', { name: 'Send' }).click();
   await expect(update).toBeDisabled();
   await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toHaveCount(0);

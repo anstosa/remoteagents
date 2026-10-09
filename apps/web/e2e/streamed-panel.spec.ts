@@ -14,12 +14,14 @@ const question = {
   source: 'parsed'
 };
 
-const routeApi = async (page: import('@playwright/test').Page, capture: { answers: { index: number; questionId: string }[]; prompts: { prompt: string }[] } = { answers: [], prompts: [] }) => {
+// serve one scripted agent with an optional explicit adapter kind
+const routeApi = async (page: import('@playwright/test').Page, capture: { answers: { index: number; questionId: string }[]; prompts: { prompt: string }[] } = { answers: [], prompts: [] }, kind?: 'codex' | 'omx' | 'claude') => {
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Working', attention: 'working', queuedPromptCount: 0 }], projects: [] } });
+    // expose the requested adapter kind without changing the remaining panel contract
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', kind, sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Working', attention: 'working', queuedPromptCount: 0 }], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
@@ -36,6 +38,43 @@ const routeApi = async (page: import('@playwright/test').Page, capture: { answer
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 };
+
+// scope application-owned transcript input to codex and omx panels
+for (const kind of [undefined, 'codex', 'omx', 'claude'] as const) {
+  // exercise adapter wiring and preserve the user's unsent prompt
+  test(`embedded jump controls respect the ${kind ?? 'legacy codex'} adapter`, async ({ page }) => {
+    await installPaneMock(page);
+    await routeApi(page, undefined, kind);
+    await page.goto('/');
+    await seedPaneSize(page, 'agent-1');
+    const log = page.getByLabel('Live log');
+    await expect(log).toHaveAttribute('data-cols', /\d+/u);
+    // settle initial viewport echoes before positioning the centered codex control
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    const cols = Number(await log.getAttribute('data-cols'));
+    const label = '↓ Back to bottom · esc';
+    const padding = ' '.repeat(Math.floor((cols - label.length) / 2));
+    const prompt = page.getByRole('textbox', { name: 'Prompt' });
+    await prompt.fill('keep this unsent draft');
+    await pushBytes(page, 'agent-1', `\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[2J\x1b[HOlder Codex output\x1b[7;1H${padding}${label}\x1b[8;1H> pending draft`);
+    await expect(log).toContainText(label);
+    const jump = log.getByRole('button', { name: 'Jump to latest' });
+    // other adapters must not receive codex transcript shortcuts
+    if (kind === 'claude') {
+      await expect(jump).toBeHidden();
+      expect(await paneInputText(page, 'agent-1')).toBe('');
+      return;
+    }
+    await expect(jump).toBeVisible();
+    await jump.click();
+    await expect.poll(() => paneInputText(page, 'agent-1')).toBe('\x1b[1;5F');
+    await expect(prompt).toBeFocused();
+    await expect(prompt).toHaveValue('keep this unsent draft');
+    // hide only after the program redraws its tail and removes the return control
+    await pushBytes(page, 'agent-1', '\x1b[7;1H\x1b[2K');
+    await expect(jump).toBeHidden();
+  });
+}
 
 test('mints a pane ticket, seeds, appends bytes and sends viewport, input and ack frames', async ({ page }) => {
   await installPaneMock(page);

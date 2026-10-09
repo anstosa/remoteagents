@@ -458,6 +458,153 @@ test('the jump-to-latest control stays bottom-centered and returns to following'
   }
 });
 
+// mirror codex's return control with optional right-side pet space
+const codexScrollFrame = (label: string, cols = 40, reservedColumns = 0): string => {
+  const padding = ' '.repeat(Math.floor((cols - reservedColumns - label.length) / 2));
+  return `\x1b[2J\x1b[HOlder Codex output\x1b[7;1H${padding}${label}\x1b[8;1H> pending draft`;
+};
+
+// route app-owned history back to codex without moving keyboard focus
+test('codex embedded scrolling shows jump and returns through the pane input', async ({ page }) => {
+  await setup(page, { codexScrollControls: true, width: '100%' });
+  await drive(page, 'pushSize', 40, 10);
+  await drive(page, 'pushBytes', '\x1b[?1049h\x1b[?1003h\x1b[?1006h');
+  await expect.poll(() => drive(page, 'alternateScreen')).toBe(true);
+  const jump = page.getByRole('button', { name: 'Jump to latest' });
+  await expect(jump).toBeHidden();
+  // exercise full and compact labels including unseen activity
+  for (const label of ['↓ Back to bottom · esc', '↓ Back to bottom', '↓ Bottom · esc', '↓ Bottom', 'New activity · ↓ Back to bottom · esc', 'New activity · ↓ Bottom', 'New · ↓ Bottom']) {
+    await drive(page, 'pushBytes', codexScrollFrame(label));
+    await expect(jump).toBeVisible();
+    expect(await drive(page, 'viewportY')).toBe(0);
+    expect(await drive(page, 'baseY')).toBe(0);
+    const before = await drive<string>(page, 'inputData');
+    await jump.click();
+    expect((await drive<string>(page, 'inputData')).slice(before.length)).toBe('\x1b[1;5F');
+    expect(await drive(page, 'activeIsTerminalTextarea')).toBe(false);
+    // wait for codex's redraw rather than claiming the application reached the tail
+    await expect(jump).toBeVisible();
+    await drive(page, 'pushBytes', codexScrollFrame(''));
+    await expect(jump).toBeHidden();
+  }
+  // preserve terminal input mode when returning to the tail
+  await drive(page, 'focusTerminal');
+  await drive(page, 'pushBytes', codexScrollFrame('↓ Back to bottom · esc'));
+  await expect(jump).toBeVisible();
+  await jump.click();
+  expect(await drive(page, 'activeIsTerminalTextarea')).toBe(true);
+  // a fresh seed clears the application-owned jump state
+  await drive(page, 'pushReseed');
+  await drive(page, 'pushBytes', '\x1b[?1049hLive Codex output');
+  await expect(jump).toBeHidden();
+});
+
+// preserve the return control when codex reserves right-side columns for its pet
+test('codex jump supports a narrower transcript beside an ambient pet', async ({ page }) => {
+  await setup(page, { codexScrollControls: true });
+  const jump = page.getByRole('button', { name: 'Jump to latest' });
+  // cover full and compact labels at desktop and narrow transcript widths
+  for (const layout of [
+    { cols: 80, reservedColumns: 12, label: 'New activity · ↓ Back to bottom · esc' },
+    { cols: 40, reservedColumns: 14, label: '↓ Back to bottom · esc' },
+    { cols: 24, reservedColumns: 12, label: '↓ Bottom' }
+  ]) {
+    await drive(page, 'pushSize', layout.cols, 10);
+    await drive(page, 'pushBytes', `\x1b[?1049h${codexScrollFrame(layout.label, layout.cols, layout.reservedColumns)}`);
+    await expect(jump).toBeVisible();
+    const before = await drive<string>(page, 'inputData');
+    await jump.click();
+    expect((await drive<string>(page, 'inputData')).slice(before.length)).toBe('\x1b[1;5F');
+    await drive(page, 'pushBytes', codexScrollFrame('', layout.cols, layout.reservedColumns));
+    await expect(jump).toBeHidden();
+  }
+});
+
+// never send application shortcuts based on output retained from an earlier stream
+test('codex jump waits for a fresh parsed seed after reseed and reconnect', async ({ page }) => {
+  await setup(page, { codexScrollControls: true, reconnectDelayMs: 10 });
+  await drive(page, 'pushSize', 40, 10);
+  const seed = `\x1b[?1049h${codexScrollFrame('↓ Back to bottom · esc')}`;
+  await drive(page, 'pushBytes', seed);
+  const jump = page.getByRole('button', { name: 'Jump to latest' });
+  await expect(jump).toBeVisible();
+  // a reseed retains the screen as a placeholder but must invalidate its control
+  await drive(page, 'pushReseed');
+  await expect(jump).toBeHidden();
+  const beforeReseed = await drive<string>(page, 'inputData');
+  await drive(page, 'clickJump');
+  expect(await drive<string>(page, 'inputData')).toBe(beforeReseed);
+  await drive(page, 'pushBytes', seed);
+  await expect(jump).toBeVisible();
+  await jump.click();
+  expect((await drive<string>(page, 'inputData')).slice(beforeReseed.length)).toBe('\x1b[1;5F');
+  // the replacement connection must also await its own parsed screen before accepting jump
+  await drive(page, 'pushClose', 1006, 'lost stream');
+  await expect(jump).toBeHidden();
+  await expect.poll(() => drive(page, 'connectCalls')).toBe(2);
+  await drive(page, 'pushSize', 40, 10);
+  const beforeReconnect = await drive<string>(page, 'inputData');
+  await drive(page, 'clickJump');
+  expect(await drive<string>(page, 'inputData')).toBe(beforeReconnect);
+  await drive(page, 'pushBytes', seed);
+  await expect(jump).toBeVisible();
+  await jump.click();
+  expect((await drive<string>(page, 'inputData')).slice(beforeReconnect.length)).toBe('\x1b[1;5F');
+});
+
+// retain local scrollback and avoid treating ordinary output as a codex control
+test('codex jump detection ignores generic terminals and unsupported marker layouts', async ({ page }) => {
+  await setup(page);
+  await drive(page, 'pushSize', 40, 10);
+  await drive(page, 'pushBytes', `\x1b[?1049h${codexScrollFrame('↓ Back to bottom · esc')}`);
+  await expect.poll(() => drive<string>(page, 'screenText')).toContain('Back to bottom');
+  const jump = page.getByRole('button', { name: 'Jump to latest' });
+  await expect(jump).toBeHidden();
+  await setup(page, { codexScrollControls: true });
+  await drive(page, 'pushSize', 40, 10);
+  await drive(page, 'pushBytes', codexScrollFrame('↓ Back to bottom · esc'));
+  await expect.poll(() => drive<string>(page, 'screenText')).toContain('Back to bottom');
+  await expect(jump).toBeHidden();
+  await drive(page, 'pushBytes', '\x1b[?1049h\x1b[2J\x1b[H↓ Back to bottom · esc');
+  await expect.poll(() => drive(page, 'alternateScreen')).toBe(true);
+  await expect(jump).toBeHidden();
+  // codex's left-aligned transcript cannot shift its control right of the grid midpoint
+  await drive(page, 'pushBytes', '\x1b[2J\x1b[H                  ↓ Back to bottom');
+  await expect.poll(() => drive<string>(page, 'screenText')).toContain('                  ↓ Back to bottom');
+  await expect(jump).toBeHidden();
+  // arrow-only narrow fallbacks are not unique enough to trigger pane input
+  await drive(page, 'pushBytes', codexScrollFrame('↓'));
+  await expect.poll(() => drive<string>(page, 'screenText')).toContain('↓');
+  await expect(jump).toBeHidden();
+});
+
+// retain phone touch scrolling and focus while the application owns its viewport
+test('phone codex scrolling reveals the compact jump without opening the keyboard', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL: baseURL ?? undefined, ...MOBILE });
+  const page = await context.newPage();
+  try {
+    await setup(page, { codexScrollControls: true, width: '340px', height: '420px' });
+    await drive(page, 'pushSize', 40, 10);
+    await drive(page, 'pushBytes', '\x1b[?1049h\x1b[?1003h\x1b[?1006hLive Codex output');
+    await expect.poll(() => drive(page, 'mouseTrackingMode')).toBe('any');
+    const before = await drive<string>(page, 'inputData');
+    expect(await drive<boolean>(page, 'touchDrag', 120)).toBe(true);
+    expect((await drive<string>(page, 'inputData')).slice(before.length)).toMatch(/\x1b\[<64;\d+;\d+M/u);
+    await drive(page, 'pushBytes', codexScrollFrame('New · ↓ Bottom'));
+    const jump = page.getByRole('button', { name: 'Jump to latest' });
+    await expect(jump).toBeVisible();
+    const beforeJump = await drive<string>(page, 'inputData');
+    await jump.tap();
+    expect((await drive<string>(page, 'inputData')).slice(beforeJump.length)).toBe('\x1b[1;5F');
+    expect(await drive(page, 'activeIsTerminalTextarea')).toBe(false);
+    await drive(page, 'pushBytes', codexScrollFrame(''));
+    await expect(jump).toBeHidden();
+  } finally {
+    // release the emulated phone after every outcome
+    await context.close();
+  }
+});
+
 test('server question and metadata frames reach their callbacks, and metadata can be requested', async ({ page }) => {
   await setup(page);
   await drive(page, 'pushSize', 40, 10);

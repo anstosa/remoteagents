@@ -19,6 +19,8 @@ export interface StreamedTerminalOptions {
   scrollback?: number;
   // prefer ordinary text selection over application mouse gestures in agent output
   preferNativeMouseSelection?: boolean;
+  // recognize codex/omx's app-owned transcript return control
+  codexScrollControls?: boolean;
   // Route a same-stack URL into the in-app browser; return true when it was handled.
   onOpenUrl?: (url: string) => boolean;
   // Open a workspace file mention in the internal preview.
@@ -56,6 +58,7 @@ export interface StreamedTerminalHandle {
 
 const coarsePointer = () => window.matchMedia('(pointer: coarse)').matches;
 
+// mount one streamed pane with its local output controls
 export const mountStreamedTerminal = (container: HTMLElement, options: StreamedTerminalOptions): StreamedTerminalHandle => {
   const reconnectDelayMs = options.reconnectDelayMs ?? 1000;
   const coarse = coarsePointer();
@@ -168,6 +171,9 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   let reconnectTimer: number | undefined;
   let overlayFrame: number | undefined;
   let viewportFrame: number | undefined;
+  // retained placeholder output must never authorize a shortcut on a replacement stream
+  let outputGeneration = 0;
+  let parsedSeedGeneration = -1;
   // Re-proposes the viewport on each render until one carries, then drops itself (wired to
   // onRender below); see there for why the open and initial-resize sends aren't enough.
   let firstViewportSub: IDisposable | undefined;
@@ -180,9 +186,35 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     });
   };
 
+  // codex 0.162 centers this control above its composer instead of scrolling xterm
+  const codexCanReturnToLatest = () => {
+    const buffer = terminal.buffer.active;
+    // never interpret shell output or another full-screen program as codex history
+    if (!options.codexScrollControls || buffer.type !== 'alternate' || parsedSeedGeneration !== outputGeneration) return false;
+    // inspect only parsed visible rows so fragmented bytes and stale history cannot match
+    for (let row = 0; row < terminal.rows; row += 1) {
+      const text = buffer.getLine(buffer.viewportY + row)?.translateToString(false) ?? '';
+      const label = text.trim();
+      // require a complete label rather than quoted text or the ambiguous arrow-only fallback
+      if (!/^(?:(?:New activity|New) · )?↓ (?:Back to bottom|Bottom)(?: · esc)?$/u.test(label)) continue;
+      const left = text.indexOf(label);
+      const right = terminal.cols - left - label.length;
+      // allow a narrower left-aligned transcript when codex reserves right-side pet space
+      if (left > 0 && right > 0 && left <= right + 2) return true;
+    }
+    return false;
+  };
+
+  // follow both browser scrollback and codex's own transcript viewport
   const syncFollowState = () => {
     const buffer = terminal.buffer.active;
-    jump.hidden = buffer.viewportY >= buffer.baseY;
+    jump.hidden = !codexCanReturnToLatest() && buffer.viewportY >= buffer.baseY;
+  };
+
+  // invalidate app-owned controls while retaining the old screen as a placeholder
+  const invalidateCodexFollowState = () => {
+    outputGeneration += 1;
+    syncFollowState();
   };
 
   const sendViewport = () => {
@@ -219,6 +251,7 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     if (!(output instanceof Uint8Array) && output.type === 'size') queuedSize = output;
     // a new snapshot supersedes older bytes and resets server acknowledgement accounting
     if (!(output instanceof Uint8Array) && output.type === 'reseed') {
+      invalidateCodexFollowState();
       queuedOutput.length = 0;
       queuedByteCount = 0;
       pendingBytes.length = 0;
@@ -255,6 +288,7 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   // drop-while-behind flow control can advance.
   const writeBytes = (bytes: Uint8Array) => {
     const wasSeed = awaitingSeed;
+    const generation = outputGeneration;
     if (awaitingSeed) {
       // Clear the placeholder/scrollback and its stale link overlays the instant the
       // fresh seed starts; the registered safety handlers survive the reset.
@@ -286,6 +320,8 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
         if (disposed) return;
         // acknowledge only the connection that supplied these bytes
         if (connection === source) source?.send({ type: 'ack', bytes: bytes.length });
+        // only the current stream's successfully parsed seed can restore app-owned controls
+        if (wasSeed && connection === source && generation === outputGeneration) parsedSeedGeneration = generation;
         scheduleOverlayRender();
         syncFollowState();
         // uncover the first populated frame
@@ -296,10 +332,13 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     });
   };
 
+  // conform to the server grid and refresh follow controls
   const applySize = (cols: number, rows: number) => {
+    // resize only to a valid pane grid
     if (cols > 0 && rows > 0) terminal.resize(cols, rows);
     container.dataset.cols = String(terminal.cols);
     container.dataset.rows = String(terminal.rows);
+    // release bytes buffered before the initial pane dimensions
     if (!sizeApplied) {
       sizeApplied = true;
       // Flush anything that arrived before the first size, in order, behind it.
@@ -307,6 +346,7 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
       queuedByteCount += pendingByteCount;
       pendingByteCount = 0;
     }
+    syncFollowState();
     scheduleOverlayRender();
   };
 
@@ -327,6 +367,7 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     if (disposed) return;
     const current = connection;
     connection = undefined;
+    invalidateCodexFollowState();
     if (current !== undefined) { try { current.close(); } catch { /* already closing */ } }
     // Keep the terminal mounted as its own placeholder with a status, then re-subscribe.
     showStatus(reason);
@@ -356,6 +397,7 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     pendingByteCount = 0;
     // Keep the current screen as the placeholder; the fresh seed clears it when it lands.
     awaitingSeed = true;
+    invalidateCodexFollowState();
     connection = options.connect({
       onOpen: () => sendViewport(),
       onBytes: queueOutput,
@@ -479,8 +521,14 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   };
   // keep the current input target and output mode when clicking or tapping jump
   const preserveJumpFocus = (event: PointerEvent) => event.preventDefault();
-  // resume following without entering or leaving terminal input mode
-  const jumpToBottom = () => { terminal.scrollToBottom(); syncFollowState(); };
+  // route codex's dedicated ctrl-end shortcut without applying sticky input modifiers
+  const jumpToBottom = () => {
+    // recheck the live marker before sending input into an application-owned viewport
+    if (codexCanReturnToLatest()) sendInput('\x1b[1;5F');
+    // ordinary panes still follow their browser-owned scrollback without sending keys
+    else terminal.scrollToBottom();
+    syncFollowState();
+  };
   host.addEventListener('click', focusOnClick);
   jump.addEventListener('pointerdown', preserveJumpFocus);
   jump.addEventListener('click', jumpToBottom);
