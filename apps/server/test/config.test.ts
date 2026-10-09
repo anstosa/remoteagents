@@ -204,6 +204,15 @@ describe('project configuration', () => {
     await expect(validateConfig({ publicOrigin: 'https://agents.example.com', editor: '  ' })).rejects.toThrow();
   });
 
+  it('accepts keys tables with canonical chords, omits them when unset, and refuses a forbidden chord', async () => {
+    const set = await validateConfig({ publicOrigin: 'https://agents.example.com', keys: { root: { 'C-g': { table: 'git' } }, git: { L: { terminal: ' lazygit ', reuse: true } } } });
+    expect(set.keys).toEqual({ root: { 'C-g': { table: 'git' } }, git: { 'S-l': { terminal: 'lazygit', reuse: true } } });
+    expect((await validateConfig({ publicOrigin: 'https://agents.example.com' })).keys).toBeUndefined();
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', keys: { root: { 'C-w': 'next-panel' } } })).rejects.toThrow('keys.root.C-w: Firefox and Chromium both reserve it');
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', keys: { root: { x: 'next-panel' } } })).rejects.toThrow('cannot steal typing');
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', keys: { root: { 'C-g': { table: 'git' } } } })).rejects.toThrow('no table named git');
+  });
+
   it('accepts an absolute scratchDirectory, omits it when unset, and refuses a relative one', async () => {
     const set = await validateConfig({ publicOrigin: 'https://agents.example.com', scratchDirectory: '/srv/scratch' });
     expect(set.scratchDirectory).toBe('/srv/scratch');

@@ -93,6 +93,7 @@ import { createRuntimeHostFiles } from './host-files/runtime.js';
 import { registerHostFilesRoutes } from './host-files/routes.js';
 import { HostFilesError } from './host-files/contracts.js';
 import { HostFilesTransportError } from './host-files/protocol.js';
+import { browserKeysConfig, terminalBindingCommand, terminalProgramName } from './config/keys.js';
 
 export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; pullRequestReviews?: PullRequestReviewService; reviewStore?: ReviewTourStore; reviewRunner?: ReviewRunner; workspaceFiles?: WorkspaceFileService; hostFiles?: HostFilesService; comparison?: ComparisonService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; claudeAccount?: () => Promise<AccountSummary>; accountSpend?: ApiKeySpendService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'>; scheduleBootAt?: Date; paneStream?: PaneStreamProvider };
 // buildApp decorates the returned instance with the Schedule scheduler, so index.ts can start it and
@@ -416,7 +417,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const place = agent.placeId === undefined ? undefined : placeById.get(agent.placeId);
       return agent.worktreeId === undefined && place !== undefined ? launchResolutions.get(placeLaunchScope(place)) : launchFor(agent.worktreeId);
     };
-    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), completionId: notifications.completionId(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(agentLaunch(agent) === undefined ? {} : { launch: agentLaunch(agent) }) })), places: discovered.places.map(place => ({ ...place, ...(launchResolutions.get(placeLaunchScope(place)) === undefined ? {} : { launch: launchResolutions.get(placeLaunchScope(place)) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, notesRevision, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, codeReview: codeReviewCapability, reviews, ...(config.editor === undefined ? {} : { editor: true as const }) };
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), completionId: notifications.completionId(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(agentLaunch(agent) === undefined ? {} : { launch: agentLaunch(agent) }) })), places: discovered.places.map(place => ({ ...place, ...(launchResolutions.get(placeLaunchScope(place)) === undefined ? {} : { launch: launchResolutions.get(placeLaunchScope(place)) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, notesRevision, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, codeReview: codeReviewCapability, reviews, ...(config.editor === undefined ? {} : { editor: true as const }), ...(config.keys === undefined ? {} : { keys: browserKeysConfig(config.keys) }) };
   };
   // observe only agent state needed by cross-instance attention
   const localInstanceAttention = async () => {
@@ -2787,8 +2788,23 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const browserSession = controlled(request, true);
     const place = await resolvePlace((request.params as { id: string }).id);
     if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
-    const { name, editor, file, line, objectToken } = body(request);
+    const { name, editor, file, line, objectToken, binding } = body(request);
     if (name !== undefined && (typeof name !== 'string' || name.length > 120 || name.includes('\0') || /[\r\n]/u.test(name))) return reply.code(400).send({ error: 'invalid terminal name' });
+    // a key binding's Terminal: the browser names the binding, and its command comes from config
+    if (binding !== undefined) {
+      const { table, key } = (binding !== null && typeof binding === 'object' ? binding : {}) as { table?: unknown; key?: unknown };
+      if (typeof table !== 'string' || typeof key !== 'string' || Object.keys(binding as object).length !== 2 || name !== undefined || editor !== undefined || file !== undefined || line !== undefined || objectToken !== undefined) return reply.code(400).send({ error: 'invalid key binding' });
+      const resolved = terminalBindingCommand(config.keys, table, key);
+      if (resolved === undefined) return reply.code(400).send({ error: 'no terminal is bound to that key' });
+      const program = terminalProgramName(resolved.command);
+      // reuse focuses the binding's Terminal while it runs; its pane closes when the command exits
+      const running = resolved.reuse ? (await launch.placeConsoleShells(place)).find(pane => pane.paneName === program && pane.dead !== true) : undefined;
+      if (running !== undefined) return reply.code(200).send({ paneId: running.paneId, reused: true });
+      const paneId = await launch.createConsoleShell(place, program, resolved.command);
+      if (paneId === undefined) return reply.code(500).send({ error: 'could not open a terminal' });
+      await dashboardUpdates.refresh().catch(() => undefined);
+      return reply.code(201).send({ paneId });
+    }
     if (editor !== undefined && typeof editor !== 'boolean') return reply.code(400).send({ error: 'invalid editor flag' });
     // accept Files capabilities only for configured-editor launches
     if (objectToken !== undefined && (editor !== true || typeof objectToken !== 'string')) return reply.code(400).send({ error: 'invalid editor file selection' });

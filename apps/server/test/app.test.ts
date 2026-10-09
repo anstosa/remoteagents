@@ -8,6 +8,7 @@ import { AgentNotificationCoordinator } from '../src/notifications.js';
 import { stated } from './helpers/agent.js';
 import { testProject, testWorktree } from './helpers/config.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
+import { parseKeysConfig, type KeysConfig } from '../src/config/keys.js';
 import { resolveReviewConfig } from '../src/review-runs/config.js';
 import type { ReviewRunProgress } from '../src/review-runs/runner.js';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -1038,11 +1039,11 @@ describe('Console shells server lifecycle', () => {
   let secret = 30;
   // build the app with the given fakes and return a logged-in session's headers
   // `realLaunch` leaves the launch service to buildApp, so its Place-session lookup is the app's own wiring
-  const start = async (deps: { discovery?: object; launch?: object; realLaunch?: true; tmux?: object; worktreeCommands?: object; editor?: string }) => {
+  const start = async (deps: { discovery?: object; launch?: object; realLaunch?: true; tmux?: object; worktreeCommands?: object; editor?: string; keys?: KeysConfig }) => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const discovery = { worktreesNow: () => [worktree], dashboard: async () => idleDashboard, target: async () => undefined, ...deps.discovery };
     const launch = { launchResolutions: async () => new Map(), ...deps.launch };
-    const app = await buildApp({ ...config, ...(deps.editor === undefined ? {} : { editor: deps.editor }) }, { auth: new AuthService(hash, Buffer.alloc(32, secret++).toString('base64url')), discovery: discovery as never, ...(deps.realLaunch ? {} : { launch: launch as never }), tmux: (deps.tmux ?? {}) as never, ...(deps.worktreeCommands === undefined ? {} : { worktreeCommands: deps.worktreeCommands as never }) });
+    const app = await buildApp({ ...config, ...(deps.editor === undefined ? {} : { editor: deps.editor }), ...(deps.keys === undefined ? {} : { keys: deps.keys }) }, { auth: new AuthService(hash, Buffer.alloc(32, secret++).toString('base64url')), discovery: discovery as never, ...(deps.realLaunch ? {} : { launch: launch as never }), tmux: (deps.tmux ?? {}) as never, ...(deps.worktreeCommands === undefined ? {} : { worktreeCommands: deps.worktreeCommands as never }) });
     const boot = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
     const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
     const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
@@ -1110,6 +1111,49 @@ describe('Console shells server lifecycle', () => {
       expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), 'nvim', '/usr/local/bin/nvim -p');
       const dashboard = await app.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
       expect(dashboard.json().editor).toBe(true);
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('opens a terminal key binding with the command from config, named for its program', async () => {
+    const createConsoleShell = vi.fn(async () => '%9');
+    const keys = parseKeysConfig({ root: { 'C-g': { table: 'git' } }, git: { d: { terminal: '/usr/bin/gh dash --verbose' } } });
+    const { app, headers } = await start({ launch: { createConsoleShell, placeConsoleShells: async () => [] }, keys });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { binding: { table: 'git', key: 'd' } } });
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ paneId: '%9' });
+      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), 'gh', '/usr/bin/gh dash --verbose');
+      // the browser sees each terminal binding's program, never its command line
+      const dashboard = await app.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
+      expect(dashboard.json().keys).toEqual({ root: { 'C-g': { table: 'git' } }, git: { d: { terminal: 'gh' } } });
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('focuses the running pane of a reuse binding instead of opening another', async () => {
+    const createConsoleShell = vi.fn(async () => '%9');
+    const placeConsoleShells = vi.fn(async () => [{ ...shell, paneId: '%4', paneName: 'lazygit', command: 'lazygit' }]);
+    const { app, headers } = await start({ launch: { createConsoleShell, placeConsoleShells } });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { binding: { table: 'prefix', key: 'g' } } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ paneId: '%4', reused: true });
+      expect(createConsoleShell).not.toHaveBeenCalled();
+      placeConsoleShells.mockResolvedValueOnce([]);
+      const opened = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { binding: { table: 'prefix', key: 'g' } } });
+      expect(opened.statusCode).toBe(201);
+      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), 'lazygit', 'lazygit');
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('refuses a binding that names no terminal, carries a command, or mixes with the editor', async () => {
+    const createConsoleShell = vi.fn(async () => '%9');
+    const { app, headers } = await start({ launch: { createConsoleShell, placeConsoleShells: async () => [] }, editor: 'nvim', keys: parseKeysConfig({ prefix: { g: null } }) });
+    try {
+      for (const payload of [{ binding: { table: 'prefix', key: 'c' } }, { binding: { table: 'prefix', key: 'g' } }, { binding: { table: 'nope', key: 'x' } }, { binding: { table: '__proto__', key: 'toString' } }, { binding: 'prefix g' }, { binding: { table: 'prefix', key: 'g', terminal: 'htop' } }, { binding: { table: 'prefix', key: 'c' }, editor: true }, { binding: { table: 'prefix', key: 'c' }, name: 'x' }]) {
+        const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload });
+        expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+      }
+      expect(createConsoleShell).not.toHaveBeenCalled();
     } finally { await app.close(); }
   }, 15_000);
 

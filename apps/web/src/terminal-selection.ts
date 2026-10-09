@@ -1,6 +1,7 @@
 import type { StreamedTerminalHandle } from './streamed-terminal.js';
 import { computeTerminalTheme } from './terminal-theme.js';
 import { subscribeTerminalFontSize } from './terminal-font-size.js';
+import { registerKeyAction } from './keyboard.js';
 
 export type TerminalSelection = { text: string; top: number; left: number };
 
@@ -564,31 +565,26 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     else terminal.blur();
   };
 
-  // yank or copy the active output selection
-  const copySelectionShortcut = (event: KeyboardEvent) => {
+  // The copy-selection key binding (y, C-S-c, and C-c or Cmd-C over a selection): copy this pane's
+  // selection, or decline so the key goes on (C-c still interrupts with nothing selected).
+  const copySelectionShortcut = (event: KeyboardEvent | undefined): boolean => {
     // ignore late events after cleanup
-    if (disposed) return;
-    const key = event.key.toLowerCase();
-    const yank = key === 'y' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
-    const terminalCopy = key === 'c' && event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey;
-    // avoid per-pane layout reads for ordinary typing
-    if (!yank && !terminalCopy) return;
+    if (disposed || event === undefined) return false;
     const target = eventTargetElement(event.target);
     const localTarget = target !== null && container.contains(target);
     // require ownership only for body-level and other neutral targets
-    if (!localTarget && shortcutOwner !== container) return;
+    if (!localTarget && shortcutOwner !== container) return false;
     // leave fields outside this terminal untouched
-    if (isEditableTarget(target) && (target === null || !container.contains(target))) return;
+    if (isEditableTarget(target) && (target === null || !container.contains(target))) return false;
     // leave every other output surface untouched
-    if (targetsForeignOutput(target)) return;
+    if (targetsForeignOutput(target)) return false;
     // measure visibility only for this pane's copy shortcuts
-    if (!paneIsVisible()) return;
+    if (!paneIsVisible()) return false;
     const selected = selectedOutput();
     // preserve the key when selection has cleared
-    if (!selected) return;
-    event.preventDefault();
-    event.stopPropagation();
+    if (!selected) return false;
     void copy(selected);
+    return true;
   };
 
   // apply the same clipboard policy to native and xterm context-menu copies
@@ -640,7 +636,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
   const nativeSelectionChanged = () => syncSelectionMode(nativeSelectionActive());
   document.addEventListener('selectionchange', nativeSelectionChanged);
   document.addEventListener('copy', nativeOutputCopied);
-  document.addEventListener('keydown', copySelectionShortcut, true);
+  const unregisterCopyShortcut = registerKeyAction('copy-selection', copySelectionShortcut);
   // follow fullscreen and responsive visibility changes without selection events
   const selectionResizeObserver = new ResizeObserver(() => {
     // ignore callbacks queued before cleanup
@@ -657,19 +653,6 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     if (!disposed) syncSelectionMode();
   }, { threshold: minimumInViewRatio });
   selectionViewObserver.observe(container);
-  // let focused terminals copy instead of sending interrupt
-  terminal.attachCustomKeyEventHandler(event => {
-    // preserve non-copy keys and late terminal events
-    if (disposed || event.type !== 'keydown' || event.key.toLowerCase() !== 'c') return true;
-    const selected = selectedOutput();
-    // copy visible native or xterm text rather than interrupting the agent
-    if (paneIsVisible() && (event.ctrlKey || event.metaKey) && !event.shiftKey && selected) {
-      event.preventDefault();
-      void copy(selected);
-      return false;
-    }
-    return true;
-  });
 
   // release every listener and transient visual state
   const dispose = () => {
@@ -702,7 +685,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     window.removeEventListener('blur', endOutputSelection);
     document.removeEventListener('selectionchange', nativeSelectionChanged);
     document.removeEventListener('copy', nativeOutputCopied);
-    document.removeEventListener('keydown', copySelectionShortcut, true);
+    unregisterCopyShortcut();
     setSelectionMode(false);
     options.onSelection(undefined);
     // avoid mutating native selection nodes during teardown

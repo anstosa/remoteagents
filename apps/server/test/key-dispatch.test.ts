@@ -1,0 +1,166 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createKeyDispatcher, keyRepeatMs, keyTableTimeoutMs } from '../../web/src/key-dispatch.js';
+import { parseKeysConfig, resolveKeyTables, type KeyBinding } from '../src/config/keys.js';
+
+// a dispatcher over the defaults (plus `config`) that records what it ran; `decline` lists the
+// actions that say they do not apply right now
+const setup = (config: unknown = {}, decline: string[] = []) => {
+  const ran: Array<{ binding: KeyBinding; table: string; chord: string }> = [];
+  const dispatcher = createKeyDispatcher({
+    tables: () => resolveKeyTables(parseKeysConfig(config)),
+    run: (binding, context) => {
+      ran.push({ binding, table: context.table, chord: context.chord });
+      return typeof binding !== 'string' || !decline.includes(binding);
+    }
+  });
+  return { dispatcher, ran, press: (chord: string | undefined) => dispatcher.handle(chord, undefined) };
+};
+
+beforeEach(() => { vi.useFakeTimers(); });
+afterEach(() => { vi.useRealTimers(); });
+
+describe('key dispatcher', () => {
+  it('passes keys with no root binding straight through', () => {
+    const { press, ran } = setup();
+    expect(press('a')).toBe('pass');
+    expect(press('C-l')).toBe('pass');
+    expect(ran).toEqual([]);
+  });
+
+  it('runs a root action and lets a declining one pass', () => {
+    const { press, ran } = setup({}, ['copy-selection']);
+    expect(press('C-?')).toBe('handled');
+    expect(press('C-c')).toBe('pass');
+    expect(ran.map(entry => entry.binding)).toEqual(['show-bindings', 'copy-selection']);
+  });
+
+  it('runs the next key from the leader table, then returns to root', () => {
+    const { press, ran, dispatcher } = setup();
+    expect(press('C-b')).toBe('handled');
+    expect(dispatcher.state()).toMatchObject({ table: 'prefix', chord: 'C-b' });
+    expect(press('c')).toBe('handled');
+    expect(ran).toEqual([{ binding: 'new-terminal', table: 'prefix', chord: 'c' }]);
+    expect(dispatcher.state()).toBeUndefined();
+    expect(press('c')).toBe('pass');
+  });
+
+  it('swallows an unbound key after the leader, as tmux does', () => {
+    const { press, ran, dispatcher } = setup();
+    press('C-b');
+    expect(press('q')).toBe('handled');
+    expect(ran).toEqual([]);
+    expect(dispatcher.state()).toBeUndefined();
+  });
+
+  it('keeps a table bound action swallowed even when it declines', () => {
+    const { press } = setup({}, ['rename-panel']);
+    press('C-b');
+    expect(press(',')).toBe('handled');
+  });
+
+  it('sends the leader through when it is pressed twice', () => {
+    const { press, ran, dispatcher } = setup();
+    press('C-b');
+    expect(press('C-b')).toBe('pass');
+    expect(ran).toEqual([]);
+    expect(dispatcher.state()).toBeUndefined();
+  });
+
+  it('sends a rebound leader through too, and a table may bind its own leader', () => {
+    const rebound = setup({ root: { 'C-a': { table: 'prefix' }, 'C-b': null } });
+    expect(rebound.press('C-b')).toBe('pass');
+    rebound.press('C-a');
+    expect(rebound.press('C-a')).toBe('pass');
+    const bound = setup({ prefix: { 'C-b': 'last-panel' } });
+    bound.press('C-b');
+    expect(bound.press('C-b')).toBe('handled');
+    expect(bound.ran.map(entry => entry.binding)).toEqual(['last-panel']);
+  });
+
+  it('ignores bare modifiers while a table waits', () => {
+    const { press, ran } = setup();
+    press('C-b');
+    expect(press(undefined)).toBe('pass');
+    expect(press('%')).toBe('handled');
+    expect(ran.map(entry => entry.binding)).toEqual(['split-beside']);
+  });
+
+  it('drops back to root when the table times out', () => {
+    const { press, ran, dispatcher } = setup();
+    const changes = vi.fn();
+    dispatcher.subscribe(changes);
+    press('C-b');
+    vi.advanceTimersByTime(keyTableTimeoutMs - 1);
+    expect(dispatcher.state()?.table).toBe('prefix');
+    vi.advanceTimersByTime(1);
+    expect(dispatcher.state()).toBeUndefined();
+    expect(changes).toHaveBeenCalledTimes(2);
+    expect(press('c')).toBe('pass');
+    expect(ran).toEqual([]);
+  });
+
+  it('reports when the active table expires, for the indicator', () => {
+    const { press, dispatcher } = setup();
+    press('C-b');
+    expect(dispatcher.state()).toMatchObject({ table: 'prefix', expiresAt: Date.now() + keyTableTimeoutMs, repeat: false });
+  });
+
+  it('chains from one table to another', () => {
+    const { press, ran, dispatcher } = setup({ root: { 'C-g': { table: 'git' } }, git: { l: { terminal: 'lazygit' } }, prefix: { G: { table: 'git' } } });
+    press('C-b');
+    expect(press('S-g')).toBe('handled');
+    expect(dispatcher.state()).toMatchObject({ table: 'git', chord: 'S-g' });
+    expect(press('l')).toBe('handled');
+    expect(ran).toEqual([{ binding: { terminal: 'lazygit' }, table: 'git', chord: 'l' }]);
+  });
+
+  it('keeps a repeatable binding live without the leader for a moment', () => {
+    const { press, ran, dispatcher } = setup();
+    press('C-b');
+    press('Right');
+    expect(dispatcher.state()).toMatchObject({ table: 'prefix', repeat: true });
+    vi.advanceTimersByTime(keyRepeatMs - 1);
+    expect(press('Right')).toBe('handled');
+    vi.advanceTimersByTime(keyRepeatMs - 1);
+    expect(press('Left')).toBe('handled');
+    expect(ran.map(entry => entry.binding)).toEqual(['select-panel-right', 'select-panel-right', 'select-panel-left']);
+    vi.advanceTimersByTime(keyRepeatMs);
+    expect(dispatcher.state()).toBeUndefined();
+    expect(press('Right')).toBe('pass');
+  });
+
+  it('ends the repeat on any other key and handles that key from root', () => {
+    const { press, ran, dispatcher } = setup();
+    press('C-b');
+    press('Left');
+    expect(press('c')).toBe('pass');
+    expect(dispatcher.state()).toBeUndefined();
+    press('C-b');
+    press('Left');
+    expect(press('C-?')).toBe('handled');
+    expect(ran.map(entry => entry.binding)).toEqual(['select-panel-left', 'select-panel-left', 'show-bindings']);
+  });
+
+  it('asks before a confirmed action and runs it only on y', () => {
+    const { press, dispatcher } = setup();
+    const yes = vi.fn();
+    dispatcher.confirm('Close panel Terminal 1?', yes);
+    expect(dispatcher.state()).toMatchObject({ confirm: 'Close panel Terminal 1?' });
+    expect(press(undefined)).toBe('pass');
+    expect(press('n')).toBe('handled');
+    expect(yes).not.toHaveBeenCalled();
+    expect(dispatcher.state()).toBeUndefined();
+    dispatcher.confirm('Close panel Terminal 1?', yes);
+    expect(press('y')).toBe('handled');
+    expect(yes).toHaveBeenCalledOnce();
+    expect(dispatcher.state()).toBeUndefined();
+  });
+
+  it('cancels a pending table on reset', () => {
+    const { press, dispatcher } = setup();
+    press('C-b');
+    dispatcher.reset();
+    expect(dispatcher.state()).toBeUndefined();
+    expect(press('c')).toBe('pass');
+  });
+});

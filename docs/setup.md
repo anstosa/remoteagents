@@ -52,6 +52,25 @@ top of a file in the File view), by appending
 understand that form; an editor that wants another one (VS Code's `-g
 path:LINE`, say) is not supported by the jump.
 
+### Keyboard shortcuts
+
+The web app's shortcuts work like tmux key tables. `root` is always active, and `C-b` switches to the `prefix` table for one key: `c` opens a Terminal, `1`–`9` and `0` go to a panel, `n`/`p`/`l` step through panels, `w` and `s` pick a Workspace, `z` expands the current panel, `x` closes it after a y/n question, `g` opens Lazygit, `:` opens the command palette and `?` lists every binding. Press `C-b` twice to send it to the focused terminal. A table waits 10 seconds for its key, and a badge shows which table is waiting. `C-?` or the keyboard button in the desktop toolbar opens the bindings sheet, which shows every active binding and where it came from.
+
+The top-level `keys` adds tables and bindings, replaces default bindings, and removes them with `null`:
+
+```json
+"keys": {
+  "root":   { "C-b": { "table": "prefix" }, "C-g": { "table": "git" } },
+  "prefix": { "x": null },
+  "git":    { "l": { "terminal": "lazygit", "reuse": true }, "d": { "terminal": "gh dash" } }
+}
+```
+
+- Chords use tmux's syntax: `C-` (Ctrl), `M-` (Alt), `S-` (Shift) and `Super-` (Cmd), then a character (`?`, `%`, `L`) or a named key (`Left`, `Space`, `F1`). A key matches the character typed, so an uppercase letter is the same as `S-` plus the lowercase letter.
+- A binding is an action name such as `"next-panel"` (the command palette lists them), `{ "table": name }`, or `{ "terminal": command, "reuse"?: bool }`. A terminal binding opens a Terminal in the current Workspace that runs the command and closes when it exits. With `reuse`, the key focuses that Terminal while it runs instead of opening another. The browser sends only the binding's table and key; the command stays on the server.
+- A binding in `root` needs `C-`, `M-` or `Super-`, or a function key, so it cannot steal ordinary typing.
+- The console refuses to start on a chord a browser keeps for itself (`C-t`, `C-n`, `C-w`, `C-q`, `C-S-t`, `C-S-n`, `C-S-w`, `C-Tab`, `C-S-Tab`, `C-PageUp`, `C-PageDown`, `C-S-p`, `C-S-u`, `C-]`), and on a binding to a table that does not exist.
+
 When `remoteServers` connects multiple console instances, configure the same
 separately generated `RAC_INSTANCE_STATUS_SECRET` on every peer. Keep each
 instance's `RAC_SESSION_SECRET` unique: it signs browser sessions and must not

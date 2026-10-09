@@ -8,6 +8,7 @@
   "scratchDirectory": "/home/me",
   "defaultAgent": "codex",
   "editor": "/usr/bin/nvim",
+  "keys": { "root": { "C-g": { "table": "git" } }, "git": { "l": { "terminal": "lazygit", "reuse": true } } },
   "adapters": {
     "codex": {
       "program": "/usr/local/bin/codex",

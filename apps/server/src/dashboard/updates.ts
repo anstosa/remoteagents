@@ -3,6 +3,7 @@ import type { LaunchResolution } from '../launch/resolution.js';
 import type { StackState } from '../worktree-commands/service.js';
 import type { ReviewTourCapability, StoredReviewTourSummary } from '../review-tour/contracts.js';
 import type { CodeReviewCapability } from '../code-review/contracts.js';
+import type { KeysConfig } from '../config/keys.js';
 
 // one Worktree on the wire, augmented with the per-Worktree state the loader adds:
 // its stack controls and its resolved Launch profile
@@ -28,6 +29,8 @@ export type DashboardPayload = Omit<Dashboard, 'agents' | 'projects' | 'places'>
   reviews: StoredReviewTourSummary[];
   // whether an `editor` is configured, so the web shows its Editor button (never the command)
   editor?: true;
+  // the operator's key tables, each terminal command reduced to its program name
+  keys?: KeysConfig;
 };
 
 // fingerprint every dashboard field that drives browser refreshes

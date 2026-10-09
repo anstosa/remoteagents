@@ -1,34 +1,21 @@
-import { useEffect } from 'react';
+import { keyTarget, typingOutsideTerminal, useKeyAction, type KeyActionContext } from './keyboard.js';
 
 export const isPromptKeyboardTarget = (target: EventTarget | null) => target instanceof HTMLElement && target.getAttribute('aria-label') === 'Prompt';
-
-// recognize focus anywhere inside prompt controls
-const isPromptAreaKeyboardTarget = (target: EventTarget | null) => target instanceof HTMLElement && target.closest('.prompt') !== null;
 
 export function cycleTabIndex(activeTab: number, tabCount: number, direction: -1 | 1) {
   if (tabCount < 1) return 0;
   return (activeTab + direction + tabCount) % tabCount;
 }
 
-export function useShiftArrowTabCycling(activeTab: number, tabCount: number, selectTab: (index: number) => void) {
-  useEffect(() => {
-    const cycle = (event: KeyboardEvent) => {
-      const target = event.target;
-      if (
-        tabCount < 2
-        || !event.shiftKey
-        || event.altKey
-        || event.ctrlKey
-        || event.metaKey
-        || isPromptAreaKeyboardTarget(target)
-        || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')
-      ) return;
-
-      event.preventDefault();
-      selectTab(cycleTabIndex(activeTab, tabCount, event.key === 'ArrowLeft' ? -1 : 1));
-    };
-
-    window.addEventListener('keydown', cycle);
-    return () => window.removeEventListener('keydown', cycle);
-  }, [activeTab, selectTab, tabCount]);
+// The next- and previous-workspace actions, which cycle the Workspace tabs with wraparound. From
+// root (S-Left, S-Right) they decline in text fields and the prompt's controls, where Shift+Arrow
+// selects text; behind the leader they always apply.
+export function useWorkspaceCycleKeys(activeTab: number, tabCount: number, selectTab: (index: number) => void) {
+  const cycle = (direction: -1 | 1) => (event: KeyboardEvent | undefined, context: KeyActionContext | undefined) => {
+    if (tabCount < 2) return false;
+    if (context?.table === 'root' && (typingOutsideTerminal(event) || keyTarget(event)?.closest('.prompt') != null)) return false;
+    selectTab(cycleTabIndex(activeTab, tabCount, direction));
+  };
+  useKeyAction('next-workspace', cycle(1));
+  useKeyAction('previous-workspace', cycle(-1));
 }

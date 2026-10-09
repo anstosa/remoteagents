@@ -1,7 +1,21 @@
 import { useSyncExternalStore } from 'react';
 
 export type WorkspaceSplit = { key: string; label: string };
-type WorkspaceView = { splits: WorkspaceSplit[]; canClose: boolean; closeAll: () => void; jump: (key: string) => void };
+// A mounted Workspace's panels and what the keyboard does to them. `jump` brings a panel into view
+// and focuses it, its input (a terminal, the composer) when `input`. `currentPanel` is the panel
+// holding focus, else the last focused, else the one in view; `lastPanel` the one before it.
+export type WorkspaceView = {
+  splits: WorkspaceSplit[];
+  canClose: boolean;
+  closeAll: () => void;
+  jump: (key: string, input?: boolean) => void;
+  currentPanel: () => string | undefined;
+  lastPanel: () => string | undefined;
+  toggleExpand: (key: string) => void;
+  renamePanel: (key: string) => boolean;
+  closePanel: (key: string) => void;
+  openTerminal: (binding?: { table: string; key: string }) => void;
+};
 export const workspaceViews = new Map<string, WorkspaceView>();
 export const pendingWorkspaceJumps = new Map<string, string>();
 const listeners = new Set<() => void>();

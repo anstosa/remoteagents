@@ -13,6 +13,7 @@ import { instanceIconNames, type InstanceIcon } from '../instance-icon.js';
 import { isIP } from 'node:net';
 import { defaultDavoContext, defaultDavoName } from '../integrations/realtime/settings.js';
 import { resolveReviewConfig, reviewConfigSchema, type ResolvedReviewConfig } from '../review-runs/config.js';
+import { parseKeysConfig, type KeysConfig } from './keys.js';
 
 const loopback = new Set(['127.0.0.1', '::1']);
 // wildcard binds expose every interface; require an explicit address instead
@@ -113,6 +114,8 @@ const sourceSchema = z.object({
   // the operator's editor, a shell command line (`/usr/bin/nvim`): when set, the Workspace
   // toolbar's Editor button opens a Console shell that runs it first
   editor: z.string().trim().min(1).max(4096).refine(value => !/[\0\r\n]/u.test(value), 'NUL and newlines are forbidden').optional(),
+  // key tables over the built-in `root` and `prefix` (config/keys.ts validates them)
+  keys: z.unknown().optional(),
   adapters: adaptersSchema.default({}),
   integrations: integrationFeatures,
   // how the Review tour and the opt-in Code review run (ADR 0010); every field is optional
@@ -128,7 +131,7 @@ export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
 export type IntegrationConfig = z.output<typeof integrationFeatures>;
 export type DavoSettings = z.output<typeof davoSettingsSchema>;
-export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; defaultAgent?: AgentKind; scratchDirectory?: string; editor?: string; adapters: AdapterConfigs; integrations?: IntegrationConfig; review: ResolvedReviewConfig; projects: Project[] };
+export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; defaultAgent?: AgentKind; scratchDirectory?: string; editor?: string; keys?: KeysConfig; adapters: AdapterConfigs; integrations?: IntegrationConfig; review: ResolvedReviewConfig; projects: Project[] };
 // how validation surfaces non-fatal facts: `warn` collects boot warnings (non-executable
 // programs, a crossed OMX/Codex program); `checkExecutables` runs the boot X_OK probe
 // and is skipped under the host bridge, where `program` is a host path the container
@@ -365,6 +368,7 @@ export async function validateConfig(input: unknown, options: ValidateConfigOpti
   const checkExecutables = options.checkExecutables ?? process.env.RAC_HOST_TMUX_DIR === undefined;
   const adapters = await resolveAdapters(parsed.adapters, checkExecutables, warn);
   const review = resolveReviewConfig(parsed.review, parsed.adapters);
+  const keys = parsed.keys === undefined ? undefined : parseKeysConfig(parsed.keys);
   if (isIP(parsed.listen.host) === 0) throw new Error('listener host must be an IP address literal');
   if (wildcard.has(parsed.listen.host)) throw new Error('listener must bind to a specific address, not a wildcard');
   if (parsed.proxy.trustedSourceIps.some((ip) => !loopback.has(ip))) throw new Error('only loopback proxy sources are permitted');
@@ -388,5 +392,5 @@ export async function validateConfig(input: unknown, options: ValidateConfigOpti
     else { if (identities.has(project.identity)) throw new Error('duplicate project identity'); identities.add(project.identity); }
     projects.push(project);
   }
-  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, ...(parsed.defaultAgent === undefined ? {} : { defaultAgent: parsed.defaultAgent }), ...(parsed.scratchDirectory === undefined ? {} : { scratchDirectory: resolve(parsed.scratchDirectory) }), ...(parsed.editor === undefined ? {} : { editor: parsed.editor }), adapters, integrations: parsed.integrations, review, projects };
+  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, ...(parsed.defaultAgent === undefined ? {} : { defaultAgent: parsed.defaultAgent }), ...(parsed.scratchDirectory === undefined ? {} : { scratchDirectory: resolve(parsed.scratchDirectory) }), ...(parsed.editor === undefined ? {} : { editor: parsed.editor }), ...(keys === undefined ? {} : { keys }), adapters, integrations: parsed.integrations, review, projects };
 }

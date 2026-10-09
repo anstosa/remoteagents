@@ -9,13 +9,13 @@ async function openConsole(page: Page, stored?: string) {
   await installPaneMock(page);
   await page.addInitScript(seed => {
     if (seed !== null) localStorage.setItem('rac.terminal-font-size', seed);
-    // Record whether the app's capture-phase handler prevented a font shortcut's
-    // default, read after the event has bubbled to the document.
-    document.addEventListener('keydown', event => {
+    // Record whether the app's keyboard dispatcher prevented a font shortcut's default. It
+    // swallows the key before it bubbles, so keep the event and read it once dispatch is over.
+    window.addEventListener('keydown', event => {
       if ((event.ctrlKey || event.metaKey) && ['=', '+', '-', '0'].includes(event.key)) {
-        Object.defineProperty(window, '__fontKeyPrevented', { configurable: true, value: event.defaultPrevented });
+        Object.defineProperty(window, '__fontKeyPrevented', { configurable: true, get: () => event.defaultPrevented });
       }
-    });
+    }, true);
   }, stored ?? null);
   await page.route('**/api/**', async route => {
     const request = route.request();
