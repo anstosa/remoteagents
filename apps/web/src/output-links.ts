@@ -9,6 +9,7 @@ const outputFile = /(?:^|[\s'"`(<\[])(@?(?:(?:file:\/\/)?(?:\/|\.{1,2}\/)?(?:[A-
 
 export type OutputLink = { kind: 'url'|'file'; uri: string; range: IBufferRange };
 export type OutputLinkSegment = { column: number; row: number; columns: number };
+type OutputLinkFragment = { line: number; column: number; offset: number; text: string };
 
 // compare one output URL with the configured stack host
 export const outputUrlMatchesHost = (candidate: string, homeUrl: string) => {
@@ -19,38 +20,101 @@ export const outputUrlMatchesHost = (candidate: string, homeUrl: string) => {
 // normalize one file-preview request path
 const outputFilePath = (value: string) => value.replace(/^@/u, '').replace(/^file:\/\//u, '').replace(/#L\d+(?:-L\d+)?$/iu, '').replace(/:\d+(?::\d+)?$/u, '');
 
-const outputLinkPosition = (terminal: XTerm, initialLine: number, initialColumn: number, length: number): [number, number] => {
+// map one row's string offset without counting wide-character continuation cells
+const outputLinkColumn = (terminal: XTerm, line: number, initialColumn: number, length: number) => {
   const buffer = terminal.buffer.active;
+  const row = buffer.getLine(line);
+  // reject missing buffer rows
+  if (!row) return -1;
   const cell = buffer.getNullCell();
-  let line = initialLine;
-  let column = initialColumn;
-  while (length > 0) {
-    const row = buffer.getLine(line);
-    if (!row) return [-1, -1];
-    for (; column < row.length; column += 1) {
-      row.getCell(column, cell);
-      const chars = cell.getChars();
-      if (cell.getWidth()) {
-        length -= chars.length || 1;
-        if (column === row.length - 1 && !chars && buffer.getLine(line + 1)?.isWrapped && buffer.getLine(line + 1)?.getCell(0, cell)?.getWidth() === 2) length += 1;
-      }
-      if (length < 0) return [line, column];
-    }
-    line += 1;
-    column = 0;
+  // walk physical cells while consuming their UTF-16 text
+  for (let column = initialColumn; column < row.length; column += 1) {
+    row.getCell(column, cell);
+    // skip the second cell of a wide glyph
+    if (!cell.getWidth()) continue;
+    // stop before consuming the requested cell
+    if (length <= 0) return column;
+    length -= cell.getChars().length || 1;
+    // clamp offsets inside a combined glyph
+    if (length < 0) return column;
   }
-  return [line, column];
+  return length === 0 ? row.length : -1;
 };
 
-const lineEndsAtRightEdge = (terminal: XTerm, line: number) => {
+// preserve native boundary spaces but omit padding before a wrapped wide glyph
+const outputLineText = (terminal: XTerm, line: number) => {
   const row = terminal.buffer.active.getLine(line);
-  const cell = row?.getCell((row.length ?? 0) - 1);
-  return cell !== undefined && cell.getWidth() > 0 && cell.getChars() !== '';
+  const next = terminal.buffer.active.getLine(line + 1);
+  const widePadding = next?.isWrapped && row?.getCell(row.length - 1)?.getChars() === '' && next.getCell(0)?.getWidth() === 2;
+  return row?.translateToString(!next?.isWrapped, 0, widePadding ? row.length - 1 : row.length) ?? '';
 };
 
 // require URL syntax before treating sentence punctuation as a captured wrap
 const urlReachesEnd = (text: string, nextText: string) => outputUrlFragment.test(text)
   && (!/[?:,.]$/u.test(text) || /^[^\s]*[/?#&=%:]/u.test(nextText) || /^\d+(?:\s|$)/u.test(nextText));
+
+// require a matching close before trusting a padded URL delimiter
+const capturedUrlCloses = (terminal: XTerm, first: number, indent: number, closing: string) => {
+  const buffer = terminal.buffer.active;
+  // inspect uninterrupted continuation tokens without joining them yet
+  for (let line = first; line < buffer.length; line += 1) {
+    const row = buffer.getLine(line);
+    const rowText = outputLineText(terminal, line);
+    const rowIndent = row?.isWrapped ? 0 : /^ */u.exec(rowText)?.[0].length ?? 0;
+    // stop at a different captured layout
+    if (!row?.isWrapped && rowIndent !== indent) return false;
+    const candidate = rowText.slice(rowIndent);
+    // stop at empty rows or a separate destination
+    if (!candidate || /^https?:/iu.test(candidate)) return false;
+    const end = candidate.search(/[\s"'!*(){}|\\^<>`]/u);
+    // only the expected closing delimiter can terminate this URL
+    if (end >= 0) return candidate[end] === closing;
+  }
+  return false;
+};
+
+// recognize padded TUI wraps without joining arbitrary neighboring lines
+const capturedUrlContinues = (terminal: XTerm, line: number, text: string, nextText: string, indent: number) => {
+  const fragment = outputUrlFragment.exec(text);
+  // reject delimiters, prose boundaries, and a separate URL
+  if (!fragment || !outputUrlContinuation.test(nextText) || /^https?:/iu.test(nextText) || !urlReachesEnd(text, nextText)) return false;
+  const opening = text[fragment.index - 1];
+  // trust padded delimiter context only when its closing token is present
+  if ((opening === '(' || opening === '<') && capturedUrlCloses(terminal, line + 1, indent, opening === '(' ? ')' : '>')) return true;
+  const rowText = outputLineText(terminal, line);
+  const lastColumn = outputLinkColumn(terminal, line, 0, rowText.length);
+  const columns = terminal.buffer.active.getLine(line)?.length ?? terminal.cols;
+  // retain the existing full-width captured-wrap heuristic
+  if (!indent && lastColumn === columns) return true;
+  const previousIndent = /^ */u.exec(rowText)?.[0].length ?? 0;
+  // structural inference away from the edge requires matching indentation
+  if (!indent || indent !== previousIndent) return false;
+  // accept unfinished query values and explicit numeric ports
+  if (/[?&=]$/u.test(fragment[0]) || (/:$/u.test(fragment[0]) && /^\d+(?:\s|$)/u.test(nextText))) return true;
+  // filename-only asset wraps are ambiguous without native wrap flags
+  const standaloneAsset = /^[A-Za-z0-9_@.+%-]+\.(?:svg|png|jpe?g|gif|webp|ico|html?|pdf|json)[)>]?$/iu.test(nextText);
+  // a directory boundary needs path syntax or a standalone web-asset filename
+  return /\/$/u.test(fragment[0]) && (/^[^\s]*[/?#&=%]/u.test(nextText)
+    || standaloneAsset);
+};
+
+// map logical matches to precise row-local ranges, excluding captured padding
+const outputLinkRanges = (terminal: XTerm, fragments: OutputLinkFragment[], start: number, length: number): IBufferRange[] => {
+  const ranges: IBufferRange[] = [];
+  // intersect each physical fragment with the logical match
+  for (const fragment of fragments) {
+    const from = Math.max(start, fragment.offset);
+    const to = Math.min(start + length, fragment.offset + fragment.text.length);
+    // ignore rows outside this match
+    if (to <= from) continue;
+    const startColumn = outputLinkColumn(terminal, fragment.line, fragment.column, from - fragment.offset);
+    const endColumn = outputLinkColumn(terminal, fragment.line, fragment.column, to - fragment.offset);
+    // reject the whole match rather than exposing a partial target
+    if (startColumn < 0 || endColumn <= startColumn) return [];
+    ranges.push({ start: { x: startColumn + 1, y: fragment.line + 1 }, end: { x: endColumn, y: fragment.line + 1 } });
+  }
+  return ranges;
+};
 
 // detect output targets across native and inferred captured wraps
 export const terminalOutputLinks = (terminal: XTerm): OutputLink[] => {
@@ -59,25 +123,31 @@ export const terminalOutputLinks = (terminal: XTerm): OutputLink[] => {
   // scan each logical terminal line
   for (let first = 0; first < buffer.length;) {
     let last = first;
-    let text = buffer.getLine(first)?.translateToString(true) ?? '';
+    let text = outputLineText(terminal, first);
+    const fragments: OutputLinkFragment[] = [{ line: first, column: 0, offset: 0, text }];
     // join xterm-wrapped rows
     while (last + 1 < buffer.length) {
       const next = buffer.getLine(last + 1);
-      const nextText = next?.translateToString(true) ?? '';
+      const rowText = outputLineText(terminal, last + 1);
+      // retain real whitespace on native soft wraps
+      const indent = next?.isWrapped ? 0 : /^ */u.exec(rowText)?.[0].length ?? 0;
+      const nextText = rowText.slice(indent);
       // infer captured wraps conservatively when native wrap flags are absent
-      if (!next?.isWrapped && !(lineEndsAtRightEdge(terminal, last) && urlReachesEnd(text, nextText) && outputUrlContinuation.test(nextText))) break;
+      if (!next?.isWrapped && !capturedUrlContinues(terminal, last, text, nextText, indent)) break;
       last += 1;
+      fragments.push({ line: last, column: indent, offset: text.length, text: nextText });
       text += nextText;
     }
     const occupied: Array<{ start: number; end: number }> = [];
     const matcher = new RegExp(outputUrl.source, 'g');
     // retain external URLs first
     for (let match = matcher.exec(text); match !== null; match = matcher.exec(text)) {
-      const [startLine, startColumn] = outputLinkPosition(terminal, first, 0, match.index);
-      const [endLine, endColumn] = outputLinkPosition(terminal, startLine, startColumn, match[0].length);
-      if (startLine < 0 || endLine < 0) continue;
+      const ranges = outputLinkRanges(terminal, fragments, match.index, match[0].length);
+      // skip unmappable terminal cells
+      if (!ranges.length) continue;
       occupied.push({ start: match.index, end: match.index + match[0].length });
-      links.push({ kind: 'url', uri: match[0], range: { start: { x: startColumn + 1, y: startLine + 1 }, end: { x: endColumn, y: endLine + 1 } } });
+      // give every physical segment the complete destination
+      for (const range of ranges) links.push({ kind: 'url', uri: match[0], range });
     }
     const fileMatcher = new RegExp(outputFile.source, 'gu');
     // retain non-URL file mentions
@@ -89,11 +159,9 @@ export const terminalOutputLinks = (terminal: XTerm): OutputLink[] => {
       const path = outputFilePath(mention);
       // ignore empty normalized paths
       if (!path) continue;
-      const [startLine, startColumn] = outputLinkPosition(terminal, first, 0, mentionAt);
-      const [endLine, endColumn] = outputLinkPosition(terminal, startLine, startColumn, mention.length);
-      // skip unmappable terminal cells
-      if (startLine < 0 || endLine < 0) continue;
-      links.push({ kind: 'file', uri: path, range: { start: { x: startColumn + 1, y: startLine + 1 }, end: { x: endColumn, y: endLine + 1 } } });
+      const ranges = outputLinkRanges(terminal, fragments, mentionAt, mention.length);
+      // retain the same file target across native wrapped rows
+      for (const range of ranges) links.push({ kind: 'file', uri: path, range });
     }
     first = last + 1;
   }
