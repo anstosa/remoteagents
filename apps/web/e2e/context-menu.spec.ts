@@ -579,12 +579,69 @@ test('note context menu keeps editing through selection and dismissal', async ({
   await expect(editor).toHaveCount(0);
 });
 
-// cover mobile selection events separately from desktop focus navigation
-test.describe('touch note context menu', () => {
+// cover native mobile editing separately from desktop context actions
+test.describe('touch text context menus', () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
 
-  // exercise touch context events without relying on headless native-menu support
-  test('keeps editing through touch context events and select all', async ({ page }) => {
+  // check native-menu eligibility without relying on headless operating-system menus
+  const nativeContextEvent = (field: Locator) => field.evaluate((element: HTMLTextAreaElement) => {
+    element.setSelectionRange(0, 7);
+    const bounds = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    const event = new PointerEvent('contextmenu', { bubbles: true, cancelable: true, pointerType: 'touch', button: 0, clientX: bounds.x + parseFloat(style.paddingLeft) + 20, clientY: bounds.y + parseFloat(style.paddingTop) + parseFloat(style.lineHeight) / 2 });
+    const dispatched = element.dispatchEvent(event);
+    return { defaultPrevented: event.defaultPrevented, dispatched };
+  });
+
+  // preserve native prompt selection at both mobile viewport widths
+  for (const width of [390, 768]) {
+    // retain the native prompt menu across the shared mobile breakpoint
+    test(`prompt leaves the native context menu available at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      await mountConsole(page);
+      const prompt = page.getByRole('textbox', { name: 'Prompt' });
+      await prompt.fill('native prompt');
+      expect(await nativeContextEvent(prompt)).toEqual({ defaultPrevented: false, dispatched: true });
+      await expect(page.getByRole('menu')).toHaveCount(0);
+      await expect(prompt).toBeFocused();
+      await expect(prompt).toHaveValue('native prompt');
+      await expect.poll(() => prompt.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([0, 7]);
+    });
+  }
+
+  // retain dictation without opening a custom prompt menu on touch holds
+  test('prompt dictation never opens a custom context menu on mobile', async ({ page }) => {
+    // retain the controlled external speech fixture shape
+    type SpeechWindow = typeof window & { __contextSpeech: { starts: number } };
+    // model only the external speech-recognition lifecycle
+    await page.addInitScript(() => {
+      const speech = { starts: 0 };
+      class MockSpeechRecognition {
+        onend: (() => void) | null = null;
+        // record dictation startup without requesting a microphone
+        start() { speech.starts += 1; }
+        // finish recognition through the browser callback
+        abort() { this.onend?.(); }
+      }
+      Object.defineProperty(window, 'SpeechRecognition', { configurable: true, value: MockSpeechRecognition });
+      Object.defineProperty(window, '__contextSpeech', { configurable: true, value: speech });
+    });
+    await mountConsole(page);
+    const prompt = page.getByRole('textbox', { name: 'Prompt' });
+    await prompt.fill('native prompt');
+    await prompt.dispatchEvent('pointerdown', { pointerId: 1, pointerType: 'touch', isPrimary: true, button: 0 });
+    // wait for speech startup instead of a presentation class
+    await expect.poll(() => page.evaluate(() => (window as SpeechWindow).__contextSpeech.starts)).toBe(1);
+    await nativeContextEvent(prompt);
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(prompt).toHaveValue('native prompt');
+    await prompt.dispatchEvent('pointerup', { pointerId: 1, pointerType: 'touch', isPrimary: true, button: 0 });
+    expect(await nativeContextEvent(prompt)).toEqual({ defaultPrevented: false, dispatched: true });
+    await expect(page.getByRole('menu')).toHaveCount(0);
+  });
+
+  // leave mobile note selection and editing to the native menu
+  test('note edit mode leaves the native context menu available', async ({ page }) => {
     await installClipboardMock(page);
     await mountConsole(page);
     await page.getByRole('button', { name: 'Notes (1)' }).tap();
@@ -592,22 +649,40 @@ test.describe('touch note context menu', () => {
     await page.getByLabel('Note preview').tap();
     const editor = page.getByRole('textbox', { name: 'Note content' });
     await expect(editor).toBeFocused();
-    // model the selected word and context event produced by a long press
-    await editor.evaluate((element: HTMLTextAreaElement) => {
-      element.setSelectionRange(0, 7);
-      const bounds = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      element.dispatchEvent(new PointerEvent('contextmenu', { bubbles: true, cancelable: true, pointerType: 'touch', button: 0, clientX: bounds.x + parseFloat(style.paddingLeft) + 20, clientY: bounds.y + parseFloat(style.paddingTop) + parseFloat(style.lineHeight) / 2 }));
-    });
-    const menu = page.getByRole('menu', { name: 'Note actions' });
-    await expect(menu).toBeVisible();
-    // a native selection or clipboard popup can temporarily blur the editor
+    expect(await nativeContextEvent(editor)).toEqual({ defaultPrevented: false, dispatched: true });
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(editor).toBeVisible();
+    await expect(editor).toBeFocused();
+    await expect(editor).toHaveValue('Context menu plan');
+    await expect.poll(() => editor.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([0, 7]);
+
+    // a native popup can temporarily blur the editor without transferring focus
     await editor.evaluate((element: HTMLTextAreaElement) => element.blur());
     await expect(editor).toBeVisible();
-    await expect(menu.getByRole('menuitemradio', { name: 'Edit', exact: true })).toHaveAttribute('aria-checked', 'true');
-    await menu.getByRole('menuitem', { name: 'Select all', exact: true }).tap();
+    await expect(editor).toHaveValue('Context menu plan');
+    await expect.poll(() => editor.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([0, 7]);
+    await editor.focus();
     await expect(editor).toBeFocused();
-    await expect.poll(() => editor.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([0, 'Context menu plan'.length]);
+
+    // a real focus transfer still returns the note to preview
+    await page.getByRole('textbox', { name: 'Prompt' }).focus();
+    await expect(editor).toHaveCount(0);
+    await expect(page.getByLabel('Note preview')).toBeVisible();
+  });
+
+  // retain mobile note preview actions outside edit mode
+  test('note preview keeps the custom context menu', async ({ page }) => {
+    await installClipboardMock(page);
+    await mountConsole(page);
+    await page.getByRole('button', { name: 'Notes (1)' }).tap();
+    await page.getByRole('button', { name: 'Plan', exact: true }).tap();
+    await page.getByLabel('Note preview').click({ button: 'right' });
+    const menu = page.getByRole('menu', { name: 'Note actions' });
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole('menuitemradio', { name: 'Selection', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+    await expect(page.getByLabel('Note preview')).toBeVisible();
   });
 });
 
