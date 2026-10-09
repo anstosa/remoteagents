@@ -12,7 +12,7 @@ export type SocketRef = { fingerprint: string; path: string; device: number; ino
 // `reviewRun` is the pane's `@rac_review_run`, the id of the interactive Review run that
 // launched it (ADR 0010); the Agent carries it too.
 // shared snapshots also retain dead stack panes without a cwd; live listings omit them
-export type Pane = { paneId: string; sessionId: string; sessionName?: string; windowId?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; role?: string; processName?: string; paneName?: string; paneMode?: string; placeMark?: string; reviewRun?: string; processWorktree?: string; dead?: boolean; exitCode?: number; socket: SocketRef };
+export type Pane = { paneId: string; sessionId: string; sessionName?: string; windowId?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; role?: string; processName?: string; paneName?: string; paneMode?: string; placeMark?: string; reviewRun?: string; processWorktree?: string; dead?: boolean; exitCode?: number; keyBinding?: string; socket: SocketRef };
 // a dashboard pane read distinguishes a complete listing from a known failed read
 export type PaneListingSnapshot = { status: 'available'; panes: readonly Pane[] } | { status: 'unavailable' };
 export type PullRequestIssues = { mergeConflicts?: boolean; failingChecks?: boolean; unresolvedComments?: boolean };

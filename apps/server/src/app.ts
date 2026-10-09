@@ -2796,11 +2796,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       if (typeof table !== 'string' || typeof key !== 'string' || Object.keys(binding as object).length !== 2 || name !== undefined || editor !== undefined || file !== undefined || line !== undefined || objectToken !== undefined) return reply.code(400).send({ error: 'invalid key binding' });
       const resolved = terminalBindingCommand(config.keys, table, key);
       if (resolved === undefined) return reply.code(400).send({ error: 'no terminal is bound to that key' });
-      const program = terminalProgramName(resolved.command);
-      // reuse focuses the binding's Terminal while it runs; its pane closes when the command exits
-      const running = resolved.reuse ? (await launch.placeConsoleShells(place)).find(pane => pane.paneName === program && pane.dead !== true) : undefined;
+      const bindingId = `${table} ${key}`;
+      // reuse focuses the binding's Terminal (tagged with it) while it runs; its pane closes when the command exits
+      const running = resolved.reuse ? (await launch.placeConsoleShells(place)).find(pane => pane.keyBinding === bindingId && pane.dead !== true) : undefined;
       if (running !== undefined) return reply.code(200).send({ paneId: running.paneId, reused: true });
-      const paneId = await launch.createConsoleShell(place, program, resolved.command);
+      const paneId = await launch.createConsoleShell(place, terminalProgramName(resolved.command), resolved.command, bindingId);
       if (paneId === undefined) return reply.code(500).send({ error: 'could not open a terminal' });
       await dashboardUpdates.refresh().catch(() => undefined);
       return reply.code(201).send({ paneId });

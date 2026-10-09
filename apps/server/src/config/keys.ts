@@ -12,6 +12,8 @@ export type KeyBindingSource = 'default' | 'config' | 'replaced' | 'removed';
 export type KeyRow = { chord: string; binding: KeyBinding; source: KeyBindingSource };
 export type ResolvedKeyTables = Record<string, Record<string, KeyRow>>;
 // The fields of a KeyboardEvent a chord is read from.
+export const isTableBinding = (binding: KeyBinding | null | undefined): binding is { table: string } => binding != null && typeof binding === 'object' && 'table' in binding;
+export const isTerminalBinding = (binding: KeyBinding | null | undefined): binding is { terminal: string; reuse?: boolean } => binding != null && typeof binding === 'object' && 'terminal' in binding;
 export type ChordEvent = { key: string; code: string; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; metaKey: boolean; isComposing?: boolean };
 
 // Every built-in action, with the description the bindings sheet and the palette show.
@@ -57,7 +59,7 @@ export const defaultKeyTables: Record<string, Record<string, KeyBinding>> = {
     'C--': 'font-smaller', 'Super--': 'font-smaller',
     'C-0': 'font-reset', 'Super-0': 'font-reset',
     'C-S-c': 'copy-selection', y: 'copy-selection', 'C-c': 'copy-selection', 'Super-c': 'copy-selection',
-    'C-s': 'save-note', 'Super-s': 'save-note'
+    'C-s': 'save-note', 'C-S-s': 'save-note', 'Super-s': 'save-note', 'S-Super-s': 'save-note'
   },
   prefix: {
     c: 'new-terminal',
@@ -201,7 +203,7 @@ export function parseKeysConfig(input: unknown): KeysConfig {
   }
   const tables = new Set([...Object.keys(defaultKeyTables), ...Object.keys(keys)]);
   for (const [name, table] of Object.entries(keys)) for (const [chord, binding] of Object.entries(table)) {
-    if (binding === null || typeof binding !== 'object' || !('table' in binding)) continue;
+    if (!isTableBinding(binding)) continue;
     if (binding.table === 'root') errors.push(`keys.${name}.${chord}: root is always active; switch to another table`);
     else if (!tables.has(binding.table)) errors.push(`keys.${name}.${chord}: there is no table named ${binding.table}`);
   }
@@ -239,7 +241,7 @@ export function lookupKeyBinding(tables: ResolvedKeyTables, table: string, chord
 // only ever names the binding (table and chord), never the command.
 export function terminalBindingCommand(keys: KeysConfig | undefined, table: string, chord: string): { command: string; reuse: boolean } | undefined {
   const binding = lookupKeyBinding(resolveKeyTables(keys), table, chord);
-  if (binding === undefined || typeof binding !== 'object' || !('terminal' in binding)) return undefined;
+  if (!isTerminalBinding(binding)) return undefined;
   return { command: binding.terminal, reuse: binding.reuse === true };
 }
 
@@ -250,5 +252,5 @@ export const terminalProgramName = (command: string): string => command.trim().s
 // program name, which the bindings sheet shows, so no command line leaves the server.
 export function browserKeysConfig(keys: KeysConfig): KeysConfig {
   return Object.fromEntries(Object.entries(keys).map(([name, table]) => [name, Object.fromEntries(Object.entries(table).map(([chord, binding]) =>
-    [chord, binding !== null && typeof binding === 'object' && 'terminal' in binding ? { ...binding, terminal: terminalProgramName(binding.terminal) } : binding]))]));
+    [chord, isTerminalBinding(binding) ? { ...binding, terminal: terminalProgramName(binding.terminal) } : binding]))]));
 }

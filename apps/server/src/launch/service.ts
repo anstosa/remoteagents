@@ -770,7 +770,8 @@ export class LaunchService {
   // Placement (spec): a detached window in the session of the Place's live Agent (the caller
   // resolves it from discovery), else the session already holding the Place's Console shells,
   // else a fresh console session named for the Place — so agent and shells stay in one session.
-  async createConsoleShell(place: ConsoleShellPlace, name: string, command = ''): Promise<string | undefined> {
+  // `keyBinding` (`table chord`) tags the pane of a key binding's Terminal, so `reuse` finds it.
+  async createConsoleShell(place: ConsoleShellPlace, name: string, command = '', keyBinding?: string): Promise<string | undefined> {
     const { cwd, argv } = this.consoleShellCommand(place, command);
     const joined = await this.placeSession(place);
     const pane = joined !== undefined
@@ -780,6 +781,7 @@ export class LaunchService {
     if (pane !== undefined && command !== '') {
       const socketPath = joined === undefined ? this.hostSocket : joined.socket.path;
       await run(this.tmux, [...(socketPath === undefined ? [] : ['-S', socketPath]), 'set-option', '-p', '-t', pane, 'remain-on-exit', 'off']);
+      if (keyBinding !== undefined) await run(this.tmux, [...(socketPath === undefined ? [] : ['-S', socketPath]), 'set-option', '-p', '-t', pane, '@rac_key_binding', keyBinding]);
     }
     return pane;
   }

@@ -5347,7 +5347,7 @@ const endConsoleShell = async (placeId: string, pane: WorktreePane, confirmed = 
 type EditorShellTarget = EditorTarget | { objectToken: string };
 // open a console shell: a plain one, the configured editor (`{ editor: true }` and an optional
 // target), or a key binding's Terminal (`{ binding }`)
-const createPlaceShell = async (placeId: string, payload: object = {}): Promise<{ paneId: string } | { error: string }> => {
+const createPlaceShell = async (placeId: string, payload: { editor?: true; binding?: { table: string; key: string } } & Partial<EditorTarget> & { objectToken?: string } = {}): Promise<{ paneId: string } | { error: string }> => {
   const operationKey = `shell-create:${placeId}`;
   // keep new shells outside workspace shutdown snapshots
   if (!beginPendingOperation(operationKey, placeItemKey(placeId))) return { error: 'This workspace is busy. Try again after its current operation finishes.' };
@@ -9526,13 +9526,13 @@ function DashboardView({ onUnauthorized, onInactive, updateError, onDismissUpdat
     for (const split of splits) menu.push({ type: 'action', id: `split-${split.key}`, label: split.label, icon: splitIcons[splitPanelKind(split.key)], onSelect: () => jumpToSplit(entry, split.key) });
     openContextMenu(event, { label: `${entry.label} workspace`, items: menu });
   };
-  // separate status text from each tab background and indicator
   // the keyboard's Workspace picker (s), and with every Workspace's panels under it, its tree (w)
   const keyPickerOptions = (tree: boolean): KeyPickerOption[] => items.flatMap((entry, index) => [
     { id: entry.key, label: entry.label, detail: tabStatus(entry).label, current: index === visibleActive, onSelect: () => select(index) },
     ...(tree ? retainedSplits(entry).map(split => ({ id: `${entry.key}\u0000${split.key}`, label: split.label, nested: true, onSelect: () => jumpToSplit(entry, split.key, true) })) : [])
   ]);
   const keyboardOverlays = <><KeyboardLayer keys={data.keys} />{keyPicker !== undefined && <KeyPicker title={keyPicker === 'tree' ? 'Workspaces and panels' : 'Workspaces'} options={keyPickerOptions(keyPicker === 'tree')} onClose={() => setKeyPicker(undefined)} />}</>;
+  // separate status text from each tab background and indicator
   const tabBar = <><nav className={`tabs${phone ? ' workspace-dropdown-row' : ''}`} ref={tabsRef} role="tablist" aria-label="Agents and worktrees"><TabRowLead />{phone ? <WorkspaceDropdown items={items} current={visibleActive} onSelect={index => select(index)} onNewWorkspace={() => setLauncherOpen(true)} onRenameWorktree={setRenameWorktreeId} renameDisabled={creatingAgent} onContextMenu={workspaceContextMenu} onTurnOff={entry => void turnOffWorkspace(entry)} /> : items.map((entry, index) => {
     const { transition, label, className } = tabStatus(entry);
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${className}`} title={label} aria-label={`${entry.label} — ${label}`} aria-busy={transition !== undefined} onPointerDownCapture={preserveWorkspacePress} onMouseDownCapture={preserveWorkspacePress} onContextMenu={event => workspaceContextMenu(event, entry)} onAuxClickCapture={event => closeOnMiddleClick(event, () => void turnOffWorkspace(entry))} onClick={() => select(index)}><TabKindStack entry={entry} />{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : <span className="tab-label" aria-hidden="true">{entry.label}</span>}</button>;

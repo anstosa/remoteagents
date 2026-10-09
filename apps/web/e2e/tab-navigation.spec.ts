@@ -67,3 +67,19 @@ test('modified Shift+Arrow shortcuts do not change tabs', async ({ page }) => {
   await page.keyboard.press('Control+Shift+ArrowRight');
   await expect(page.getByRole('tab', { name: 'Alpha' })).toHaveAttribute('aria-selected', 'true');
 });
+
+test('Shift+Arrow selects text in any text field, not only the prompt', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<div id="root"></div>');
+  await page.evaluate(async () => {
+    const { renderTabNavigation } = await import('/e2e/tab-navigation-fixture.tsx');
+    renderTabNavigation(document.querySelector<HTMLElement>('#root')!);
+  });
+
+  const field = page.getByRole('textbox', { name: 'Rename' });
+  await field.focus();
+  await field.evaluate(input => (input as HTMLInputElement).setSelectionRange(2, 2));
+  await page.keyboard.press('Shift+ArrowRight');
+  await expect(page.getByRole('tab', { name: 'Alpha' })).toHaveAttribute('aria-selected', 'true');
+  await expect(field).toHaveJSProperty('selectionEnd', 3);
+});

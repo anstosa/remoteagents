@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { eventChord, keyActions, resolveKeyTables, type KeyBinding, type KeyRow, type KeysConfig, type ResolvedKeyTables } from '../../server/src/config/keys.js';
+import { eventChord, isTableBinding, isTerminalBinding, keyActions, resolveKeyTables, type KeyBinding, type KeyRow, type KeysConfig, type ResolvedKeyTables } from '../../server/src/config/keys.js';
 import { createKeyDispatcher } from './key-dispatch.js';
 import { resetTerminalFontSize, stepTerminalFontSize } from './terminal-font-size.js';
 
@@ -101,9 +101,9 @@ registerKeyAction('font-reset', event => { if (typingOutsideTerminal(event)) ret
 // how a binding reads in the sheet and the palette
 const describeBinding = (binding: KeyBinding): string => typeof binding === 'string'
   ? keyActions[binding]?.description ?? binding
-  : 'table' in binding ? `Switch to the ${binding.table} table` : `Terminal running ${binding.terminal}${binding.reuse === true ? ' (reused)' : ''}`;
+  : isTableBinding(binding) ? `Switch to the ${binding.table} table` : `Terminal running ${binding.terminal}${binding.reuse === true ? ' (reused)' : ''}`;
 const sourceLabel: Record<KeyRow['source'], string> = { default: 'Default', config: 'Config', replaced: 'Config, replaces the default', removed: 'Default, removed by config' };
-// root first, then the leader's table, then the operator's own in their config order
+// the tables with anything to show, in resolveKeyTables' order: the built-in ones, then the operator's
 const orderedTables = (resolved: ResolvedKeyTables) => Object.entries(resolved).filter(([, rows]) => Object.keys(rows).length > 0);
 // an object lists digit keys first, 0 before 1; the sheet reads them as panels 1 to 10
 const digitRank = (row: KeyRow) => /^\d$/u.test(row.chord) ? (Number(row.chord) + 9) % 10 : 10;
@@ -150,9 +150,8 @@ function BindingsSheet({ onClose }: { onClose: () => void }) {
   const returnFocus = useRef(document.activeElement);
   // hand focus back however the sheet closes, C-? again included
   useLayoutEffect(() => () => { if (returnFocus.current instanceof HTMLElement) returnFocus.current.focus({ preventScroll: true }); }, []);
-  const close = onClose;
-  return createPortal(<div className="dialog key-bindings-dialog" role="dialog" aria-modal="true" aria-labelledby="key-bindings-title" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); close(); } }} onMouseDown={event => { if (event.target === event.currentTarget) close(); }}><div>
-    <header><h2 id="key-bindings-title">Key bindings</h2><button type="button" autoFocus aria-label="Close key bindings" onClick={close}>×</button></header>
+  return createPortal(<div className="dialog key-bindings-dialog" role="dialog" aria-modal="true" aria-labelledby="key-bindings-title" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } }} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><div>
+    <header><h2 id="key-bindings-title">Key bindings</h2><button type="button" autoFocus aria-label="Close key bindings" onClick={onClose}>×</button></header>
     <p className="key-bindings-hint">Press a table&rsquo;s key twice to send that key to the focused terminal. A table waits 10 seconds for its key.</p>
     {orderedTables(resolved).map(([name, rows]) => <section key={name} aria-labelledby={`key-table-${name}`}>
       <h3 id={`key-table-${name}`}>{name}</h3>
@@ -172,7 +171,7 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
   const keysFor = (matches: (binding: KeyBinding) => boolean) => Object.entries(resolved).flatMap(([table, rows]) => Object.values(rows).filter(row => row.source !== 'removed' && matches(row.binding)).map(row => table === 'root' ? row.chord : `${table} ${row.chord}`)).join(', ');
   // copy and save-note act on the key's own target, so they only make sense as keys
   const actions = Object.entries(keyActions).filter(([name]) => name !== 'copy-selection' && name !== 'save-note' && name !== 'command-palette').map(([name, action]): KeyPickerOption => ({ id: name, label: action.description, detail: keysFor(binding => binding === name) || name, onSelect: () => runKeyAction(name) }));
-  const terminals = Object.entries(resolved).flatMap(([table, rows]) => Object.values(rows).flatMap((row): KeyPickerOption[] => row.source === 'removed' || typeof row.binding !== 'object' || !('terminal' in row.binding) ? [] : [{ id: `terminal:${table}:${row.chord}`, label: `Open ${row.binding.terminal}`, detail: table === 'root' ? row.chord : `${table} ${row.chord}`, onSelect: () => runKeyAction(terminalBindingAction, undefined, { table, chord: row.chord, binding: row.binding }) }]));
+  const terminals = Object.entries(resolved).flatMap(([table, rows]) => Object.values(rows).flatMap((row): KeyPickerOption[] => row.source === 'removed' || !isTerminalBinding(row.binding) ? [] : [{ id: `terminal:${table}:${row.chord}`, label: `Open ${row.binding.terminal}`, detail: table === 'root' ? row.chord : `${table} ${row.chord}`, onSelect: () => runKeyAction(terminalBindingAction, undefined, { table, chord: row.chord, binding: row.binding }) }]));
   return <KeyPicker title="Command palette" placeholder="Run a command" options={[...actions, ...terminals]} onClose={onClose} />;
 }
 

@@ -1,4 +1,4 @@
-import { keyActions, lookupKeyBinding, type KeyBinding, type ResolvedKeyTables } from '../../server/src/config/keys.js';
+import { isTableBinding, keyActions, lookupKeyBinding, type KeyBinding, type ResolvedKeyTables } from '../../server/src/config/keys.js';
 
 // how long a table switch waits for its key, and how long a repeatable binding stays live
 export const keyTableTimeoutMs = 10_000;
@@ -33,7 +33,7 @@ export function createKeyDispatcher<Context>({ tables, run }: KeyDispatcherOptio
   const handleRoot = (chord: string, event: Context): 'pass' | 'handled' => {
     const binding = lookupKeyBinding(tables(), 'root', chord);
     if (binding === undefined) return 'pass';
-    if (typeof binding === 'object' && 'table' in binding) {
+    if (isTableBinding(binding)) {
       set({ table: binding.table, chord, repeat: false, expiresAt: Date.now() + keyTableTimeoutMs });
       return 'handled';
     }
@@ -63,7 +63,7 @@ export function createKeyDispatcher<Context>({ tables, run }: KeyDispatcherOptio
       // the key that entered the table, pressed again, goes to the focused control (send-prefix)
       return chord === current.chord ? 'pass' : 'handled';
     }
-    if (typeof binding === 'object' && 'table' in binding) {
+    if (isTableBinding(binding)) {
       set({ table: binding.table, chord, repeat: false, expiresAt: Date.now() + keyTableTimeoutMs });
       return 'handled';
     }

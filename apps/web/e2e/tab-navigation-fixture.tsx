@@ -15,6 +15,7 @@ function TabNavigationFixture() {
       createElement('input', { 'aria-label': 'Prompt', defaultValue: 'copy this text' }),
       createElement('button', { type: 'button' }, 'Prompt action')
     ),
+    createElement('input', { 'aria-label': 'Rename', defaultValue: 'rename me' }),
     createElement('div', { role: 'tablist', 'aria-label': 'Agents' },
       tabs.map((tab, index) => createElement('button', {
         key: tab,

@@ -785,6 +785,11 @@ describe('LaunchService', () => {
       expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux/default', 'set-option', '-p', '-t', '%9', '@rac_pane_name', 'nvim']);
       // an operator's `remain-on-exit on` would otherwise keep the dead pane
       expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux/default', 'set-option', '-p', '-t', '%9', 'remain-on-exit', 'off']);
+      expect(run.mock.calls.some(call => call[1].includes('@rac_key_binding'))).toBe(false);
+
+      // a key binding's Terminal is tagged with the binding, so `reuse` can find it
+      await service.createConsoleShell(worktreePlace(worktree), 'lazygit', 'lazygit', 'prefix g');
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux/default', 'set-option', '-p', '-t', '%9', '@rac_key_binding', 'prefix g']);
     });
 
     it('opens the first Console shell in a fresh session named for the Worktree when there is no live Agent', async () => {

@@ -1122,7 +1122,7 @@ describe('Console shells server lifecycle', () => {
       const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { binding: { table: 'git', key: 'd' } } });
       expect(response.statusCode).toBe(201);
       expect(response.json()).toEqual({ paneId: '%9' });
-      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), 'gh', '/usr/bin/gh dash --verbose');
+      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), 'gh', '/usr/bin/gh dash --verbose', 'git d');
       // the browser sees each terminal binding's program, never its command line
       const dashboard = await app.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
       expect(dashboard.json().keys).toEqual({ root: { 'C-g': { table: 'git' } }, git: { d: { terminal: 'gh' } } });
@@ -1131,7 +1131,8 @@ describe('Console shells server lifecycle', () => {
 
   it('focuses the running pane of a reuse binding instead of opening another', async () => {
     const createConsoleShell = vi.fn(async () => '%9');
-    const placeConsoleShells = vi.fn(async () => [{ ...shell, paneId: '%4', paneName: 'lazygit', command: 'lazygit' }]);
+    // only the pane tagged with the binding is its Terminal; another pane named for the program is not
+    const placeConsoleShells = vi.fn(async () => [{ ...shell, paneId: '%3', paneName: 'lazygit', command: 'lazygit' }, { ...shell, paneId: '%4', paneName: 'lg', command: 'lazygit', keyBinding: 'prefix g' }]);
     const { app, headers } = await start({ launch: { createConsoleShell, placeConsoleShells } });
     try {
       const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { binding: { table: 'prefix', key: 'g' } } });
@@ -1141,7 +1142,7 @@ describe('Console shells server lifecycle', () => {
       placeConsoleShells.mockResolvedValueOnce([]);
       const opened = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { binding: { table: 'prefix', key: 'g' } } });
       expect(opened.statusCode).toBe(201);
-      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), 'lazygit', 'lazygit');
+      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), 'lazygit', 'lazygit', 'prefix g');
     } finally { await app.close(); }
   }, 15_000);
 
