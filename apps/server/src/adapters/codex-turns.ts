@@ -17,8 +17,12 @@ const selectedChoice = /^›\s+(?:\[[ xX]\]\s*)?\d+[.)]\s/u;
 const composerStatusLine = /^ {2}\S.*(?: · \S.*)+$/u;
 // require a displayed workspace before treating an adjacent shortcuts row as chrome
 const composerWorkspaceStatusLine = /^ {2}\S[^·]* · (?:~(?:[\\/][^·]*)?|\/[^·]*|[A-Za-z]:[\\/][^·]*)(?: · \S.*)?\s*$/u;
-// recent codex versions put shortcuts and warnings on a separate footer row
-const composerShortcutsLine = /^ {2}\? for shortcuts(?:\s|$)/u;
+// empty composers expose shortcuts and optional native agent navigation
+const composerShortcutsLine = /^ {2}(?:(?:← for agents · )?\? for shortcuts|← for agents)(?:\s|$)/u;
+// filled idle composers suppress shortcuts but retain right-aligned warning notices
+const composerWarningLine = /^ {2,}⚠ \d+(?: warnings? · \S+ to view| · \S+)?\s*$/u;
+// filled working composers expose queue hints with optional native context counters
+const composerQueueLine = /^ {2}(?:\S+ to queue(?: message)?(?: · Plan mode)?|Plan mode)(?:\s{2,}(?:\d+% context left|[\d.,]+[kKmMbB]? used))?\s*$/u;
 // terminal modifier resets may clear more than one style bit
 const modifierResets: Partial<Record<number, readonly number[]>> = {
   22: [1, 2], 23: [3], 24: [4, 21], 25: [5, 6], 27: [7], 28: [8], 29: [9]
@@ -86,8 +90,9 @@ function activeComposerFromCapture(value: string): string | undefined {
   // locate the terminal footer row above trailing space
   while (finalVisibleRow >= 0 && !lines[finalVisibleRow]!.trim()) finalVisibleRow -= 1;
   let footerStart = finalVisibleRow;
+  const auxiliary = lines[footerStart] ?? '';
   // require the native blank separator before excluding a two-row footer
-  if (composerShortcutsLine.test(lines[footerStart] ?? '') && composerWorkspaceStatusLine.test(lines[footerStart - 1] ?? '') && lines[footerStart - 2]?.trim() === '') footerStart -= 1;
+  if ((composerShortcutsLine.test(auxiliary) || composerWarningLine.test(auxiliary) || composerQueueLine.test(auxiliary)) && composerWorkspaceStatusLine.test(lines[footerStart - 1] ?? '') && lines[footerStart - 2]?.trim() === '') footerStart -= 1;
   // absent native chrome must not hide an authored shortcuts row
   if (!composerStatusLine.test(lines[footerStart] ?? '')) footerStart = lines.length;
   // inspect composer markers newest first

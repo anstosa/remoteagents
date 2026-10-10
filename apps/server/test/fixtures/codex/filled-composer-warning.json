@@ -1,0 +1,10 @@
+{
+  "name": "codex 0.162.1 filled composer with right-aligned warning",
+  "prompt": "What is the Dynamic Grid widgets from?",
+  "lines": [
+    "\u001b[1m›\u001b[0m What is the Dynamic Grid widgets from?",
+    "",
+    "  \u001b[38;2;246;226;183mGPT-6.1-Sol xhigh fast\u001b[39m · \u001b[38;2;171;223;167m~\u001b[39m · Main [default]",
+    "                                                                                                                                                                                                                                                                                           ⚠ \u001b[38;2;196;167;103m1 warning\u001b[39m · \u001b[1mf2\u001b[0m to view"
+  ]
+}

@@ -60,7 +60,7 @@ describe('failed queue submission recovery', () => {
     const tmux = {
       pastePrompt: async () => true,
       // keep the live two-row footer through every redraw
-      capture: async () => codexComposerWithFooter(composer || 'Ask Codex to do anything'),
+      capture: async () => codexComposerWithFooter(composer),
       // model swallowed Enter separately from the single cleanup key
       sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => {
         sent.push(keys);

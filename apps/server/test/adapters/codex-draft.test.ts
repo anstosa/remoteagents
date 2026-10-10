@@ -17,9 +17,52 @@ const capture = (composer: string) => [
 ].join('\n');
 // reuse captured wide and narrow native footer layouts
 const capturedFooters = JSON.parse(readFileSync(new URL('../fixtures/codex/queued-questions.json', import.meta.url), 'utf8')) as { name: string; lines: string[] }[];
+// retain the actual failed filled-composer frame rather than translating a placeholder
+const failedFilledComposer = JSON.parse(readFileSync(new URL('../fixtures/codex/filled-composer-warning.json', import.meta.url), 'utf8')) as { prompt: string; lines: string[] };
 
 // keep composer acknowledgements independent of decorative animation
 describe('Codex draft observation', () => {
+  // the real filled composer suppresses shortcuts without removing its warning row
+  it('owns the exact failed native draft with its prepared trailing space', () => {
+    const pane = failedFilledComposer.lines.join('\n');
+    const prompt = `${failedFilledComposer.prompt} `;
+    expect(codexDraftState(pane, prompt)).toBe('visible');
+    expect(codexOwnsDraft(pane, prompt)).toBe(true);
+    expect(codexOwnsDraft(pane.replace(failedFilledComposer.prompt, `${failedFilledComposer.prompt} operator edit`), prompt)).toBe(false);
+  });
+
+  // native auxiliary rows change with width, remapped keys and task state
+  it.each([
+    '                             ⚠ 1 warning · f2 to view',
+    '                             ⚠ 2 warnings · f4 to view',
+    '                  ⚠ 2 warnings · /warnings to view',
+    '             ⚠ 2 · f2',
+    '       ⚠ 2',
+    '  tab to queue message',
+    '  tab to queue',
+    '  tab to queue message · Plan mode',
+    '  tab to queue message                         98% context left',
+    '  tab to queue                192K used',
+    '  Plan mode',
+    '  ← for agents · ? for shortcuts',
+    '  ← for agents'
+  ])('excludes the native auxiliary row %s', auxiliary => {
+    const pane = ['› owned draft', '', '  GPT-6.1-Sol xhigh fast · ~/repo · Main [default]', auxiliary].join('\n');
+    expect(codexDraftState(pane, 'owned draft ')).toBe('visible');
+    expect(codexOwnsDraft(pane, 'owned draft ')).toBe(true);
+    expect(codexOwnsDraft(pane.replace('owned draft', 'owned draft plus edits'), 'owned draft ')).toBe(false);
+  });
+
+  // workspace-shaped authored text must not hide arbitrary operator additions
+  it('preserves an authored status row followed by non-native text', () => {
+    const prompt = 'first line\n\nGPT-6.1-Sol · ~/repo · main\noperator text';
+    const pane = '› first line\n\n  GPT-6.1-Sol · ~/repo · main\n  operator text';
+    expect(codexOwnsDraft(pane, 'first line')).toBe(false);
+    expect(codexOwnsDraft(pane, prompt)).toBe(true);
+    const editedQueueHint = pane.replace('operator text', 'tab to queue message plus operator edits');
+    expect(codexOwnsDraft(editedQueueHint, 'first line')).toBe(false);
+  });
+
   // native chrome must not look like operator edits to a freshly pasted prompt
   it.each([true, false])('owns the weather draft beneath a two-row footer with warnings=%s', warnings => {
     const prompt = 'Show the icons for humidity, air quality, pressure, and UV in gold when adjustment is on too';
