@@ -184,7 +184,8 @@ it('records successful submissions in the configured worktree history', async ()
   expect(recorded).toEqual([['cora:/tmp', 'first prompt']]);
 });
 
-it('isolates update advisor prompts from the configured repository queue', async () => {
+// preserve advisor isolation for ordinary and Unicode-rich collapsed pastes
+it.each(['ordinary', 'unicode'] as const)('isolates %s update advisor prompts from the configured repository queue', async mode => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-advisor-scope-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
   const normalAgent = { ...agent, id: 'socket:%1', paneId: '%1', home: '/tmp' };
@@ -192,12 +193,12 @@ it('isolates update advisor prompts from the configured repository queue', async
   const pasted: string[][] = [];
   const entered: string[] = [];
   const queued: string[] = [];
-  const advisorPrompt = 'Review the pending update with enough additional instructions that the composer may clip the trailing content before submission';
+  const advisorPrompt = mode === 'unicode' ? '😀'.repeat(80) : 'Review the pending update with enough additional instructions that the composer may clip the trailing content before submission';
   let advisorStarted = false;
   let captureCount = 0;
   const worktree = { id: 'remoteagents:/tmp', projectId: 'remoteagents', label: 'Remote Agents', path: '/tmp', identity: '/tmp', available: true, pinned: true, main: true, detached: false, locked: false };
   const discovery = { worktreesNow: () => [worktree], target: async (id: string) => ({ agent: id === advisorAgent.id ? stated({ ...advisorAgent, title: advisorStarted ? '⠋ Reviewing' : 'Ready' }) : normalAgent, socket }) };
-  const tmux = { pastePrompt: async (_socket: unknown, pane: string, _buffer: string, prompt: string) => { pasted.push([pane, prompt]); return true; }, capture: async () => ++captureCount < 3 ? 'Starting Codex' : pasted.length === 0 ? '› ' : `› [Pasted Content ${advisorPrompt.length + 1} chars]`, sendKeys: async (_socket: unknown, pane: string, keys: string[]) => { if (keys.includes('Enter')) { entered.push(pane); advisorStarted = entered.length >= 2; } else queued.push(pane); return true; } };
+  const tmux = { pastePrompt: async (_socket: unknown, pane: string, _buffer: string, prompt: string) => { pasted.push([pane, prompt]); return true; }, capture: async () => ++captureCount < 3 ? 'Starting Codex' : pasted.length === 0 ? '› ' : `› [Pasted Content ${[...advisorPrompt].length + 1} chars]`, sendKeys: async (_socket: unknown, pane: string, keys: string[]) => { if (keys.includes('Enter')) { entered.push(pane); advisorStarted = entered.length >= 2; } else queued.push(pane); return true; } };
   const history = { record: async (scope: string, text: string) => ({ id: 'history-advisor', scope, text }) };
   const service = new PromptService(discovery as never, tmux as never, history as never, queue);
   try {
@@ -858,7 +859,7 @@ it('dispatches a prompt queued behind a Codex turn that completes only in the ro
   };
   const tmux = {
     // a native-Codex pane: a prompt and a working bullet, but never a completion boundary
-    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt} • Working`; return true; },
+    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt}`; return true; },
     capture: async () => composer || '› Ready',
     sendKeys: async () => { composer = ''; return true; }
   };
@@ -910,7 +911,8 @@ it('fails a rollout-tracked turn that the log records as aborted', async () => {
   let composer = '';
   const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }), paneProcessId: () => 4242 };
   const tmux = {
-    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt} • Working`; return true; },
+    // keep pre-submit input separate from native activity output
+    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt}`; return true; },
     capture: async () => composer || '› Ready',
     sendKeys: async () => { composer = ''; return true; }
   };
@@ -952,7 +954,8 @@ it('passes a reset instant into the baseline capture and records the fresh-threa
     paneWorkingDirectory: () => '/home/ubuntu/cora'
   };
   const tmux = {
-    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt} • Working`; return true; },
+    // keep pre-submit input separate from native activity output
+    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt}`; return true; },
     capture: async () => composer || '› Ready',
     sendKeys: async () => { composer = ''; return true; }
   };

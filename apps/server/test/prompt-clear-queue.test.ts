@@ -135,13 +135,15 @@ describe('clear then queue', () => {
     const scope = `agent:${agent.id}`;
     const sent: string[][] = [];
     let submitted = false;
+    let observable = false;
+    let cleared = false;
     const tmux = {
       // allow the reset draft to render before its submit key
       pastePrompt: async () => true,
       // retain the draft or an inconclusive frame throughout reset acceptance
-      capture: async () => submitted && frame === 'hidden' ? '' : '› /clear ',
+      capture: async () => cleared ? '› ' : submitted && frame === 'hidden' && !observable ? '' : '› /clear ',
       // successful key delivery alone must not consume the reset
-      sendKeys: async (_s: unknown, _p: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
+      sendKeys: async (_s: unknown, _p: string, keys: string[]) => { sent.push(keys); submitted = true; cleared ||= keys.includes('C-c'); return true; }
     };
     const service = new PromptService(discovery as never, tmux as never, history, queue, drain);
     try {
@@ -154,8 +156,9 @@ describe('clear then queue', () => {
       await expect(queue.resets.get(scope)).resolves.toBeUndefined();
       await expect(history.list(scope)).resolves.toEqual([]);
 
-      // retain recovery for genuinely swallowed or unverifiable commands
-      await service.observe(agent);
+      // defer note recovery until the native draft can be inspected and cleared
+      observable = true;
+      await settlePolling(service.observe(agent));
       expect(saved).toEqual(['/clear']);
       await expect(queue.list(scope)).resolves.toEqual([]);
     } finally { await cleanup(); }
@@ -168,18 +171,22 @@ describe('clear then queue', () => {
     const { agent, cleanup, discovery, drain, queue, saved } = await createResetFixture();
     const scope = `agent:${agent.id}`;
     let submitted = false;
+    let recovering = false;
+    let cleared = false;
     const tmux = {
       // allow the reset draft to reach the terminal
       pastePrompt: async () => true,
       // each inconclusive snapshot consumes real terminal execution time
       capture: async () => {
+        // make a later snapshot usable for native cleanup
+        if (recovering) return cleared ? '› ' : '› /clear ';
         // keep the pre-submit composer visible for the render gate
         if (!submitted) return '› /clear ';
         vi.setSystemTime(Date.now() + 3_000);
         return '';
       },
       // key delivery does not acknowledge a hidden composer
-      sendKeys: async () => { submitted = true; return true; }
+      sendKeys: async (_s: unknown, _p: string, keys: string[]) => { submitted = true; cleared ||= keys.includes('C-c'); return true; }
     };
     const service = new PromptService(discovery as never, tmux as never, undefined, queue, drain);
     try {
@@ -189,8 +196,9 @@ describe('clear then queue', () => {
       expect(Date.now() - startedAt).toBeLessThan(15_000);
       await expect(queue.list(scope)).resolves.toMatchObject([{ text: '/clear' }]);
 
-      // preserve the timed-out command through the normal durable recovery path
-      await service.observe(agent);
+      // inspect and clear the recovered composer before making its note durable
+      recovering = true;
+      await settlePolling(service.observe(agent));
       expect(saved).toEqual(['/clear']);
       await expect(queue.list(scope)).resolves.toEqual([]);
     } finally { await cleanup(); }
@@ -282,7 +290,11 @@ describe('clear then queue', () => {
       // drive deterministic render and acknowledgement polling
       capture: async () => { vi.setSystemTime(Date.now() + 100); return `${loading ? 'model: loading\n' : ''}› ${composer}`; },
       // acknowledge only the reset when the next prompt is intentionally swallowed
-      sendKeys: async () => { if (!swallowed || composer.trim() === '/clear') composer = ''; return true; }
+      sendKeys: async (_s: unknown, _p: string, keys: string[]) => {
+        // model native clearing even when prompt submission is swallowed
+        if (keys.includes('C-c') || !swallowed || composer.trim() === '/clear') composer = '';
+        return true;
+      }
     };
     const adapter = {
       ...adapterFor('codex')!,

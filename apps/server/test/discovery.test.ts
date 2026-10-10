@@ -48,6 +48,22 @@ async function buildProc(proc: string, holdings: Record<number, string[]>): Prom
 }
 
 describe('DiscoveryService dashboard', () => {
+  // native replacement must not inherit a persistent pane shell's identity
+  it('tracks the recognized agent pid separately from the pane pid', async () => {
+    let pid = 456;
+    // retain the shell while replacing its recognized native descendant
+    const processes = { recognizeAgent: async () => ({ kind: 'codex' as const, pid, wrapped: false }) };
+    const service = new DiscoveryService(socketFinder(), paneLister([{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Ready' }]) as never, processes);
+    const [first] = await service.refresh(true);
+    expect(first).toBeDefined();
+    expect(service.paneProcessId(first!.id)).toBe(123);
+    expect(service.agentProcessId(first!.id)).toBe(456);
+    pid = 789;
+    await service.refresh(true);
+    expect(service.paneProcessId(first!.id)).toBe(123);
+    expect(service.agentProcessId(first!.id)).toBe(789);
+  });
+
   // only non-forced scans may reuse established process recognition
   it('keeps lifecycle process recognition fresh while polling opts into reuse', async () => {
     const processes = { recognizeAgent: vi.fn().mockResolvedValue(undefined) };

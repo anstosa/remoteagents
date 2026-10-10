@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { codexDraftState, failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
+import { codexDraftState, codexOwnsDraft, failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
 import { parseChoiceQuestion } from './codex-questions.js';
 import { codexConversationName, codexConversationSummaries, codexHome, codexLatestMessage, codexPromptAccepted, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
 import type { Adapter, AttentionState, PromptCommand } from './types.js';
@@ -95,6 +95,9 @@ export const codexSubmission: Adapter['submission'] = {
     ? { text: prompt, keys: ['Enter'] }
     : { text: queueReadyPrompt(prompt), keys: ['Tab'], idleKeys: ['Enter'] },
   observeDraft: codexDraftState,
+  ownsDraft: codexOwnsDraft,
+  // ctrl-c clears a nonempty rich composer before native work interruption
+  clearDraft: ['C-c'],
   interrupt: ['C-c'],
   // navigate from the live highlight rather than assuming the first option
   selectOption: (index, selectedIndex = 0) => {

@@ -116,6 +116,8 @@ async function gitMeta(path: string, rootKnown = false): Promise<GitMeta> {
 export class DiscoveryService {
   private generation = 0; private snapshot: Agent[] = [];
   private panePids = new Map<string, number>();
+  // distinguish native agent replacement beneath an unchanged tmux shell
+  private agentPids = new Map<string, number>();
   // raw `#{pane_current_path}` per agent id, so the Adapter can match a sandboxed
   // pane's rollout by its working directory without readlink-ing its descriptors
   private paneCwds = new Map<string, string>();
@@ -271,6 +273,7 @@ export class DiscoveryService {
     this.tmux.retainSockets?.(sockets);
     const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket, { backoffMissingServer: !force })).map(pane => ({ ...pane, socket }))))).flat();
     const panePids = new Map<string, number>();
+    const agentPids = new Map<string, number>();
     const paneCwds = new Map<string, string>();
     const paneReported = new Map<string, AttentionState>();
     const paneQuestionPayloads = new Map<string, string>();
@@ -286,6 +289,7 @@ export class DiscoveryService {
       const home = await this.cachedWorkspaceRoot(pane.path);
       const id = `${pane.socket.fingerprint}:${pane.paneId}`;
       panePids.set(id, pane.pid);
+      agentPids.set(id, recognized.pid);
       paneCwds.set(id, pane.path);
       const reported = parseReportedAttention(pane.reportedAttention);
       if (reported !== undefined) paneReported.set(id, reported);
@@ -310,6 +314,7 @@ export class DiscoveryService {
     this.consoleShellSessions = panes.filter(pane => pane.role === 'shell').map(sessionKey);
     this.snapshot = agents;
     this.panePids = panePids;
+    this.agentPids = agentPids;
     this.paneCwds = paneCwds;
     this.paneReported = paneReported;
     this.paneQuestionPayloads = paneQuestionPayloads;
@@ -342,6 +347,11 @@ export class DiscoveryService {
   // the OS pid backing one discovered pane, for the Adapter's rollout reads
   paneProcessId(id: string): number | undefined {
     return this.panePids.get(id);
+  }
+
+  // expose the recognized native descendant rather than its persistent pane shell
+  agentProcessId(id: string): number | undefined {
+    return this.agentPids.get(id);
   }
 
   // the raw reported Inline question payload one pane carries, for the answer path

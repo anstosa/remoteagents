@@ -3,9 +3,9 @@ import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
-import { failedTurnFromCapture, lastPromptFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from '../adapters/codex-turns.js';
+import { codexCollapsedPasteLabel, failedTurnFromCapture, lastPromptFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from '../adapters/codex-turns.js';
 import { adapterFor } from '../adapters/registry.js';
-import { codexFamily, type Adapter, type AgentKind, type CompletionBaseline, type CompletionEvent, type PaneSnapshot, type SubmissionDraftState, type SubmissionMode, type TmuxKey } from '../adapters/types.js';
+import { codexFamily, type Adapter, type AgentKind, type CompletionBaseline, type CompletionEvent, type PaneSnapshot, type Submission, type SubmissionDraftState, type SubmissionMode, type TmuxKey } from '../adapters/types.js';
 import { isReviewRun, type Agent } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
@@ -31,12 +31,13 @@ const conversationResetGraceMs = 10_000;
 const reportedWorkingGraceMs = 5_000;
 // a queued submit key can be swallowed when it races an unrendered composer
 // wait briefly for a stable draft and retain the queue item if rendering fails
-const composerRenderAttempts = 12;
+const composerRenderAttempts = 40;
 const composerRenderPollMs = 50;
 const composerRenderStableMs = 100;
-const submissionAcceptAttempts = 20;
-// retry after visible-draft grace periods without extending the acceptance window
-const submissionRetryAttempts: ReadonlySet<number> = new Set([6, 14]);
+// recover slow native submission without keeping failed queues in flight indefinitely
+const submissionAcceptGraceMs = 4_000;
+// space retries within the acceptance deadline
+const submissionRetryAttempts: ReadonlySet<number> = new Set([6, 14, 30, 50, 70]);
 // the console never composes submission through an unknown kind
 type AdapterView = Pick<Adapter, 'stateSource' | 'submission' | 'turns' | 'questions' | 'completion' | 'newConversation'>;
 type CancelOutcome = 'ok' | 'unavailable' | 'not-working';
@@ -56,8 +57,10 @@ const normalizedPrompt = (value: string) => value.replace(/\s+/gu, ' ').trim();
 const normalizedTerminalText = (value: string) => normalizedPrompt(value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, ''));
 type PromptCompletion = 'completed' | 'failed' | 'pending';
 type PromptReconciliation = 'pending' | 'settled' | 'recorded';
-type PromptPhase = { state: 'awaiting-start' | 'working' | 'awaiting-answer' | 'halted'; changedAt: number; historyEntryId?: string; historyPrompt?: string; baselineCompletion?: string; rolloutBaseline?: CompletionBaseline };
-type DiscoveredTarget = NonNullable<Awaited<ReturnType<DiscoveryService['target']>>>;
+// retain a failed native draft until clearing succeeds or ownership is lost
+type FailedDraft = { agentId: string; target: DiscoveredTarget; prompt: string; submission: Adapter['submission'] };
+type PromptPhase = { state: 'awaiting-start' | 'working' | 'awaiting-answer' | 'halted'; changedAt: number; historyEntryId?: string; historyPrompt?: string; baselineCompletion?: string; rolloutBaseline?: CompletionBaseline; failedDraft?: FailedDraft };
+type DiscoveredTarget = NonNullable<Awaited<ReturnType<DiscoveryService['target']>>> & { processId?: number };
 // pair the shared staging directory with its agent-visible host namespace
 export type AttachmentStagingWorkspace = { workspace: string; hostWorkspace: string | undefined };
 // keep reset readiness and its first-turn boundary separate from model completion
@@ -273,7 +276,8 @@ export class PromptService {
     const phase = this.phases.get(scope);
     // retry failed queue transfers without dispatching
     if (phase?.state === 'halted') {
-      if (!busy && await this.saveQueued(scope)) this.phases.delete(scope);
+      // clear abandoned native input before final note recovery
+      if (!busy && await this.clearHaltedDraft(phase) && await this.saveQueued(scope)) this.phases.delete(scope);
       return;
     }
     // wait through active agent work
@@ -360,7 +364,8 @@ export class PromptService {
     const phase = this.phases.get(scope);
     // retry a failed queue transfer without dispatching
     if (phase?.state === 'halted') {
-      if (!busy && await this.saveQueued(scope)) this.phases.delete(scope);
+      // clear abandoned native input before final note recovery
+      if (!busy && await this.clearHaltedDraft(phase) && await this.saveQueued(scope)) this.phases.delete(scope);
       return;
     }
     if (busy) {
@@ -422,8 +427,11 @@ export class PromptService {
   // send one prompt to a stable pane. `resetAt`, when set, anchors the completion
   // baseline on the conversation the pane was just reset into (see `submit`).
   private async send(agentId: string, prompt: string, attachments: PromptAttachment[], discovered?: DiscoveredTarget, submission: 'queue' | 'enter' | 'confirmed-enter' = 'queue', durable = false, resetAt?: number, queuedPromptId?: string): Promise<boolean> {
-    const first = discovered ?? await this.discovery.target(agentId);
-    if (!first) return false;
+    const original = discovered ?? await this.discovery.target(agentId);
+    // require one live agent before staging or pasting
+    if (!original) return false;
+    const processId = this.discovery.agentProcessId?.(agentId);
+    const first: DiscoveredTarget = { ...original, ...(processId === undefined ? {} : { processId }) };
     // the Adapter describes the paste text and the submit keys; the console pastes and sends them
     const adapter = this.resolveAdapter(first.agent.kind);
     if (adapter === undefined) return false;
@@ -447,18 +455,33 @@ export class PromptService {
     const shellMode = attachments.length === 0 && prompt.startsWith('!');
     const mode: SubmissionMode = shellMode ? 'shell' : 'prompt';
     const composed = adapter.submission.prepare(attachmentPrompt, mode);
+    const observeDraft = adapter.submission.observeDraft;
+    // adapters without draft observation retain best-effort tmux delivery
+    const settle = durable && submission === 'queue' && observeDraft !== undefined && typeof this.tmux.capture === 'function' && this.queued !== undefined;
+    // retain cleanup coordinates through every post-paste failure
+    const failedDraft = settle ? { agentId, target: first, prompt: composed.text, submission: adapter.submission } : undefined;
     const buffer = `rac-${randomBytes(18).toString('base64url')}`;
     // keep the server-owned prompt out of the startup shell
     if (submission === 'confirmed-enter' && !await this.waitForUpdateAdvisorReady(agentId, first)) {
       await this.removeStaged(workspace, staged);
       return false;
     }
-    if (!await this.tmux.pastePrompt(first.socket, first.agent.paneId, buffer, composed.text)) {
+    const pasteTarget = await this.submissionTarget(agentId, first).catch(() => undefined);
+    // attachment staging and startup waits must not paste into a replacement process
+    if (pasteTarget === undefined || agentAttentionState(pasteTarget.agent) === 'question') {
       await this.removeStaged(workspace, staged);
       return false;
     }
-    const second = await this.discovery.target(agentId, true);
-    if (!second || second.socket.fingerprint !== first.socket.fingerprint || second.agent.paneId !== first.agent.paneId) {
+    // a rejected paste does not establish ownership of pre-existing native text
+    if (!await this.tmux.pastePrompt(pasteTarget.socket, pasteTarget.agent.paneId, buffer, composed.text)) {
+      await this.removeStaged(workspace, staged);
+      return false;
+    }
+    const second = await this.submissionTarget(agentId, first).catch(() => undefined);
+    // never adopt a new process after the paste
+    if (!second) {
+      // hold durable ownership through a failed post-paste discovery scan
+      if (settle) await this.holdFailedSubmission(scope, failedDraft);
       await this.removeStaged(workspace, staged);
       return false;
     }
@@ -469,14 +492,12 @@ export class PromptService {
     }
     // hold the scope so a quick second submit queues behind this one, then let the
     // Adapter-owned composer observation settle before the submit key
-    const observeDraft = adapter.submission.observeDraft;
-    // adapters without draft observation retain the existing best-effort tmux contract
-    const settle = durable && submission === 'queue' && observeDraft !== undefined && typeof this.tmux.capture === 'function' && this.queued !== undefined;
     if (settle) {
       this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt });
       // retain durable work instead of submitting an unrendered draft
-      if (!await this.waitForComposerRender(second, composed.text, observeDraft)) {
-        await this.holdFailedSubmission(scope);
+      if (!await this.waitForComposerRender(agentId, second, composed.text, observeDraft)) {
+        await this.clearFailedDraft(agentId, second, composed.text, adapter.submission);
+        await this.holdFailedSubmission(scope, failedDraft);
         return false;
       }
     }
@@ -488,10 +509,32 @@ export class PromptService {
     const baselineResetAt = resetAt ?? (matchingReset?.external ? undefined : matchingReset?.at);
     const rolloutBaseline = this.queued === undefined || instant ? undefined : await this.captureRolloutBaseline(agentId, adapter, baselineResetAt, matchingReset?.external);
     // refresh after every settle/baseline delay so key selection reflects send-time state
-    const submitTarget = await this.discovery.target(agentId, true);
-    if (!submitTarget || submitTarget.socket.fingerprint !== second.socket.fingerprint || submitTarget.agent.paneId !== second.agent.paneId) {
-      await this.holdFailedSubmission(scope);
+    let submitTarget = await this.submissionTarget(agentId, second).catch(() => undefined);
+    // never submit through a replacement pane or native question
+    if (!submitTarget || agentAttentionState(submitTarget.agent) === 'question') {
+      await this.holdFailedSubmission(scope, failedDraft);
       return false;
+    }
+    // preserve operator edits made while the initial baseline was being read
+    if (settle) {
+      const captured = await this.tmux.capture(submitTarget.socket, submitTarget.agent.paneId).catch(() => undefined);
+      // first-paste delivery permits an exact collapsed label but never known edits
+      if (captured === undefined || observeDraft(captured, composed.text) !== 'visible' || adapter.submission.ownsDraft?.(captured, composed.text) === false) {
+        await this.holdFailedSubmission(scope, failedDraft);
+        return false;
+      }
+      submitTarget = await this.submissionTarget(agentId, second).catch(() => undefined);
+      // captures may outlive the original native process or reveal a new question
+      if (!submitTarget || agentAttentionState(submitTarget.agent) === 'question') {
+        await this.holdFailedSubmission(scope, failedDraft);
+        return false;
+      }
+      const latestCapture = await this.tmux.capture(submitTarget.socket, submitTarget.agent.paneId).catch(() => undefined);
+      // lifecycle scans can outlast the draft and must not authorize stale input
+      if (latestCapture === undefined || observeDraft(latestCapture, composed.text) !== 'visible' || adapter.submission.ownsDraft?.(latestCapture, composed.text) === false || !this.submissionProcessCurrent(agentId, second) || agentAttentionState(submitTarget.agent) === 'question') {
+        await this.holdFailedSubmission(scope, failedDraft);
+        return false;
+      }
     }
     // use direct submit only while the final target is idle
     const adapterKeys = agentAttentionState(submitTarget.agent) === 'finished' ? composed.idleKeys ?? composed.keys : composed.keys;
@@ -499,18 +542,18 @@ export class PromptService {
     const keys: TmuxKey[] = submission === 'enter' || submission === 'confirmed-enter' ? ['Enter'] : adapterKeys;
     const submittedAt = Date.now();
     const resetBefore = paneSnapshot(submitTarget.agent);
-    let submitted = await this.tmux.sendKeys(submitTarget.socket, submitTarget.agent.paneId, keys);
+    let submitted = await this.tmux.sendKeys(submitTarget.socket, submitTarget.agent.paneId, keys).catch(() => false);
     // allow reset redraws their startup budget without weakening prompt acknowledgement
-    const acceptUntil = reset ? submittedAt + conversationResetGraceMs : undefined;
-    // require adapter acknowledgement before consuming durable queue state
-    if (submitted && settle) submitted = await this.waitForSubmissionAccepted(submitTarget, composed.text, observeDraft, keys, adapter.completion, rolloutBaseline, attachmentPrompt, acceptUntil);
+    const acceptUntil = reset ? submittedAt + conversationResetGraceMs : Date.now() + submissionAcceptGraceMs;
+    // inspect ambiguous transport failures too before abandoning a pasted draft
+    if (settle) submitted = await this.waitForSubmissionAccepted(agentId, submitTarget, composed, adapter.submission, adapter.completion, rolloutBaseline, attachmentPrompt, acceptUntil);
     // confirm the server-owned prompt left the composer
     if (submitted && submission === 'confirmed-enter') submitted = await this.waitForUpdateAdvisorStart(agentId, submitTarget, attachmentPrompt);
     // clear stale prose questions after delivery
     if (submitted) this.discovery.invalidateMessageQuestion?.(agentId);
     if (!submitted) {
       // halt only when a durable prompt is still waiting
-      await this.holdFailedSubmission(scope);
+      await this.holdFailedSubmission(scope, failedDraft);
     } else if (instant) {
       // release the provisional render phase instead of waiting for a nonexistent answer
       this.phases.delete(scope);
@@ -610,11 +653,15 @@ export class PromptService {
 
   // wait (briefly) for a pasted interactive prompt to render on the validated pane,
   // so the submit key is not swallowed by a composer that has not yet caught up
-  private async waitForComposerRender(target: DiscoveredTarget, prompt: string, observeDraft: (capture: string, prompt: string) => SubmissionDraftState): Promise<boolean> {
+  private async waitForComposerRender(agentId: string, target: DiscoveredTarget, prompt: string, observeDraft: (capture: string, prompt: string) => SubmissionDraftState): Promise<boolean> {
     let renderedSince: number | undefined;
+    const renderUntil = Date.now() + composerRenderAttempts * composerRenderPollMs;
     // poll within the bounded render window
-    for (let attempt = 0; attempt < composerRenderAttempts; attempt += 1) {
-      const captured = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
+    for (let attempt = 0; attempt < composerRenderAttempts && Date.now() < renderUntil; attempt += 1) {
+      const current = await this.submissionTarget(agentId, target, false).catch(() => undefined);
+      // never render-gate a replacement pane or native question
+      if (current === undefined || agentAttentionState(current.agent) === 'question') return false;
+      const captured = await this.tmux.capture(current.socket, current.agent.paneId).catch(() => undefined);
       const rendered = captured !== undefined && observeDraft(captured, prompt) === 'visible';
       // retain only uninterrupted live-composer rendering
       if (!rendered) renderedSince = undefined;
@@ -626,36 +673,152 @@ export class PromptService {
   }
 
   // acknowledge a cleared composer or fresh exact structured receipt
-  private async waitForSubmissionAccepted(target: DiscoveredTarget, prompt: string, observeDraft: (capture: string, prompt: string) => SubmissionDraftState, keys: readonly TmuxKey[], completion?: Adapter['completion'], baseline?: CompletionBaseline, receiptPrompt = prompt, acceptUntil?: number): Promise<boolean> {
-    // ordinary prompts retain their existing polling window
-    const acceptAttempts = acceptUntil === undefined ? submissionAcceptAttempts : Math.ceil(conversationResetGraceMs / composerRenderPollMs);
-    // poll within the reset deadline and retry only visible server-owned drafts
-    for (let attempt = 0; attempt < acceptAttempts && (acceptUntil === undefined || Date.now() < acceptUntil); attempt += 1) {
-      const captured = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
-      const draft = captured === undefined ? undefined : observeDraft(captured, prompt);
-      // only a structurally cleared composer acknowledges acceptance
-      if (draft === 'cleared') return true;
-      // let an in-flight capture finish without retrying beyond reset grace
-      if (acceptUntil !== undefined && Date.now() >= acceptUntil) return false;
+  private async waitForSubmissionAccepted(agentId: string, target: DiscoveredTarget, composed: Submission, submission: Adapter['submission'], completion: Adapter['completion'] | undefined, baseline: CompletionBaseline | undefined, receiptPrompt: string, acceptUntil: number): Promise<boolean> {
+    const acceptAttempts = Math.ceil((acceptUntil - Date.now()) / composerRenderPollMs);
+    let draft: SubmissionDraftState | undefined;
+    // poll within the acceptance deadline and retry only visible server-owned drafts
+    for (let attempt = 0; attempt < acceptAttempts && Date.now() < acceptUntil; attempt += 1) {
+      const current = await this.submissionTarget(agentId, target, false).catch(() => undefined);
+      // read the original pane without writing when discovery temporarily loses it
+      const observed = current ?? target;
+      const captured = await this.tmux.capture(observed.socket, observed.agent.paneId).catch(() => undefined);
+      draft = captured === undefined ? undefined : submission.observeDraft!(captured, composed.text);
       // bound rollout reads while checking before retries and final recovery
-      const checkReceipt = attempt === 0 || submissionRetryAttempts.has(attempt) || attempt === acceptAttempts - 1;
+      const checkReceipt = draft === 'cleared' || attempt === 0 || submissionRetryAttempts.has(attempt) || attempt === acceptAttempts - 1;
       // preserve original whitespace when checking hidden or stale composer frames
       if (checkReceipt && baseline !== undefined && completion?.accepted !== undefined && await completion.accepted(baseline, receiptPrompt).catch(() => false)) return true;
+      // revalidate the native process before trusting an empty composer
+      if (draft === 'cleared') return await this.submissionTarget(agentId, target).catch(() => undefined) !== undefined || target.processId === undefined && current === undefined;
+      // lost targets and native questions never authorize additional keys
+      if (current === undefined || agentAttentionState(current.agent) === 'question') return false;
+      // let an in-flight snapshot finish without extending recovery
+      if (Date.now() >= acceptUntil) break;
       // recover submit keys swallowed while the previous turn finishes
-      if (submissionRetryAttempts.has(attempt) && draft === 'visible') {
-        // stop when tmux itself rejects the retry
-        if (!await this.tmux.sendKeys(target.socket, target.agent.paneId, keys)) return false;
+      if (submissionRetryAttempts.has(attempt) && draft === 'visible' && captured !== undefined && submission.ownsDraft?.(captured, composed.text) === true) {
+        const retryTarget = await this.submissionTarget(agentId, target).catch(() => undefined);
+        // revalidate before every side effect
+        if (retryTarget === undefined || agentAttentionState(retryTarget.agent) === 'question') return false;
+        // a slow identity scan cannot extend the retry deadline
+        if (Date.now() >= acceptUntil) break;
+        const latestCapture = await this.tmux.capture(retryTarget.socket, retryTarget.agent.paneId).catch(() => undefined);
+        // terminal captures also consume the bounded acceptance window
+        if (Date.now() >= acceptUntil) break;
+        // preserve any replacement or question observed during capture
+        if (!this.submissionProcessCurrent(agentId, target) || agentAttentionState(retryTarget.agent) === 'question') return false;
+        const latestDraft = latestCapture === undefined ? 'unknown' : submission.observeDraft!(latestCapture, composed.text);
+        // native acceptance during discovery needs no second submit key
+        if (latestDraft === 'cleared') return true;
+        // require fresh content proof after the potentially slow identity read
+        if (latestCapture === undefined || latestDraft !== 'visible' || submission.ownsDraft?.(latestCapture, composed.text) !== true || !this.submissionProcessCurrent(agentId, target)) continue;
+        const keys = agentAttentionState(retryTarget.agent) === 'finished' ? composed.idleKeys ?? composed.keys : composed.keys;
+        // inspect again after transport failure rather than immediately giving up
+        await this.tmux.sendKeys(retryTarget.socket, retryTarget.agent.paneId, keys).catch(() => false);
       }
       await new Promise(resolve => setTimeout(resolve, composerRenderPollMs));
     }
+    // inspect the final redraw unless a slow capture already exceeded the deadline
+    if (Date.now() <= acceptUntil + composerRenderPollMs) {
+      const current = await this.submissionTarget(agentId, target).catch(() => undefined);
+      // never recover through a replacement pane
+      if (current === undefined) return false;
+      const captured = await this.tmux.capture(current.socket, current.agent.paneId).catch(() => undefined);
+      draft = captured === undefined ? undefined : submission.observeDraft!(captured, composed.text);
+      // a last-moment native acceptance must not become an undelivered note
+      if (draft === 'cleared') return this.submissionProcessCurrent(agentId, target);
+    }
+    // trust a late structured receipt before clearing a stale composer frame
+    if (baseline !== undefined && completion?.accepted !== undefined && await completion.accepted(baseline, receiptPrompt).catch(() => false)) return true;
+    // hidden frames cannot authorize clearing and need no extra terminal reads
+    if (draft === 'visible') await this.clearFailedDraft(agentId, target, composed.text, submission);
     return false;
   }
 
+  // retain the original pane identity through recovery
+  private async submissionTarget(agentId: string, expected: DiscoveredTarget, force = true): Promise<DiscoveredTarget | undefined> {
+    const current = await this.discovery.target(agentId, force);
+    // reject replaced sockets, panes, and agent kinds
+    return current !== undefined && current.socket.fingerprint === expected.socket.fingerprint
+      && current.agent.paneId === expected.agent.paneId && current.agent.kind === expected.agent.kind
+      && this.submissionProcessCurrent(agentId, expected)
+      ? { ...current, ...(expected.processId === undefined ? {} : { processId: expected.processId }) } : undefined;
+  }
+
+  // reject observed process changes without another slow scan after inspecting input
+  private submissionProcessCurrent(agentId: string, expected: DiscoveredTarget): boolean {
+    return expected.processId === undefined || this.discovery.agentProcessId?.(agentId) === expected.processId;
+  }
+
+  // remove only an observed server-owned draft without interrupting native work
+  private async clearFailedDraft(agentId: string, expected: DiscoveredTarget, prompt: string, submission: Adapter['submission']): Promise<boolean> {
+    // adapters must explicitly describe safe clearing
+    if (submission.clearDraft === undefined || submission.observeDraft === undefined) return true;
+    // retry one swallowed clear only after observing the same live draft again
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const current = await this.submissionTarget(agentId, expected).catch(() => null);
+      // transient discovery errors cannot prove that the draft disappeared
+      if (current === null) return false;
+      // preserve native questions and replacement panes
+      if (current === undefined) {
+        const snapshots = this.tmux.paneSnapshotsNow?.();
+        const processId = this.discovery.agentProcessId?.(agentId);
+        // a recognized replacement cannot retain the old native draft's ownership
+        if (expected.processId !== undefined && processId !== undefined && processId !== expected.processId) return true;
+        // legacy transports without inventory observations keep their existing absence contract
+        if (snapshots === undefined) return true;
+        const listing = snapshots.get(expected.socket.path);
+        // only a complete listing that omits the exact pane proves removal
+        return listing?.status === 'available' && !listing.panes.some(pane => pane.paneId === expected.agent.paneId && pane.dead !== true);
+      }
+      // an unanswered native question cannot authorize cleanup
+      if (agentAttentionState(current.agent) === 'question') return false;
+      const captured = await this.tmux.capture(current.socket, current.agent.paneId).catch(() => undefined);
+      // matching scrollback or an unknown composer cannot authorize deletion
+      if (captured === undefined) return false;
+      const draft = submission.observeDraft(captured, prompt);
+      // transient redraws keep cleanup pending rather than pretending it completed
+      if (draft === 'unknown') return false;
+      // a cleared composer needs no ownership proof or additional keys
+      if (draft === 'cleared') return true;
+      const owned = submission.ownsDraft?.(captured, prompt);
+      // hidden paste contents and missing ownership observers keep cleanup pending
+      if (owned === undefined) return false;
+      // preserve operator-modified drafts without deleting their text
+      if (!owned) return true;
+      const clearTarget = await this.submissionTarget(agentId, expected).catch(() => undefined);
+      // revalidate after capture before injecting a destructive key
+      if (clearTarget === undefined || agentAttentionState(clearTarget.agent) === 'question') return false;
+      const latestCapture = await this.tmux.capture(clearTarget.socket, clearTarget.agent.paneId).catch(() => undefined);
+      // do not clear stale input after a slow lifecycle scan
+      if (latestCapture === undefined) return false;
+      const latestDraft = submission.observeDraft(latestCapture, prompt);
+      // native acceptance or manual clearing needs no destructive key
+      if (latestDraft === 'cleared') return true;
+      const latestOwned = submission.ownsDraft?.(latestCapture, prompt);
+      // keep hidden input pending until its ownership becomes provable
+      if (latestDraft !== 'visible' || latestOwned === undefined) return false;
+      // leave an operator edit untouched even if it arrived during discovery
+      if (!latestOwned) return true;
+      // account for identity or question changes observed during the final capture
+      if (!this.submissionProcessCurrent(agentId, expected) || agentAttentionState(clearTarget.agent) === 'question') return false;
+      await this.tmux.sendKeys(clearTarget.socket, clearTarget.agent.paneId, submission.clearDraft).catch(() => false);
+      await new Promise(resolve => setTimeout(resolve, composerRenderPollMs));
+    }
+    // verify the native redraw even after the final clearing attempt
+    const captured = await this.tmux.capture(expected.socket, expected.agent.paneId).catch(() => undefined);
+    return captured !== undefined && submission.observeDraft(captured, prompt) === 'cleared';
+  }
+
+  // keep failed queues pending while their observed native draft cannot be cleared
+  private async clearHaltedDraft(phase: PromptPhase): Promise<boolean> {
+    const draft = phase.failedDraft;
+    return draft === undefined || await this.clearFailedDraft(draft.agentId, draft.target, draft.prompt, draft.submission);
+  }
+
   // halt redispatch only while durable queue state remains
-  private async holdFailedSubmission(scope: string): Promise<void> {
+  private async holdFailedSubmission(scope: string, failedDraft?: FailedDraft): Promise<void> {
     const waiting = await this.queued?.list(scope);
     // protect queued prompts from duplicate repaste
-    if ((waiting?.length ?? 0) > 0) this.phases.set(scope, { state: 'halted', changedAt: Date.now() });
+    if ((waiting?.length ?? 0) > 0) this.phases.set(scope, { state: 'halted', changedAt: Date.now(), ...(failedDraft === undefined ? {} : { failedDraft }) });
     else this.phases.delete(scope);
   }
 
@@ -685,7 +848,7 @@ export class PromptService {
     // match the visible tail because Codex scrolls long composers to the cursor
     const visibleSuffix = normalized.slice(-Math.min(96, normalized.length));
     // match Codex's exact long-paste placeholder
-    const collapsedPaste = `[Pasted Content ${queueReadyPrompt(prompt).length} chars]`;
+    const collapsedPaste = codexCollapsedPasteLabel(queueReadyPrompt(prompt));
     // bound fresh-process startup
     for (let attempt = 0; attempt < updateAdvisorComposerAttempts; attempt += 1) {
       const target = await this.discovery.target(agentId, true);

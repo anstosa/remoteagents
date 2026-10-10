@@ -76,6 +76,8 @@ const plainTerminalText = (value: string) => value
 // read only the bottom-most prompt or shell composer, excluding matching scrollback
 function activeComposerFromCapture(value: string): string | undefined {
   const lines = plainTerminalText(withoutComposerSparkles(value)).split('\n');
+  // native choice dialogs own input even when a background draft remains visible
+  if (lines.some(line => /^\s*❯\s+(?:\[[ xX]\]\s*)?\d+[.)]\s/u.test(line))) return undefined;
   let finalVisibleRow = lines.length - 1;
   // locate the terminal footer row above trailing space
   while (finalVisibleRow >= 0 && !lines[finalVisibleRow]!.trim()) finalVisibleRow -= 1;
@@ -107,6 +109,34 @@ function activeComposerFromCapture(value: string): string | undefined {
   return undefined;
 }
 
+// share codex's Unicode-scalar count across native paste observers
+export const codexCollapsedPasteLabel = (prompt: string): string => `[Pasted Content ${[...prompt].length} chars]`;
+
+// bound regex compilation for visually wrapped ownership witnesses
+const maxOwnershipWrapCharacters = 512;
+
+// require complete content proof before retrying or deleting native input
+export function codexOwnsDraft(capture: string, prompt: string): boolean | undefined {
+  const composer = activeComposerFromCapture(capture);
+  // hidden composers and native selection dialogs do not authorize input
+  if (composer === undefined) return false;
+  const normalizedComposer = composer.replace(/\s+/gu, ' ').trim().replace(/^!\s*/u, '!');
+  const normalizedPrompt = prompt.replace(/\s+/gu, ' ').trim().replace(/^!\s*/u, '!');
+  // identical-length replacements cannot be distinguished by collapsed labels
+  const collapsedPaste = codexCollapsedPasteLabel(prompt);
+  if (normalizedComposer === collapsedPaste || prompt.startsWith('!') && normalizedComposer === `!${collapsedPaste}`) return undefined;
+  // preserve complete ordinary drafts and shell prefixes
+  if (normalizedComposer === normalizedPrompt) return true;
+  // reject known additions without compiling a full-prompt regex
+  if (normalizedComposer.includes(collapsedPaste) || normalizedComposer.startsWith(normalizedPrompt)) return false;
+  const promptCharacters = [...normalizedPrompt];
+  // cropped or wrapped large drafts cannot provide bounded exact ownership proof
+  if (promptCharacters.length > maxOwnershipWrapCharacters) return undefined;
+  const wrappedPattern = promptCharacters.map(character => character === ' ' ? '\\s+' : character.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('(?: *\n *)?');
+  const wrappedComposer = composer.replace(/[^\S\n]+/gu, ' ').trim().replace(/^!\s*/u, '!');
+  return new RegExp(`^${wrappedPattern}$`, 'u').test(wrappedComposer);
+}
+
 // classify whether one exact Codex draft is still live after a paste or keypress
 export function codexDraftState(capture: string, prompt: string): SubmissionDraftState {
   const composer = activeComposerFromCapture(capture);
@@ -118,7 +148,7 @@ export function codexDraftState(capture: string, prompt: string): SubmissionDraf
   const promptCharacters = [...normalizedPrompt];
   const visibleSuffix = promptCharacters.slice(-64).join('');
   // codex counts pasted Unicode scalar values rather than UTF-16 units
-  const collapsedPaste = `[Pasted Content ${[...prompt].length} chars]`;
+  const collapsedPaste = codexCollapsedPasteLabel(prompt);
   // accept Codex's exact long-paste placeholder
   if (normalizedComposer.includes(collapsedPaste)) return 'visible';
   const short = promptCharacters.length <= 64;

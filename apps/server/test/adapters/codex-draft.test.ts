@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { codexDraftState } from '../../src/adapters/codex-turns.js';
+import { codexDraftState, codexOwnsDraft } from '../../src/adapters/codex-turns.js';
 import { codexNewConversation } from '../../src/adapters/codex-new-conversation.js';
 
 // reproduce the single-dot animation that Codex draws over blank composer cells
@@ -16,6 +16,45 @@ const capture = (composer: string) => [
 
 // keep composer acknowledgements independent of decorative animation
 describe('Codex draft observation', () => {
+  // recovery ownership must reject edits while still tolerating terminal wraps
+  it('owns exact ordinary, wrapped and multiline drafts', () => {
+    expect(codexOwnsDraft(capture('› abc\n  def'), 'abcdef ')).toBe(true);
+    expect(codexOwnsDraft(capture('› first paragraph\n\n  second paragraph'), 'first paragraph\n\nsecond paragraph ')).toBe(true);
+    expect(codexOwnsDraft(capture('! git status'), '!git status')).toBe(true);
+    expect(codexOwnsDraft(capture('› owned draft plus operator changes'), 'owned draft ')).toBe(false);
+    expect(codexOwnsDraft(capture('› [Pasted Content 81 chars] plus edits'), `${'😀'.repeat(80)} `)).toBe(false);
+    expect(codexOwnsDraft(capture('› unrelated draft'), 'owned draft ')).toBe(false);
+  });
+
+  // equal-length rich pastes cannot establish ownership of hidden content
+  it('keeps exact collapsed-paste ownership inconclusive', () => {
+    const pane = capture('› [Pasted Content 81 chars]');
+    expect(codexDraftState(pane, `${'😀'.repeat(80)} `)).toBe('visible');
+    expect(codexOwnsDraft(pane, `${'😀'.repeat(80)} `)).toBeUndefined();
+    expect(codexOwnsDraft(pane, `${'😎'.repeat(80)} `)).toBeUndefined();
+  });
+
+  // maximum-sized drafts must not compile unbounded ownership regexes
+  it('bounds ownership matching for cropped and edited large drafts', () => {
+    const prompt = `${'x'.repeat(32_000)} `;
+    expect(codexOwnsDraft(capture(`› ${'x'.repeat(64)}`), prompt)).toBeUndefined();
+    expect(codexOwnsDraft(capture(`› ${prompt} plus operator changes`), prompt)).toBe(false);
+    expect(codexOwnsDraft(capture('› [Pasted Content 32001 chars] plus edits'), prompt)).toBe(false);
+  });
+
+  // historical quote syntax is not a live native selector
+  it('preserves ownership beneath quoted numbered scrollback', () => {
+    const pane = ['• prior output', '> 1. old quote', '> 2. another old quote', capture('› owned draft')].join('\n');
+    expect(codexOwnsDraft(pane, 'owned draft ')).toBe(true);
+  });
+
+  // a native selector takes priority over its background composer
+  it('keeps background drafts unknown while a native choice dialog owns input', () => {
+    const pane = ['Choose an action', '❯ 1. Approve', '  2. Reject', capture('› owned draft')].join('\n');
+    expect(codexDraftState(pane, 'owned draft ')).toBe('unknown');
+    expect(codexOwnsDraft(pane, 'owned draft ')).toBe(false);
+  });
+
   // accept every animation frame without changing the expected prompt
   it.each(sparkleDots)('recognizes a draft with %s in its blank cells', dot => {
     expect(codexDraftState(capture(animated(`›${dot}review,${dot}commit,${dot}and${dot}push`)), 'review, commit, and push ')).toBe('visible');

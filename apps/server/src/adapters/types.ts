@@ -168,6 +168,10 @@ export interface Adapter {
     prepare(prompt: string, mode: SubmissionMode): Submission;
     /** Observe durable acceptance; absence keeps this adapter on best-effort tmux delivery. */
     observeDraft?(capture: string, prompt: string): SubmissionDraftState;
+    /** require exact draft ownership before recovery keys; undefined keeps recovery pending */
+    ownsDraft?(capture: string, prompt: string): boolean | undefined;
+    /** clear an observed failed draft without submitting or interrupting work */
+    readonly clearDraft?: readonly TmuxKey[];
     /**
      * A prompt that completes without ever reporting `working` — an instant
      * conversation-control command like Claude's `/clear`, which returns straight

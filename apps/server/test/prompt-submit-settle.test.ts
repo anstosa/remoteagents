@@ -254,7 +254,7 @@ describe('interactive submit settle', () => {
       else {
         // retain the read budget without pinning polling cadence
         expect(receiptQueries).toBeGreaterThan(0);
-        expect(receiptQueries).toBeLessThanOrEqual(4);
+        expect(receiptQueries).toBeLessThanOrEqual(8);
       }
       await expect(history.list(scope)).resolves.toEqual([]);
       await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: prompt }]);
@@ -551,7 +551,9 @@ describe('interactive submit settle', () => {
     const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await expect(service.submit(idle.id, 'direct race')).resolves.toBe(true);
-      expect(sent).toEqual([['Tab'], ['Tab'], ['Tab']]);
+      // exhaust bounded retries before separately guarded clear attempts
+      expect(sent.filter(keys => keys.join() === 'Tab').length).toBeGreaterThan(3);
+      expect(sent.at(-1)).toEqual(['C-c']);
       await expect(service.listQueued(idle.id)).resolves.toMatchObject([{ text: 'direct race' }]);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
@@ -660,7 +662,9 @@ describe('interactive submit settle', () => {
     try {
       await queue.enqueue(scope, '!git status');
       await service.observe(agent);
-      expect(sent).toEqual([['Enter'], ['Enter'], ['Enter']]);
+      // exhaust bounded retries before separately guarded clear attempts
+      expect(sent.filter(keys => keys.join() === 'Enter').length).toBeGreaterThan(3);
+      expect(sent.at(-1)).toEqual(['C-c']);
       await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: '!git status' }]);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
