@@ -13,8 +13,12 @@
 import type { SubmissionDraftState } from './types.js';
 
 const selectedChoice = /^›\s+(?:\[[ xX]\]\s*)?\d+[.)]\s/u;
-// identify Codex's bottom status row
+// identify codex's model/worktree status row
 const composerStatusLine = /^ {2}\S.*(?: · \S.*)+$/u;
+// require a displayed workspace before treating an adjacent shortcuts row as chrome
+const composerWorkspaceStatusLine = /^ {2}\S[^·]* · (?:~(?:[\\/][^·]*)?|\/[^·]*|[A-Za-z]:[\\/][^·]*)(?: · \S.*)?\s*$/u;
+// recent codex versions put shortcuts and warnings on a separate footer row
+const composerShortcutsLine = /^ {2}\? for shortcuts(?:\s|$)/u;
 // terminal modifier resets may clear more than one style bit
 const modifierResets: Partial<Record<number, readonly number[]>> = {
   22: [1, 2], 23: [3], 24: [4, 21], 25: [5, 6], 27: [7], 28: [8], 29: [9]
@@ -81,6 +85,11 @@ function activeComposerFromCapture(value: string): string | undefined {
   let finalVisibleRow = lines.length - 1;
   // locate the terminal footer row above trailing space
   while (finalVisibleRow >= 0 && !lines[finalVisibleRow]!.trim()) finalVisibleRow -= 1;
+  let footerStart = finalVisibleRow;
+  // require the native blank separator before excluding a two-row footer
+  if (composerShortcutsLine.test(lines[footerStart] ?? '') && composerWorkspaceStatusLine.test(lines[footerStart - 1] ?? '') && lines[footerStart - 2]?.trim() === '') footerStart -= 1;
+  // absent native chrome must not hide an authored shortcuts row
+  if (!composerStatusLine.test(lines[footerStart] ?? '')) footerStart = lines.length;
   // inspect composer markers newest first
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const match = /^([›!])(?:\s(.*))?$/u.exec(lines[index]!);
@@ -92,8 +101,8 @@ function activeComposerFromCapture(value: string): string | undefined {
     // collect wrapped paragraphs and blank composer rows
     for (let following = index + 1; following < lines.length; following += 1) {
       const line = lines[following]!;
-      // exclude terminal chrome from the draft
-      if (following === finalVisibleRow && composerStatusLine.test(line)) break;
+      // exclude the entire native footer rather than only its last row
+      if (following >= footerStart) break;
       // reject submitted prompt history followed by agent activity
       if (/^[•■─]/u.test(line)) {
         submitted = true;

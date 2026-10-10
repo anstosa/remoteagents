@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { codexDraftState, codexOwnsDraft } from '../../src/adapters/codex-turns.js';
 import { codexNewConversation } from '../../src/adapters/codex-new-conversation.js';
+import { codexComposerWithFooter } from '../helpers/codex-composer.js';
 
 // reproduce the single-dot animation that Codex draws over blank composer cells
 const sparkleDots = [...'⠁⠂⠄⠈⠐⠠⡀⢀'];
@@ -13,9 +15,48 @@ const capture = (composer: string) => [
   animated('       ⢀⠐'),
   '  gpt-6-astra xhigh fast · ~/repo · main                  Goal paused (/goal resume)'
 ].join('\n');
+// reuse captured wide and narrow native footer layouts
+const capturedFooters = JSON.parse(readFileSync(new URL('../fixtures/codex/queued-questions.json', import.meta.url), 'utf8')) as { name: string; lines: string[] }[];
 
 // keep composer acknowledgements independent of decorative animation
 describe('Codex draft observation', () => {
+  // native chrome must not look like operator edits to a freshly pasted prompt
+  it.each([true, false])('owns the weather draft beneath a two-row footer with warnings=%s', warnings => {
+    const prompt = 'Show the icons for humidity, air quality, pressure, and UV in gold when adjustment is on too';
+    const pane = codexComposerWithFooter(prompt, warnings);
+    expect(codexDraftState(pane, `${prompt} `)).toBe('visible');
+    expect(codexOwnsDraft(pane, `${prompt} `)).toBe(true);
+    expect(codexDraftState(pane, 'GPT-6.1-Sol')).toBe('cleared');
+    expect(codexDraftState(pane, '? for shortcuts')).toBe('cleared');
+    expect(codexOwnsDraft(codexComposerWithFooter(`${prompt} plus operator edits`, warnings), `${prompt} `)).toBe(false);
+  });
+
+  // native cwd displays vary with platform and home-directory shortening
+  it.each(['~', '~/repo', '/', '/repo', 'C:\\repo'])('recognizes a two-row footer displaying %s', workspace => {
+    const pane = ['› owned draft', '', `  gpt-6.1-sol xhigh · ${workspace} · main`, '  ? for shortcuts'].join('\n');
+    expect(codexOwnsDraft(pane, 'owned draft')).toBe(true);
+  });
+
+  // narrow panes omit the optional branch or conversation segment
+  it.each(capturedFooters.filter(frame => frame.name.includes(' hold ')))('owns a draft beneath the captured $name footer', frame => {
+    const pane = frame.lines.join('\n').replace('Ask Codex to do anything', 'owned draft');
+    expect(codexOwnsDraft(pane, 'owned draft')).toBe(true);
+  });
+
+  // trim only terminal chrome rather than every footer-shaped authored row
+  it('preserves authored middle-dot and shortcuts rows above the native footer', () => {
+    const prompt = 'first line\nalpha · beta\n? for shortcuts';
+    expect(codexOwnsDraft(codexComposerWithFooter('first line\n  alpha · beta\n  ? for shortcuts'), prompt)).toBe(true);
+    expect(codexOwnsDraft('› first line\n  ? for shortcuts', 'first line')).toBe(false);
+    expect(codexOwnsDraft('› first line\n  ? for shortcuts', 'first line\n? for shortcuts')).toBe(true);
+    const authoredRows = '› first line\n  alpha · beta\n  ? for shortcuts';
+    expect(codexOwnsDraft(authoredRows, 'first line')).toBe(false);
+    expect(codexOwnsDraft(authoredRows, prompt)).toBe(true);
+    const adjacentStatusRows = '› first line\n  GPT-5.5 default · /repo/work · main\n  ? for shortcuts';
+    expect(codexOwnsDraft(adjacentStatusRows, 'first line')).toBe(false);
+    expect(codexOwnsDraft(adjacentStatusRows, 'first line\nGPT-5.5 default · /repo/work · main\n? for shortcuts')).toBe(true);
+  });
+
   // recovery ownership must reject edits while still tolerating terminal wraps
   it('owns exact ordinary, wrapped and multiline drafts', () => {
     expect(codexOwnsDraft(capture('› abc\n  def'), 'abcdef ')).toBe(true);

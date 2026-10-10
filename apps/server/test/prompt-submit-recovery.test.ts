@@ -9,6 +9,7 @@ import { PromptHistoryService } from '../src/prompt-history/service.js';
 import { adapterFor } from '../src/adapters/registry.js';
 import type { AgentKind } from '../src/adapters/types.js';
 import { stated } from './helpers/agent.js';
+import { codexComposerWithFooter } from './helpers/codex-composer.js';
 
 const socket = { fingerprint: 'socket', path: '/tmp/sock', device: 1, inode: 1 };
 
@@ -45,6 +46,51 @@ const fixture = async (kind: AgentKind = 'codex') => {
 // recover pasted drafts before moving failed queues into notes
 describe('failed queue submission recovery', () => {
   afterEach(() => vi.useRealTimers());
+
+  // real footer rows must allow initial delivery, retries and verified cleanup
+  it.each([
+    ['codex', 'accepted'], ['codex', 'retry'], ['codex', 'abandoned'],
+    ['omx', 'accepted'], ['omx', 'retry'], ['omx', 'abandoned']
+  ] as const)('handles a %s weather draft when submission is %s', async (kind, outcome) => {
+    const { agent, queue, history, scope, notes, drain, cleanup } = await fixture(kind);
+    const prompt = 'Show the icons for humidity, air quality, pressure, and UV in gold when adjustment is on too';
+    let composer = prompt;
+    const sent: string[][] = [];
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
+    const tmux = {
+      pastePrompt: async () => true,
+      // keep the live two-row footer through every redraw
+      capture: async () => codexComposerWithFooter(composer || 'Ask Codex to do anything'),
+      // model swallowed Enter separately from the single cleanup key
+      sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => {
+        sent.push(keys);
+        // allow only the requested submit outcome or native draft clearing
+        if (keys.join() === 'C-c' || outcome === 'accepted' || outcome === 'retry' && sent.length > 1) composer = '';
+        return true;
+      }
+    };
+    const service = new PromptService(discovery as never, tmux as never, history, queue, drain);
+    try {
+      await settlePolling(service.submit(agent.id, prompt));
+      expect(sent[0]).toEqual(['Enter']);
+      expect(composer).toBe('');
+      expect(notes).toEqual([]);
+      // preserve failed work until an idle observer saves its note
+      if (outcome === 'abandoned') {
+        expect(sent.length).toBeGreaterThan(2);
+        expect(sent.at(-1)).toEqual(['C-c']);
+        expect(sent.slice(0, -1).every(keys => keys.join() === 'Enter')).toBe(true);
+        await expect(queue.list(scope)).resolves.toMatchObject([{ text: prompt }]);
+        await expect(history.list(scope)).resolves.toEqual([]);
+        await service.observe(agent);
+        expect(notes).toEqual([prompt]);
+      } else {
+        expect(sent).toEqual(outcome === 'accepted' ? [['Enter']] : [['Enter'], ['Enter']]);
+        await expect(history.list(scope)).resolves.toMatchObject([{ text: prompt }]);
+      }
+      await expect(queue.list(scope)).resolves.toEqual([]);
+    } finally { await cleanup(); }
+  });
 
   // native redraws can outlast the original render gate
   it('waits for a late pasted composer before submitting', async () => {
