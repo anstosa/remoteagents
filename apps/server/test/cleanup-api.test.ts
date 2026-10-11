@@ -9,8 +9,9 @@ describe('cleanup API', () => {
   let app: Awaited<ReturnType<typeof buildApp>> | undefined;
   afterEach(async () => { await app?.close(); });
 
-  it('returns cleanup targets, validates selections, and exposes pending state on the dashboard', async () => {
-    const target = { id: 'cleanup-abcdefghijklmnopqrstuvwx', kind: 'stale-agent', label: 'Stale Codex agent', detail: 'old agent' };
+  // expose closed PR targets through the same authenticated selection contract
+  it.each(['stale-agent', 'closed-pr-branch'])('returns %s targets, validates selections, and exposes pending state on the dashboard', async kind => {
+    const target = { id: 'cleanup-abcdefghijklmnopqrstuvwx', kind, label: 'Cleanup candidate', detail: 'candidate detail' };
     let pending = [target];
     const cleanup = {
       pending: () => pending,

@@ -7,6 +7,7 @@ export { GithubRequestError as PullRequestLookupError, githubRepository } from '
 
 type PullRequestCandidate = PullRequestSummary & { headSha?: string };
 type PullRequestChoiceCandidate = PullRequestChoice & { ownedByViewer: boolean };
+export type PullRequestCleanupStatus = 'merged' | 'closed';
 export type PullRequestChoice = { number: number; title: string; branch: string; headSha: string; headOnOrigin: boolean; draft: boolean; url: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
 export type OpenPullRequestChoices = { own: PullRequestChoice[]; others: PullRequestChoice[] };
 const cacheTtlMs = 60_000;
@@ -20,6 +21,7 @@ function githubAuthenticationFailure(error: unknown): boolean {
 
 export class PullRequestService {
   private readonly cache = new Map<string, { expiresAt: number; value?: PullRequestSummary; pending?: Promise<PullRequestSummary | undefined> }>();
+  private readonly cleanupHeads = new Map<string, { branch: string; headSha: string; expiresAt?: number; pending: Promise<PullRequestCleanupStatus | undefined> }>();
   private readonly repositories = new Map<string, { expiresAt?: number; pending: Promise<GithubRepository | undefined> }>();
   private token?: Promise<string | undefined>;
   private viewer?: Promise<string>;
@@ -96,6 +98,59 @@ export class PullRequestService {
   async actionsUrl(workspace: string): Promise<string | undefined> {
     const repository = await this.repository(workspace);
     return repository === undefined ? undefined : `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/actions`;
+  }
+
+  // preserve merged-only callers while cleanup distinguishes closed pull requests
+  async mergedHead(workspace: string, branch: string, headSha: string, fresh = false): Promise<boolean> {
+    return await this.cleanupHead(workspace, branch, headSha, fresh) === 'merged';
+  }
+
+  // classify one exact branch head with no open successor
+  async cleanupHead(workspace: string, branch: string, headSha: string, fresh = false): Promise<PullRequestCleanupStatus | undefined> {
+    // reject incomplete identities before touching git or GitHub
+    if (branch.trim() === '' || !/^[a-f0-9]{40}$/iu.test(headSha)) return undefined;
+    // fresh proof cannot fall back to any earlier origin or cleanup success
+    if (fresh) {
+      this.repositories.delete(workspace);
+      for (const [key, entry] of this.cleanupHeads) {
+        // remove matching identities even when current origin discovery fails
+        if (entry.branch === branch && entry.headSha === headSha.toLowerCase()) this.cleanupHeads.delete(key);
+      }
+    }
+    let repository: GithubRepository | undefined;
+    try {
+      // destructive revalidation must observe the current origin
+      repository = fresh ? await this.repository(workspace) : await this.cachedRepository(workspace);
+    } catch {
+      // origin discovery failures cannot prove cleanup eligibility
+      return undefined;
+    }
+    // unsupported and missing origins cannot prove cleanup eligibility
+    if (repository === undefined) return undefined;
+    const key = `${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}:${branch}:${headSha.toLowerCase()}`;
+    const now = this.now();
+    // discard completed expired identities on each cache miss
+    for (const [cachedKey, entry] of this.cleanupHeads) {
+      if (entry.expiresAt !== undefined && entry.expiresAt <= now) this.cleanupHeads.delete(cachedKey);
+    }
+    const cached = this.cleanupHeads.get(key);
+    // share pending work and completed results inside the bounded window
+    if (!fresh && cached !== undefined) return await cached.pending;
+    const entry: { branch: string; headSha: string; expiresAt?: number; pending: Promise<PullRequestCleanupStatus | undefined> } = { branch, headSha: headSha.toLowerCase(), pending: Promise.resolve(undefined) };
+    entry.pending = this.lookupCleanupHead(repository, branch, headSha).catch((error: unknown) => {
+      // rejected credentials must be rediscovered on the next lookup
+      if (githubAuthenticationFailure(error)) {
+        this.token = undefined;
+        this.viewer = undefined;
+      }
+      return undefined;
+    }).then((status) => {
+      // only the current generation may establish its cache window
+      if (this.cleanupHeads.get(key) === entry) entry.expiresAt = this.now() + cacheTtlMs;
+      return status;
+    });
+    this.cleanupHeads.set(key, entry);
+    return await entry.pending;
   }
 
   // discard dashboard origin lookups after checkout changes
@@ -192,6 +247,59 @@ export class PullRequestService {
     const { headSha, ...summary } = selected;
     const { checks, issues } = await this.issueStatus(repository, summary.number, headSha, token);
     return { ...summary, checks, ...(summary.status === 'merged' || Object.keys(issues).length === 0 ? {} : { issues }) };
+  }
+
+  // scan every bounded result page so a later open pull request can veto cleanup
+  private async lookupCleanupHead(repository: GithubRepository, branch: string, headSha: string): Promise<PullRequestCleanupStatus | undefined> {
+    this.token ??= this.getToken();
+    let token: string | undefined;
+    try {
+      token = await this.token;
+    } catch (error) {
+      // retry rejected token discovery later
+      this.token = undefined;
+      throw error;
+    }
+    // retry missing token discovery later while allowing public repositories
+    if (token === undefined) this.token = undefined;
+    const origin = `${repository.owner}/${repository.name}`;
+    let status: PullRequestCleanupStatus | undefined;
+    // cap pagination while preserving later-page open-branch vetoes
+    for (let page = 1; page <= 100; page += 1) {
+      const query = new URLSearchParams({ state: 'all', head: `${repository.owner}:${branch}`, per_page: '100', page: String(page) });
+      const response = await this.github.get(`https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls?${query}`, token, 'GitHub could not verify the branch cleanup status');
+      const pulls = await response.json().catch(() => undefined);
+      // malformed pages cannot prove a safe cleanup
+      if (!Array.isArray(pulls)) return undefined;
+      for (const pull of pulls) {
+        // malformed rows could conceal an open successor
+        if (pull === null || typeof pull !== 'object') return undefined;
+        const value = pull as { state?: unknown; merged_at?: unknown; head?: { ref?: unknown; sha?: unknown; repo?: { full_name?: unknown } | null } };
+        const fullName = value.head?.repo?.full_name;
+        const sha = value.head?.sha;
+        // every queried row needs a complete GitHub identity
+        if (typeof value.state !== 'string' || typeof value.head?.ref !== 'string' || typeof fullName !== 'string' || typeof sha !== 'string' || !/^[a-f0-9]{40}$/iu.test(sha)) return undefined;
+        const exactBranch = value.head.ref === branch && fullName.toLowerCase() === origin.toLowerCase();
+        // unrelated forks and branch names do not affect this identity
+        if (!exactBranch) continue;
+        // an open use of the branch always blocks cleanup
+        if (value.state === 'open') return undefined;
+        // unexpected states cannot prove the branch is closed
+        if (value.state !== 'closed') return undefined;
+        const mergedAt = value.merged_at;
+        // require GitHub's complete closed-state marker
+        if (mergedAt !== null && (typeof mergedAt !== 'string' || mergedAt.trim() === '')) return undefined;
+        // only the exact commit proves this checkout can be cleaned up
+        if (sha.toLowerCase() !== headSha.toLowerCase()) continue;
+        // a merged proof outranks a closed-unmerged proof for the same commit
+        if (typeof mergedAt === 'string') status = 'merged';
+        else if (status === undefined) status = 'closed';
+      }
+      // a short page proves there are no later vetoes
+      if (pulls.length < 100) return status;
+    }
+    // a full final page leaves possible later vetoes unknown
+    return undefined;
   }
 
   private async issueStatus(repository: GithubRepository, number: number, headSha: string | undefined, token: string | undefined): Promise<{ checks: PullRequestCheckStatus; issues: PullRequestIssues }> {

@@ -82,7 +82,7 @@ export type Project = { id: string; label: string; path: string; identity: strin
  * are copied on so worktree-scoped services keep reading them from the worktree.
  */
 export type Worktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; identity: string; hostPath?: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; lockedReason?: string; branch?: string; sha?: string; commands?: StackCommands; newTask?: string; push?: PromptAction; projectUrl?: string; projectPort?: number };
-export type CleanupTargetKind = 'orphan-worker' | 'stale-agent' | 'hud-pane' | 'hud-process' | 'merged-branch';
+export type CleanupTargetKind = 'orphan-worker' | 'stale-agent' | 'hud-pane' | 'hud-process' | 'merged-branch' | 'closed-pr-branch';
 export type CleanupTarget = { id: string; kind: CleanupTargetKind; label: string; detail: string };
 /**
  * One Worktree on the wire. Carries the git identity fields the web renders (label,

@@ -681,8 +681,19 @@ share.
 The active agent's **More → Branches** list also offers **Delete**. Its confirm
 reloads the same safety facts before deletion: a checked-out branch is blocked
 (and reports any uncommitted changes), while a branch that is neither pushed nor
-merged requires **Delete unpushed work**. The hourly Cleanup list includes merged
-local branches that are no longer checked out and revalidates them before deleting.
+merged requires **Delete unpushed work**. The hourly Cleanup list includes inactive
+local branches whose PRs were merged or closed without merging. It also recognizes
+Git ancestry, squash/rebase merges, and PRs targeting release branches. Closed,
+unmerged PR branches are labeled separately with a warning and start unchecked;
+select one explicitly to discard its unmerged work. Unchecked items are dismissed.
+PR-based cleanup requires the local tip to exactly match the merged or closed PR's
+head and no open PR for that same repository and branch. New local commits,
+checked-out branches, and the default branch remain protected. Cleanup rechecks
+GitHub evidence and local branch state before deleting; lookup failures never
+authorize deletion, and a merged selection cannot silently become permission to
+discard closed, unmerged work. GitHub authentication uses the same token as PR
+discovery. Closed PR evidence alone never counts as merged in the manual
+branch-deletion dialog.
 
 ### Pruning stale Worktrees
 

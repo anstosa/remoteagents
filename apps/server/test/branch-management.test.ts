@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../src/tmux/command.js';
 import { WorktreeManagementService } from '../src/worktrees/management.js';
+import type { PullRequestService } from '../src/pull-requests/service.js';
 import { testProject } from './helpers/config.js';
 
 const directories: string[] = [];
@@ -22,7 +23,7 @@ const git = async (path: string, ...args: string[]) => {
 };
 
 // create one managed repository
-async function repository() {
+async function repository(pullRequests?: Pick<PullRequestService, 'cleanupHead'>) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'rac-branches-')));
   directories.push(root);
   await git(root, 'init', '-q', '-b', 'main');
@@ -33,10 +34,201 @@ async function repository() {
   await git(root, 'commit', '-q', '-m', 'initial');
   const project = testProject({ id: 'proj', label: 'Project', path: root, identity: join(root, '.git'), worktreesDirectory: `${root}-worktrees`, available: true });
   directories.push(project.worktreesDirectory);
-  return { root, service: new WorktreeManagementService(() => [project]) };
+  return { root, service: new WorktreeManagementService(() => [project], undefined, pullRequests) };
+}
+
+// create an inactive feature whose commit is not reachable from main
+async function unmergedFeature(root: string) {
+  await git(root, 'checkout', '-q', '-b', 'feature');
+  await writeFile(join(root, 'feature.txt'), 'feature\n');
+  await git(root, 'add', '.');
+  await git(root, 'commit', '-q', '-m', 'feature');
+  const head = await git(root, 'rev-parse', 'HEAD');
+  await git(root, 'checkout', '-q', 'main');
+  return head;
 }
 
 describe('guarded branch deletion', () => {
+  // closed pull requests can be selected without being misreported as merged
+  it('suggests and deletes an explicitly selected closed PR branch while preserving manual loss warnings', async () => {
+    const cleanupHead = vi.fn(async () => 'closed' as const);
+    const { root, service } = await repository({ cleanupHead });
+    const head = await unmergedFeature(root);
+
+    await expect(service.cleanupBranches()).resolves.toEqual([{ projectId: 'proj', projectLabel: 'Project', branch: 'feature', reason: 'closed' }]);
+    await expect(service.branchRemoval('proj', 'feature')).resolves.toMatchObject({ ok: true, facts: { merged: false, pushed: false } });
+    await expect(service.deleteBranchGuarded('proj', 'feature', false)).resolves.toMatchObject({ ok: false, error: expect.stringContaining('confirm deleting unpushed work') });
+    await expect(service.deleteCleanupBranch('proj', 'main', 'closed')).resolves.toBe(false);
+    await expect(service.deleteCleanupBranch('proj', 'feature', 'closed')).resolves.toBe(true);
+    expect(cleanupHead).toHaveBeenCalledWith(root, 'feature', head, true);
+    await expect(git(root, 'show-ref', '--verify', 'refs/heads/feature')).rejects.toThrow();
+  });
+
+  // never turn a merged selection into consent to discard unmerged work
+  it('refuses a merged selection when fresh evidence only proves a closed PR', async () => {
+    const { root, service } = await repository({ cleanupHead: async (_path, _branch, _sha, fresh) => fresh ? 'closed' : 'merged' });
+    const head = await unmergedFeature(root);
+    await expect(service.cleanupBranches()).resolves.toMatchObject([{ reason: 'merged' }]);
+    await expect(service.deleteCleanupBranch('proj', 'feature', 'merged')).resolves.toBe(false);
+    expect(await git(root, 'rev-parse', 'feature')).toBe(head);
+  });
+
+  // reopened pull requests and unavailable evidence both invalidate closed suggestions
+  it('refuses a closed PR candidate when fresh evidence is unavailable', async () => {
+    const { root, service } = await repository({ cleanupHead: async (_path, _branch, _sha, fresh) => fresh ? undefined : 'closed' });
+    const head = await unmergedFeature(root);
+    await expect(service.cleanupBranches()).resolves.toMatchObject([{ reason: 'closed' }]);
+    await expect(service.deleteCleanupBranch('proj', 'feature', 'closed')).resolves.toBe(false);
+    expect(await git(root, 'rev-parse', 'feature')).toBe(head);
+  });
+
+  // a closed pull request does not cover commits added after its final head
+  it('preserves a closed PR branch after its local tip advances', async () => {
+    let closedSha = '';
+    const { root, service } = await repository({ cleanupHead: async (_path, _branch, sha) => sha === closedSha ? 'closed' : undefined });
+    closedSha = await unmergedFeature(root);
+    await expect(service.cleanupBranches()).resolves.toMatchObject([{ reason: 'closed' }]);
+    await git(root, 'checkout', '-q', 'feature');
+    await writeFile(join(root, 'feature.txt'), 'new work after close\n');
+    await git(root, 'commit', '-qam', 'new work');
+    const head = await git(root, 'rev-parse', 'HEAD');
+    await git(root, 'checkout', '-q', 'main');
+
+    await expect(service.cleanupBranches()).resolves.toEqual([]);
+    await expect(service.deleteCleanupBranch('proj', 'feature', 'closed')).resolves.toBe(false);
+    expect(await git(root, 'rev-parse', 'feature')).toBe(head);
+  });
+
+  // both destructive entry points must close the remote lookup race
+  it.each([['cleanup', 'merged'], ['cleanup', 'closed'], ['guarded', 'merged'], ['guarded', 'closed']] as const)('preserves commits added during %s %s PR revalidation', async (mode, reason) => {
+    let advancedHead = '';
+    const cleanupHead = vi.fn(async (path: string, _branch: string, _sha: string, fresh?: boolean) => {
+      // simulate another git client committing while GitHub verification is pending
+      if (fresh) {
+        await git(path, 'checkout', '-q', 'feature');
+        await writeFile(join(path, 'feature.txt'), 'new work during lookup\n');
+        await git(path, 'commit', '-qam', 'new work');
+        advancedHead = await git(path, 'rev-parse', 'HEAD');
+        await git(path, 'checkout', '-q', 'main');
+      }
+      return reason;
+    });
+    const { root, service } = await repository({ cleanupHead });
+    const originalHead = await unmergedFeature(root);
+    // exercise cleanup and acknowledged manual deletion against the same race
+    if (mode === 'cleanup') await expect(service.deleteCleanupBranch('proj', 'feature', reason)).resolves.toBe(false);
+    else await expect(service.deleteBranchGuarded('proj', 'feature', true)).resolves.toMatchObject({ ok: false, status: 409 });
+    expect(cleanupHead).toHaveBeenCalledWith(root, 'feature', originalHead, true);
+    expect(advancedHead).not.toBe(originalHead);
+    expect(await git(root, 'rev-parse', 'feature')).toBe(advancedHead);
+  });
+
+  // another checkout acquiring the branch during lookup must remain authoritative
+  it.each(['merged', 'closed'] as const)('refuses %s cleanup when a worktree checks out the branch during PR verification', async reason => {
+    const { root, service } = await repository({ cleanupHead: async (path, branch, _sha, fresh) => {
+      // simulate another client opening the branch before the response arrives
+      if (fresh) await git(path, 'worktree', 'add', '-q', `${path}-worktrees/acquired`, branch);
+      return reason;
+    } });
+    const head = await unmergedFeature(root);
+    await expect(service.deleteCleanupBranch('proj', 'feature', reason)).resolves.toBe(false);
+    expect(await git(root, 'rev-parse', 'feature')).toBe(head);
+  });
+
+  // fresh remote refusal overrides an earlier positive suggestion
+  it('does not delete a candidate whose PR proof changes after the scan', async () => {
+    const cleanupHead = vi.fn(async (_path: string, _branch: string, _sha: string, fresh?: boolean) => fresh === true ? undefined : 'merged' as const);
+    const { root, service } = await repository({ cleanupHead });
+    const head = await unmergedFeature(root);
+    await expect(service.cleanupBranches()).resolves.toHaveLength(1);
+    await expect(service.deleteCleanupBranch('proj', 'feature', 'merged')).resolves.toBe(false);
+    expect(await git(root, 'rev-parse', 'feature')).toBe(head);
+  });
+
+  // large branch sets should be complete without unbounded remote fanout
+  it('bounds PR lookups and skips checked-out and default branches', async () => {
+    let active = 0;
+    let peak = 0;
+    const cleanupHead = vi.fn(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      active -= 1;
+      return 'merged' as const;
+    });
+    const { root, service } = await repository({ cleanupHead });
+    const head = await unmergedFeature(root);
+    // create enough inactive refs to require multiple batches
+    for (let index = 0; index < 9; index += 1) await git(root, 'branch', `feature-${index}`, head);
+    await git(root, 'worktree', 'add', '-q', `${root}-worktrees/occupied`, 'feature-0');
+    const candidates = await service.cleanupBranches();
+    expect(candidates).toHaveLength(9);
+    expect(candidates.map(candidate => candidate.branch)).not.toContain('feature-0');
+    expect(candidates.map(candidate => candidate.branch)).not.toContain('main');
+    expect(cleanupHead).toHaveBeenCalledTimes(9);
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(peak).toBeGreaterThan(1);
+  });
+
+  // recognize squash and release merges without relying on rewritten commit ancestry
+  it('suggests a squash-merged release PR only when its head matches the local tip', async () => {
+    let mergedSha = '';
+    const cleanupHead = vi.fn(async (_path: string, branch: string, sha: string) => branch === 'squashed' && sha === mergedSha ? 'merged' as const : undefined);
+    const { root, service } = await repository({ cleanupHead });
+    await git(root, 'checkout', '-q', '-b', 'release');
+    await git(root, 'checkout', '-q', '-b', 'squashed');
+    await writeFile(join(root, 'feature.txt'), 'merged feature\n');
+    await git(root, 'add', '.');
+    await git(root, 'commit', '-q', '-m', 'feature');
+    mergedSha = await git(root, 'rev-parse', 'HEAD');
+    await git(root, 'checkout', '-q', 'release');
+    await git(root, 'merge', '--squash', 'squashed');
+    await git(root, 'commit', '-q', '-m', 'squash feature');
+    await git(root, 'checkout', '-q', 'main');
+
+    await expect(service.cleanupBranches()).resolves.toEqual([{ projectId: 'proj', projectLabel: 'Project', branch: 'squashed', reason: 'merged' }]);
+    await expect(service.branchRemoval('proj', 'squashed')).resolves.toMatchObject({ ok: true, facts: { merged: true } });
+    await expect(service.deleteCleanupBranch('proj', 'squashed', 'merged')).resolves.toBe(true);
+    expect(cleanupHead).toHaveBeenCalledWith(root, 'squashed', mergedSha, true);
+    await expect(git(root, 'show-ref', '--verify', 'refs/heads/squashed')).rejects.toThrow();
+  });
+
+  // an old merged PR does not authorize deleting new local commits
+  it('refuses a suggested branch after it advances beyond the merged PR head', async () => {
+    let mergedSha = '';
+    const { root, service } = await repository({ cleanupHead: async (_path, _branch, sha) => sha === mergedSha ? 'merged' : undefined });
+    await git(root, 'checkout', '-q', '-b', 'feature');
+    await writeFile(join(root, 'feature.txt'), 'merged\n');
+    await git(root, 'add', '.');
+    await git(root, 'commit', '-q', '-m', 'merged PR head');
+    mergedSha = await git(root, 'rev-parse', 'HEAD');
+    await git(root, 'checkout', '-q', 'main');
+    await expect(service.cleanupBranches()).resolves.toEqual([{ projectId: 'proj', projectLabel: 'Project', branch: 'feature', reason: 'merged' }]);
+
+    await git(root, 'checkout', '-q', 'feature');
+    await writeFile(join(root, 'feature.txt'), 'new unmerged work\n');
+    await git(root, 'commit', '-qam', 'new work after merge');
+    const newSha = await git(root, 'rev-parse', 'HEAD');
+    await git(root, 'checkout', '-q', 'main');
+    await expect(service.cleanupBranches()).resolves.toEqual([]);
+    await expect(service.deleteCleanupBranch('proj', 'feature', 'merged')).resolves.toBe(false);
+    expect(await git(root, 'rev-parse', 'feature')).toBe(newSha);
+  });
+
+  // retain ancestry-only cleanup when GitHub cannot supply merge evidence
+  it('fails closed on PR errors without hiding ordinary ancestry merges', async () => {
+    const { root, service } = await repository({ cleanupHead: async () => { throw new Error('GitHub unavailable'); } });
+    await git(root, 'branch', 'already-merged');
+    await git(root, 'checkout', '-q', '-b', 'unknown');
+    await writeFile(join(root, 'feature.txt'), 'unknown work\n');
+    await git(root, 'add', '.');
+    await git(root, 'commit', '-q', '-m', 'unverified work');
+    await git(root, 'checkout', '-q', 'main');
+    await expect(service.cleanupBranches()).resolves.toEqual([{ projectId: 'proj', projectLabel: 'Project', branch: 'already-merged', reason: 'merged' }]);
+    await expect(service.deleteCleanupBranch('proj', 'unknown', 'merged')).resolves.toBe(false);
+    expect(await git(root, 'rev-parse', '--verify', 'unknown')).toMatch(/^[a-f0-9]{40}$/u);
+  });
+
   it('lists merged branches for cleanup and protects unpushed work behind acknowledgement', async () => {
     const { root, service } = await repository();
     await git(root, 'checkout', '-q', '-b', 'merged');
@@ -51,13 +243,13 @@ describe('guarded branch deletion', () => {
     await git(root, 'commit', '-q', '-m', 'risky work');
     await git(root, 'checkout', '-q', 'main');
 
-    await expect(service.mergedBranches()).resolves.toEqual([{ projectId: 'proj', projectLabel: 'Project', branch: 'merged' }]);
+    await expect(service.cleanupBranches()).resolves.toEqual([{ projectId: 'proj', projectLabel: 'Project', branch: 'merged', reason: 'merged' }]);
     await expect(service.branchRemoval('proj', 'merged')).resolves.toEqual({ ok: true, facts: { branch: 'merged', checkedOut: false, dirtyCount: 0, pushed: false, merged: true, defaultBranch: false } });
-    await expect(service.deleteMergedBranch('proj', 'merged')).resolves.toBe(true);
+    await expect(service.deleteCleanupBranch('proj', 'merged', 'merged')).resolves.toBe(true);
     await expect(git(root, 'show-ref', '--verify', 'refs/heads/merged')).rejects.toThrow();
 
     await expect(service.branchRemoval('proj', 'risky')).resolves.toEqual({ ok: true, facts: { branch: 'risky', checkedOut: false, dirtyCount: 0, pushed: false, merged: false, defaultBranch: false } });
-    await expect(service.deleteMergedBranch('proj', 'risky')).resolves.toBe(false);
+    await expect(service.deleteCleanupBranch('proj', 'risky', 'merged')).resolves.toBe(false);
     await expect(service.deleteBranchGuarded('proj', 'risky', false)).resolves.toMatchObject({ ok: false, error: expect.stringContaining('confirm deleting unpushed work') });
     await expect(git(root, 'show-ref', '--verify', 'refs/heads/risky')).resolves.toContain('refs/heads/risky');
     await expect(service.deleteBranchGuarded('proj', 'risky', true)).resolves.toEqual({ ok: true });

@@ -98,7 +98,7 @@ const comparisonChangeSignal = (status?: GitStatusSummary, pr?: GitComparisonSum
 };
 type NewTaskAvailability = { enabled: boolean; reason?: string };
 type OperationFeedback = { id: number; tone: 'pending'|'success'|'error'; message: string; detail: string; worktreeId?: string };
-type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'|'merged-branch'; label: string; detail: string };
+type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'|'merged-branch'|'closed-pr-branch'; label: string; detail: string };
 type BranchRemovalFacts = { branch: string; checkedOut: boolean; dirtyCount: number; pushed: boolean; merged: boolean; defaultBranch: boolean };
 type AttentionState = 'working' | 'finished' | 'question';
 // `worktreeLabel`/`worktreeOrder` are no longer on the wire (the server carries them on the
@@ -193,9 +193,10 @@ const isDashboard = (value: unknown): value is Dashboard => {
     && (dashboard.reviews === undefined || Array.isArray(dashboard.reviews) && dashboard.reviews.every(isStoredReviewSummary));
 };
 const isDashboardFrame = (value: unknown): value is { v: 1; type: 'dashboard'; dashboard: Dashboard } => value !== null && typeof value === 'object' && (value as { v?: unknown }).v === 1 && (value as { type?: unknown }).type === 'dashboard' && isDashboard((value as { dashboard?: unknown }).dashboard);
+// validate cleanup targets including explicitly selected closed PR branches
 const isCleanupTarget = (value: unknown): value is CleanupTarget => value !== null && typeof value === 'object'
   && typeof (value as CleanupTarget).id === 'string'
-  && ['orphan-worker', 'stale-agent', 'hud-pane', 'hud-process', 'merged-branch'].includes((value as CleanupTarget).kind)
+  && ['orphan-worker', 'stale-agent', 'hud-pane', 'hud-process', 'merged-branch', 'closed-pr-branch'].includes((value as CleanupTarget).kind)
   && typeof (value as CleanupTarget).label === 'string'
   && typeof (value as CleanupTarget).detail === 'string';
 // validate fresh branch deletion facts
@@ -8387,20 +8388,24 @@ function DashboardView({ onUnauthorized, onInactive, updateError, onDismissUpdat
     void dismissNotification('runtime-cleanup');
     window.requestAnimationFrame(() => cleanupTriggerRef.current?.focus());
   }, []);
+  // load suggestions without preselecting unmerged closed PR work
   const openCleanup = useCallback(async () => {
     setCleanupOpen(true);
     setCleanupLoading(true);
     setCleanupError('');
     try {
       const response = await request('/api/cleanup');
+      // reject failed cleanup requests
       if (!response.ok) throw new Error();
       const payload: unknown = await response.json();
       const targets = payload !== null && typeof payload === 'object' && Array.isArray((payload as { targets?: unknown }).targets)
         ? (payload as { targets: unknown[] }).targets.filter(isCleanupTarget)
         : undefined;
+      // refuse incomplete or unknown target lists
       if (targets === undefined || targets.length !== (payload as { targets: unknown[] }).targets.length) throw new Error();
       setCleanupTargets(targets);
-      setCleanupChecked(new Set(targets.map(target => target.id)));
+      // require explicit selection before discarding closed PR work
+      setCleanupChecked(new Set(targets.filter(target => target.kind !== 'closed-pr-branch').map(target => target.id)));
     } catch {
       setCleanupTargets([]);
       setCleanupChecked(new Set());
@@ -8409,22 +8414,28 @@ function DashboardView({ onUnauthorized, onInactive, updateError, onDismissUpdat
       setCleanupLoading(false);
     }
   }, []);
+  // submit explicit choices and reset consent for unresolved closed PR branches
   const resolveCleanup = useCallback(async () => {
+    // serialize cleanup submissions
     if (cleanupLoading) return;
     setCleanupLoading(true);
     setCleanupError('');
     try {
       const response = await request('/api/cleanup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetIds: [...cleanupChecked] }) });
+      // reject failed cleanup requests
       if (!response.ok) throw new Error();
       const payload: unknown = await response.json();
       const targets = payload !== null && typeof payload === 'object' && Array.isArray((payload as { targets?: unknown }).targets)
         ? (payload as { targets: unknown[] }).targets.filter(isCleanupTarget)
         : undefined;
+      // refuse incomplete or unknown target lists
       if (targets === undefined || targets.length !== (payload as { targets: unknown[] }).targets.length) throw new Error();
+      // close only after every target is resolved
       if (targets.length === 0) closeCleanup();
       else {
         setCleanupTargets(targets);
-        setCleanupChecked(new Set(targets.map(target => target.id)));
+        // require explicit selection before discarding closed PR work
+        setCleanupChecked(new Set(targets.filter(target => target.kind !== 'closed-pr-branch').map(target => target.id)));
         setCleanupError('Some selected targets could not be cleaned up.');
       }
       await refresh();
@@ -9224,7 +9235,8 @@ function DashboardView({ onUnauthorized, onInactive, updateError, onDismissUpdat
     'stale-agent': 'Stale agent',
     'hud-pane': 'HUD watcher window',
     'hud-process': 'HUD watcher',
-    'merged-branch': 'Merged branch'
+    'merged-branch': 'Merged branch',
+    'closed-pr-branch': 'Closed PR branch'
   };
   const cleanupDialog = !cleanupOpen ? null : createPortal(<div className="dialog cleanup-dialog" role="dialog" aria-modal="true" aria-labelledby="cleanup-title"><div><header className="cleanup-header"><div><h2 id="cleanup-title">Cleanup</h2><p>Select items to clean up. Unchecked items will be dismissed.</p></div><button className="cleanup-close" type="button" aria-label="Close cleanup" disabled={cleanupLoading} onClick={closeCleanup}><PanelIcon path={panelIcons.close} /></button></header>{cleanupLoading && cleanupTargets.length === 0 ? <p className="cleanup-loading" role="status"><span className="spinner" />Searching for cleanup targets…</p> : cleanupTargets.length === 0 ? <p className="cleanup-empty">No cleanup targets remain.</p> : <fieldset className="cleanup-targets" disabled={cleanupLoading}><legend className="sr-only">Cleanup targets</legend>{cleanupTargets.map(target => <label key={target.id} className="cleanup-target"><input type="checkbox" checked={cleanupChecked.has(target.id)} onChange={event => setCleanupChecked(current => { const next = new Set(current); if (event.target.checked) next.add(target.id); else next.delete(target.id); return next; })} /><span><strong><small>{cleanupKindLabel[target.kind]}</small>{target.label}</strong><span>{target.detail}</span></span></label>)}</fieldset>}{cleanupError && <p className="cleanup-error" role="alert">{cleanupError}</p>}<footer className="cleanup-actions"><span>{cleanupTargets.length === 0 ? 'Nothing selected' : `${cleanupChecked.size} of ${cleanupTargets.length} selected`}</span><button type="button" disabled={cleanupLoading || cleanupError === 'Unable to load cleanup targets.'} onClick={() => void resolveCleanup()}>{cleanupLoading ? <><span className="spinner" />Working…</> : cleanupChecked.size === 0 ? 'Dismiss all' : 'Cleanup'}</button></footer></div></div>, document.body);
   // the Agent the active tab's switcher shows

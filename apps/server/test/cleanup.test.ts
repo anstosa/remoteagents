@@ -131,15 +131,16 @@ describe('runtime cleanup', () => {
     expect(shell).toEqual([]);
   });
 
-  it('lists merged branches and revalidates them through the branch cleaner', async () => {
-    let branches = [{ projectId: 'proj', projectLabel: 'Project', branch: 'feature/done' }];
+  // preserve distinct labels and consent for each branch cleanup reason
+  it.each(['merged', 'closed'] as const)('lists %s branches and revalidates the selected reason through the branch cleaner', async reason => {
+    let branches = [{ projectId: 'proj', projectLabel: 'Project', branch: 'feature/done', reason }];
     const deleted: string[] = [];
     const branchCleanup = {
-      // return current merged branches
-      mergedBranches: async () => branches,
+      // return current cleanup branches
+      cleanupBranches: async () => branches,
       // record and remove one revalidated branch
-      deleteMergedBranch: async (projectId: string, branch: string) => {
-        deleted.push(`${projectId}:${branch}`);
+      deleteCleanupBranch: async (projectId: string, branch: string, selectedReason: 'merged' | 'closed') => {
+        deleted.push(`${projectId}:${branch}:${selectedReason}`);
         branches = [];
         return true;
       }
@@ -154,9 +155,36 @@ describe('runtime cleanup', () => {
 
     const targets = await service.scan();
 
-    expect(targets).toEqual([expect.objectContaining({ kind: 'merged-branch', label: 'feature/done', detail: 'Merged branch in Project' })]);
+    expect(targets).toEqual([expect.objectContaining({ kind: reason === 'closed' ? 'closed-pr-branch' : 'merged-branch', label: 'feature/done', detail: reason === 'closed' ? 'Closed PR (not merged) in Project; deleting this branch discards unmerged work' : 'Merged branch in Project' })]);
     await expect(service.cleanup([targets[0]!.id])).resolves.toEqual([]);
-    expect(deleted).toEqual(['proj:feature/done']);
+    expect(deleted).toEqual([`proj:feature/done:${reason}`]);
+  });
+
+  // reclassification invalidates old consent and dismissal never deletes a branch
+  it('rejects stale merged selections after a branch becomes a closed PR target', async () => {
+    let reason: 'merged' | 'closed' = 'merged';
+    let deletes = 0;
+    const service = new CleanupService(
+      { refresh: async () => [] },
+      { find: async () => [] },
+      { listPanes: async () => [], close: async () => true, terminateHostProcess: async () => true },
+      { recognizeAgent: async () => undefined, listProcesses: async () => [] },
+      {
+        // expose changing eligibility under the same branch name
+        cleanupBranches: async () => [{ projectId: 'proj', projectLabel: 'Project', branch: 'feature/done', reason }],
+        // observe any unauthorized deletion attempt
+        deleteCleanupBranch: async () => { deletes += 1; return true; }
+      }
+    );
+    const [merged] = await service.scan();
+    reason = 'closed';
+    const [closed] = await service.scan();
+
+    expect(closed!.id).not.toBe(merged!.id);
+    expect(closed!.kind).toBe('closed-pr-branch');
+    await expect(service.cleanup([merged!.id])).resolves.toBeUndefined();
+    await expect(service.cleanup([])).resolves.toEqual([]);
+    expect(deletes).toBe(0);
   });
 
   it('rejects duplicate, unknown, and malformed target selections', async () => {

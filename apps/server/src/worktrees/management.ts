@@ -1,6 +1,7 @@
 import { access, mkdir, realpath } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import type { Project, Worktree } from '../domain/models.js';
+import { PullRequestService } from '../pull-requests/service.js';
 import { run } from '../tmux/command.js';
 
 /**
@@ -51,7 +52,7 @@ export type BranchDeleteOutcome = { ok: true } | { ok: false; error: string };
 export type BranchRemovalFacts = { branch: string; checkedOut: boolean; dirtyCount: number; pushed: boolean; merged: boolean; defaultBranch: boolean };
 export type BranchRemovalResult = { ok: true; facts: BranchRemovalFacts } | { ok: false; status: number; error: string };
 export type GuardedBranchDeleteResult = { ok: true } | { ok: false; status: number; error: string };
-export type MergedBranch = { projectId: string; projectLabel: string; branch: string };
+export type CleanupBranch = { projectId: string; projectLabel: string; branch: string; reason: 'merged' | 'closed' };
 export type PruneOutcome = { ok: true } | { ok: false; status: number; error: string };
 
 /**
@@ -93,7 +94,8 @@ export class WorktreeManagementService {
   // worktree metadata or on the same leaf directory
   private readonly chains = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly projects: () => Project[], private readonly git: GitExec = defaultGit) {}
+  // share exact-head PR evidence between suggestions and guarded deletion
+  constructor(private readonly projects: () => Project[], private readonly git: GitExec = defaultGit, private readonly pullRequests: Pick<PullRequestService, 'cleanupHead'> = new PullRequestService()) {}
 
   private project(projectId: string): Project | undefined {
     return this.projects().find(project => project.id === projectId);
@@ -248,19 +250,21 @@ export class WorktreeManagementService {
     });
   }
 
-  // list merged local branches that are neither the default nor checked out
-  async mergedBranches(): Promise<MergedBranch[]> {
-    const byProject = await Promise.all(this.projects().map(async project => {
+  // suggest inactive local branches with merge or closed PR evidence
+  async cleanupBranches(): Promise<CleanupBranch[]> {
+    const byProject: CleanupBranch[][] = [];
+    // share one request budget across projects using the same GitHub credentials
+    for (const project of this.projects()) {
       const availability = worktreeManagementAvailability(project);
       // skip unmanaged repositories
-      if (!availability.available) return [];
+      if (!availability.available) continue;
       const defaultBranch = await this.defaultBranch(project.path);
       // require one protected merge target
-      if (defaultBranch === undefined) return [];
-      const merged = new Map<string, MergedBranch>();
+      if (defaultBranch === undefined) continue;
+      const eligible = new Map<string, CleanupBranch>();
       // accept merges visible on either remote or local default
       for (const ref of [`origin/${defaultBranch}`, defaultBranch]) {
-        const listed = await this.git(['-C', project.path, 'for-each-ref', `--merged=${ref}`, '--format=%(refname:short)\t%(worktreepath)', 'refs/heads']);
+        const listed = await this.git(['-C', project.path, 'for-each-ref', `--merged=${ref}`, '--format=%(refname:strip=2)\t%(worktreepath)', 'refs/heads']);
         // tolerate a missing remote default
         if (listed.code !== 0) continue;
         // collect only deletable branch refs
@@ -268,11 +272,27 @@ export class WorktreeManagementService {
           const [branch = '', worktreePath = ''] = line.split('\t');
           // protect the default and every active checkout
           if (branch === '' || branch === defaultBranch || worktreePath !== '') continue;
-          merged.set(branch, { projectId: project.id, projectLabel: project.label, branch });
+          eligible.set(branch, { projectId: project.id, projectLabel: project.label, branch, reason: 'merged' });
         }
       }
-      return [...merged.values()];
-    }));
+      const listed = await this.git(['-C', project.path, 'for-each-ref', '--format=%(refname:strip=2)\t%(objectname)\t%(worktreepath)', 'refs/heads']);
+      // preserve ancestry results if the remaining refs cannot be read
+      if (listed.code !== 0) { byProject.push([...eligible.values()]); continue; }
+      // only consult GitHub for inactive branches not already proven merged locally
+      const candidates = listed.stdout.split('\n').map(line => {
+        const [branch = '', head = '', checkout = ''] = line.split('\t');
+        return { branch, head, checkout };
+      }).filter(({ branch, head, checkout }) => branch !== '' && branch !== defaultBranch && checkout === '' && !eligible.has(branch) && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(head));
+      // bound requests per repository instead of flooding GitHub for large branch lists
+      for (let offset = 0; offset < candidates.length; offset += 4) {
+        await Promise.all(candidates.slice(offset, offset + 4).map(async ({ branch, head }) => {
+          const reason = await this.pullRequests.cleanupHead(project.path, branch, head).catch(() => undefined);
+          // preserve the distinction between merged and closed-unmerged work
+          if (reason !== undefined) eligible.set(branch, { projectId: project.id, projectLabel: project.label, branch, reason });
+        }));
+      }
+      byProject.push([...eligible.values()]);
+    }
     return byProject.flat().sort((left, right) => left.projectLabel.localeCompare(right.projectLabel) || left.branch.localeCompare(right.branch));
   }
 
@@ -296,7 +316,13 @@ export class WorktreeManagementService {
     // preserve the project management boundary
     if (!availability.available) return { ok: false, status: 409, error: availability.reason! };
     return await this.serialize(project.id, async () => {
-      const result = await this.branchRemovalFacts(project, branch);
+      const branchIssue = invalidBranchReason(branch);
+      // preserve validation responses before resolving the candidate commit
+      if (branchIssue !== undefined || !await this.refFormatValid(branch)) return { ok: false as const, status: 409, error: branchIssue ?? `\`${branch}\` is not a valid branch name` };
+      const head = await this.branchHead(project.path, branch);
+      // refuse a missing candidate before remote verification
+      if (head === undefined) return { ok: false as const, status: 404, error: 'branch unavailable' };
+      const result = await this.branchRemovalFacts(project, branch, true, head);
       // retain lookup and validation failures
       if (!result.ok) return result;
       const facts = result.facts;
@@ -306,19 +332,26 @@ export class WorktreeManagementService {
       if (facts.checkedOut) return { ok: false as const, status: 409, error: facts.dirtyCount > 0 ? 'the branch is checked out with uncommitted changes; remove its worktree first' : 'the branch is checked out; remove its worktree first' };
       // require explicit acknowledgement when no recoverable copy is proven
       if (!facts.pushed && !facts.merged && !discardUnpushed) return { ok: false as const, status: 409, error: 'the branch is neither pushed nor merged; confirm deleting unpushed work' };
+      // close the remote lookup window without bypassing git's checkout protection
+      if (!await this.branchUnchanged(project, branch, head)) return { ok: false as const, status: 409, error: 'the branch changed or was checked out; refresh and try again' };
       return await this.forceDeleteBranch(project, branch);
     });
   }
 
-  // delete a cleanup candidate only while it remains safely merged
-  async deleteMergedBranch(projectId: string, branch: string): Promise<boolean> {
+  // revalidate a selected cleanup reason without expanding consent to discard work
+  async deleteCleanupBranch(projectId: string, branch: string, reason: CleanupBranch['reason']): Promise<boolean> {
     const project = this.project(projectId);
     // reject stale project identities
     if (project === undefined || !worktreeManagementAvailability(project).available) return false;
     return await this.serialize(project.id, async () => {
-      const result = await this.branchRemovalFacts(project, branch);
-      // revalidate the complete cleanup contract
-      if (!result.ok || result.facts.defaultBranch || result.facts.checkedOut || !result.facts.merged) return false;
+      const head = await this.branchHead(project.path, branch);
+      // bind evidence to one inactive tip and protect the default before remote lookup
+      if (head === undefined || !await this.branchUnchanged(project, branch, head)) return false;
+      const currentReason = await this.branchCleanupReason(project, branch, head, true);
+      // a merged selection never authorizes discarding unmerged closed PR work
+      if (currentReason === undefined || reason === 'merged' && currentReason !== 'merged') return false;
+      // reject commits, checkouts or default-branch changes during GitHub lookup
+      if (!await this.branchUnchanged(project, branch, head)) return false;
       return (await this.forceDeleteBranch(project, branch)).ok;
     });
   }
@@ -378,12 +411,15 @@ export class WorktreeManagementService {
   }
 
   // resolve branch facts from refs rather than whichever checkout owns HEAD
-  private async branchRemovalFacts(project: Project, branch: string): Promise<BranchRemovalResult> {
+  private async branchRemovalFacts(project: Project, branch: string, fresh = false, expectedHead?: string): Promise<BranchRemovalResult> {
     const branchIssue = invalidBranchReason(branch);
     // reject flag-shaped and malformed refs before git sees them
     if (branchIssue !== undefined || !await this.refFormatValid(branch)) return { ok: false, status: 409, error: branchIssue ?? `\`${branch}\` is not a valid branch name` };
     // require the local branch to still exist
     if (!await this.branchExists(project.path, branch)) return { ok: false, status: 404, error: 'branch unavailable' };
+    const head = expectedHead ?? await this.branchHead(project.path, branch);
+    // require a concrete commit rather than proving a moving ref
+    if (head === undefined) return { ok: false, status: 404, error: 'branch unavailable' };
     const defaultBranch = await this.defaultBranch(project.path);
     // require one protected merge target
     if (defaultBranch === undefined) return { ok: false, status: 409, error: 'the default branch could not be resolved' };
@@ -394,10 +430,36 @@ export class WorktreeManagementService {
     const checkedOut = worktreePath !== '';
     const [dirtyCount, pushed, merged] = await Promise.all([
       checkedOut ? this.dirtyCount(worktreePath) : Promise.resolve(0),
-      this.pushed(project.path, branch, `refs/heads/${branch}`),
-      this.merged(project.path, project.path, `refs/heads/${branch}`)
+      this.pushed(project.path, branch, head),
+      this.branchCleanupReason(project, branch, head, fresh).then(reason => reason === 'merged')
     ]);
     return { ok: true, facts: { branch, checkedOut, dirtyCount, pushed, merged, defaultBranch: branch === defaultBranch } };
+  }
+
+  // distinguish closed PR cleanup evidence from actual merge safety
+  private async branchCleanupReason(project: Project, branch: string, head: string, fresh: boolean): Promise<CleanupBranch['reason'] | undefined> {
+    // keep ordinary git-only repositories independent of GitHub availability
+    if (await this.merged(project.path, project.path, head)) return 'merged';
+    return await this.pullRequests.cleanupHead(project.path, branch, head, fresh).catch(() => undefined);
+  }
+
+  // resolve only a validated local branch name to an immutable commit
+  private async branchHead(path: string, branch: string): Promise<string | undefined> {
+    // reject revision expressions before passing a ref to git
+    if (invalidBranchReason(branch) !== undefined) return undefined;
+    const result = await this.git(['-C', path, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`]);
+    const head = result.stdout.trim();
+    return result.code === 0 && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(head) ? head : undefined;
+  }
+
+  // recheck local guards after remote evidence and immediately before branch deletion
+  private async branchUnchanged(project: Project, branch: string, head: string): Promise<boolean> {
+    const defaultBranch = await this.defaultBranch(project.path);
+    // an unresolved or newly protected default cannot be removed
+    if (defaultBranch === undefined || branch === defaultBranch) return false;
+    const result = await this.git(['-C', project.path, 'for-each-ref', '--format=%(objectname)\t%(worktreepath)', `refs/heads/${branch}`]);
+    const [currentHead, checkout = ''] = result.stdout.split('\n')[0]!.split('\t');
+    return result.code === 0 && currentHead === head && checkout === '';
   }
 
   // force-delete only after a caller has completed its safety checks

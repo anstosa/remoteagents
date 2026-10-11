@@ -4,11 +4,12 @@ import { ProcSocketFinder, type SocketFinder } from '../discovery/service.js';
 import { ProcInspector, type HostProcess, type HostProcessInspector, type ProcessInspector } from '../discovery/processes.js';
 import { adapters, paneExcluded } from '../adapters/registry.js';
 import type { AgentKind, PaneScan } from '../adapters/types.js';
+import type { WorktreeManagementService } from '../worktrees/management.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 
 type DiscoverySnapshot = { refresh(force?: boolean): Promise<Agent[]> };
-type BranchCleanup = { mergedBranches(): Promise<Array<{ projectId: string; projectLabel: string; branch: string }>>; deleteMergedBranch(projectId: string, branch: string): Promise<boolean> };
-type CleanupAction = { target: CleanupTarget; socket?: SocketRef; paneId?: string; pid?: number; branch?: { projectId: string; name: string } };
+type BranchCleanup = Pick<WorktreeManagementService, 'cleanupBranches' | 'deleteCleanupBranch'>;
+type CleanupAction = { target: CleanupTarget; socket?: SocketRef; paneId?: string; pid?: number; branch?: { projectId: string; name: string; reason: 'merged' | 'closed' } };
 
 const opaqueId = (kind: CleanupTargetKind, identity: string) => `cleanup-${createHash('sha256').update(`${kind}\0${identity}`).digest('base64url').slice(0, 24)}`;
 const paneIdentity = (pane: Pane) => `${pane.socket.fingerprint}:${pane.paneId}`;
@@ -57,12 +58,13 @@ export class CleanupService {
     return this.pending();
   }
 
+  // collect runtime and inactive branch suggestions with their cleanup reasons
   private async discover(): Promise<CleanupTarget[]> {
-    const [sockets, agents, processes, mergedBranches] = await Promise.all([
+    const [sockets, agents, processes, cleanupBranches] = await Promise.all([
       this.finder.find(),
       this.discovery.refresh(true),
       this.processInspector.listProcesses(),
-      this.branchCleanup?.mergedBranches().catch(() => []) ?? Promise.resolve([])
+      this.branchCleanup?.cleanupBranches().catch(() => []) ?? Promise.resolve([])
     ]);
     const panes = (await Promise.all(sockets.map(socket => this.tmux.listPanes(socket)))).flat();
     const recognized = await Promise.all(panes.map(pane => this.processInspector.recognizeAgent(pane.pid)));
@@ -121,11 +123,11 @@ export class CleanupService {
       }
     }
 
-    // add merged, inactive local branches as safe cleanup targets
-    for (const branch of mergedBranches) {
+    // distinguish closed PR work so the operator can explicitly choose to discard it
+    for (const branch of cleanupBranches) {
       candidates.push({
-        target: this.target('merged-branch', `${branch.projectId}:${branch.branch}`, branch.branch, `Merged branch in ${branch.projectLabel}`),
-        branch: { projectId: branch.projectId, name: branch.branch }
+        target: this.target(branch.reason === 'closed' ? 'closed-pr-branch' : 'merged-branch', `${branch.projectId}:${branch.branch}`, branch.branch, branch.reason === 'closed' ? `Closed PR (not merged) in ${branch.projectLabel}; deleting this branch discards unmerged work` : `Merged branch in ${branch.projectLabel}`),
+        branch: { projectId: branch.projectId, name: branch.branch, reason: branch.reason }
       });
     }
 
@@ -139,12 +141,13 @@ export class CleanupService {
     return { id: opaqueId(kind, identity), kind, label, detail };
   }
 
+  // execute only the selected action after its safety checks
   private async execute(action: CleanupAction): Promise<boolean> {
-    // route merged branches through the guarded branch cleaner
+    // revalidate the branch using the reason the operator selected
     if (action.branch !== undefined) {
       // reject an impossible provider mismatch
       if (this.branchCleanup === undefined) return false;
-      return await this.branchCleanup.deleteMergedBranch(action.branch.projectId, action.branch.name);
+      return await this.branchCleanup.deleteCleanupBranch(action.branch.projectId, action.branch.name, action.branch.reason);
     }
     if (action.socket === undefined) return false;
     if (action.paneId !== undefined) return await this.tmux.close(action.socket, action.paneId);
