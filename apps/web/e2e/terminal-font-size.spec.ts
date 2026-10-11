@@ -60,10 +60,10 @@ test('the stepper enlarges the terminal, drops columns, and resets to the defaul
 
   await openSettings(page);
   const settingsPage = page.getByRole('dialog', { name: 'Settings' });
-  const terminalSetting = settingsPage.getByRole('group', { name: 'Terminal font' });
+  const terminalSetting = settingsPage.getByRole('group', { name: 'Terminal font', exact: true });
   const davoHeading = settingsPage.getByRole('heading', { name: 'Davo' });
-  const larger = page.getByRole('button', { name: 'Larger terminal font' });
-  const smaller = page.getByRole('button', { name: 'Smaller terminal font' });
+  const larger = page.getByRole('button', { name: 'Larger terminal font', exact: true });
+  const smaller = page.getByRole('button', { name: 'Smaller terminal font', exact: true });
   const preview = page.getByLabel('Terminal font preview');
   const [terminalBefore, davoBefore] = await Promise.all([terminalSetting.boundingBox(), davoHeading.boundingBox()]);
   // lock the terminal row and following settings in place
@@ -78,7 +78,7 @@ test('the stepper enlarges the terminal, drops columns, and resets to the defaul
   expect(controlOrder.resetRight).toBeLessThanOrEqual(controlOrder.smallerLeft ?? -1);
   await expect(preview).toHaveCSS('font-size', '11px');
   // Reset appears only once the size differs from the default.
-  await expect(page.getByRole('button', { name: 'Reset terminal font' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Reset terminal font', exact: true })).toHaveCount(0);
   await larger.click();
   await larger.click();
   await larger.click();
@@ -92,7 +92,7 @@ test('the stepper enlarges the terminal, drops columns, and resets to the defaul
   await expect.poll(async () => await terminalFontPx(page), { timeout: 5_000 }).toBe('14px');
   await expect.poll(async () => (await latestViewport(page))?.cols ?? Infinity, { timeout: 10_000 }).toBeLessThan(baseline.cols!);
 
-  const reset = page.getByRole('button', { name: 'Reset terminal font' });
+  const reset = page.getByRole('button', { name: 'Reset terminal font', exact: true });
   await expect(reset).toBeVisible();
   await reset.click();
   await expect(page.getByRole('dialog', { name: 'Settings' })).toContainText('11px');

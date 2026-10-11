@@ -9,7 +9,7 @@ export type KeyBinding = string | { table: string } | { terminal: string; reuse?
 // The operator's `keys`: per table, chord to binding, with `null` removing a default.
 export type KeysConfig = Record<string, Record<string, KeyBinding | null>>;
 export type KeyBindingSource = 'default' | 'config' | 'replaced' | 'removed';
-export type KeyRow = { chord: string; binding: KeyBinding; source: KeyBindingSource };
+export type KeyRow = { chord: string; binding: KeyBinding; source: KeyBindingSource; conflicted?: boolean };
 export type ResolvedKeyTables = Record<string, Record<string, KeyRow>>;
 // The fields of a KeyboardEvent a chord is read from.
 export const isTableBinding = (binding: KeyBinding | null | undefined): binding is { table: string } => binding != null && typeof binding === 'object' && 'table' in binding;
@@ -44,7 +44,8 @@ export const keyActions: Record<string, { description: string; repeat?: true }> 
   'font-smaller': { description: 'Smaller terminal font' },
   'font-reset': { description: 'Reset terminal font size' },
   'copy-selection': { description: 'Copy the selected output' },
-  'save-note': { description: 'Save the prompt draft as a Note' }
+  'save-note': { description: 'Save the prompt draft as a Note' },
+  'prompt-newline': { description: 'Insert a newline in the prompt' }
 };
 
 // The built-in tables, in canonical chords. `root` is always active; `C-b` enters `prefix`.
@@ -59,6 +60,8 @@ export const defaultKeyTables: Record<string, Record<string, KeyBinding>> = {
     'C--': 'font-smaller', 'Super--': 'font-smaller',
     'C-0': 'font-reset', 'Super-0': 'font-reset',
     'C-S-c': 'copy-selection', y: 'copy-selection', 'C-c': 'copy-selection', 'Super-c': 'copy-selection',
+    // prompt handlers decline these keys outside the composer
+    'C-Enter': 'prompt-newline', 'S-Enter': 'prompt-newline', 'C-S-Enter': 'prompt-newline', 'Super-Enter': 'prompt-newline',
     'C-s': 'save-note', 'C-S-s': 'save-note', 'Super-s': 'save-note', 'S-Super-s': 'save-note'
   },
   prefix: {
@@ -230,11 +233,11 @@ export function resolveKeyTables(keys: KeysConfig | undefined): ResolvedKeyTable
   return resolved;
 }
 
-// The live binding for a chord in a table, skipping removed defaults.
+// The live binding for a chord in a table, skipping removed and ambiguous rows.
 export function lookupKeyBinding(tables: ResolvedKeyTables, table: string, chord: string): KeyBinding | undefined {
   if (!hasOwn(tables, table) || !hasOwn(tables[table]!, chord)) return undefined;
   const row = tables[table]![chord]!;
-  return row.source === 'removed' ? undefined : row.binding;
+  return row.source === 'removed' || row.conflicted === true ? undefined : row.binding;
 }
 
 // The command a `{ terminal }` binding runs, looked up in the server's own config so a browser

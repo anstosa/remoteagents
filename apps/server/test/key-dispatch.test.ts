@@ -1,19 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createKeyDispatcher, keyRepeatMs, keyTableTimeoutMs } from '../../web/src/key-dispatch.js';
-import { parseKeysConfig, resolveKeyTables, type KeyBinding } from '../src/config/keys.js';
+import { parseKeysConfig, resolveKeyTables, type KeyBinding, type ResolvedKeyTables } from '../src/config/keys.js';
 
 // a dispatcher over the defaults (plus `config`) that records what it ran; `decline` lists the
 // actions that say they do not apply right now
-const setup = (config: unknown = {}, decline: string[] = []) => {
+const setup = (config: unknown = {}, decline: string[] = [], suppliedTables?: ResolvedKeyTables) => {
   const ran: Array<{ binding: KeyBinding; table: string; chord: string }> = [];
+  const matched = vi.fn();
   const dispatcher = createKeyDispatcher({
-    tables: () => resolveKeyTables(parseKeysConfig(config)),
+    tables: () => suppliedTables ?? resolveKeyTables(parseKeysConfig(config)),
+    onMatch: matched,
     run: (binding, context) => {
       ran.push({ binding, table: context.table, chord: context.chord });
       return typeof binding !== 'string' || !decline.includes(binding);
     }
   });
-  return { dispatcher, ran, press: (chord: string | undefined) => dispatcher.handle(chord, undefined) };
+  return { dispatcher, matched, ran, press: (chord: string | undefined) => dispatcher.handle(chord, undefined) };
 };
 
 beforeEach(() => { vi.useFakeTimers(); });
@@ -28,10 +30,33 @@ describe('key dispatcher', () => {
   });
 
   it('runs a root action and lets a declining one pass', () => {
-    const { press, ran } = setup({}, ['copy-selection']);
+    const { press, matched, ran } = setup({}, ['copy-selection']);
     expect(press('C-?')).toBe('handled');
     expect(press('C-c')).toBe('pass');
     expect(ran.map(entry => entry.binding)).toEqual(['show-bindings', 'copy-selection']);
+    expect(matched).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports table entries and actions but not missing or disabled bindings', () => {
+    const { press, matched } = setup({ root: { 'C-l': null } });
+    expect(press(undefined)).toBe('pass');
+    expect(press('a')).toBe('pass');
+    expect(press('C-l')).toBe('pass');
+    expect(matched).not.toHaveBeenCalled();
+    expect(press('C-b')).toBe('handled');
+    expect(matched).toHaveBeenCalledTimes(1);
+    expect(press('c')).toBe('handled');
+    expect(matched).toHaveBeenCalledTimes(2);
+  });
+
+  it('swallows a conflicted root shortcut without dispatching either command', () => {
+    const tables = resolveKeyTables(undefined);
+    tables.root!['C-?'] = { ...tables.root!['C-?']!, conflicted: true };
+    const { press, matched, ran } = setup({}, [], tables);
+
+    expect(press('C-?')).toBe('handled');
+    expect(ran).toEqual([]);
+    expect(matched).not.toHaveBeenCalled();
   });
 
   it('runs the next key from the leader table, then returns to root', () => {
@@ -59,10 +84,11 @@ describe('key dispatcher', () => {
   });
 
   it('sends the leader on when it is pressed twice', () => {
-    const { press, ran, dispatcher } = setup();
+    const { press, matched, ran, dispatcher } = setup();
     press('C-b');
     expect(press('C-b')).toBe('send');
     expect(ran).toEqual([]);
+    expect(matched).toHaveBeenCalledTimes(2);
     expect(dispatcher.state()).toBeUndefined();
   });
 
@@ -75,6 +101,18 @@ describe('key dispatcher', () => {
     bound.press('C-b');
     expect(bound.press('C-b')).toBe('handled');
     expect(bound.ran.map(entry => entry.binding)).toEqual(['last-panel']);
+  });
+
+  it('does not send a leader whose destination in the active table is conflicted', () => {
+    const tables = resolveKeyTables(undefined);
+    tables.prefix!['C-b'] = { chord: 'C-b', binding: 'new-terminal', source: 'config', conflicted: true };
+    const { press, matched, ran, dispatcher } = setup({}, [], tables);
+
+    expect(press('C-b')).toBe('handled');
+    expect(press('C-b')).toBe('handled');
+    expect(ran).toEqual([]);
+    expect(matched).toHaveBeenCalledTimes(1);
+    expect(dispatcher.state()).toBeUndefined();
   });
 
   it('ignores bare modifiers while a table waits', () => {
@@ -106,16 +144,17 @@ describe('key dispatcher', () => {
   });
 
   it('chains from one table to another', () => {
-    const { press, ran, dispatcher } = setup({ root: { 'C-g': { table: 'git' } }, git: { l: { terminal: 'lazygit' } }, prefix: { G: { table: 'git' } } });
+    const { press, matched, ran, dispatcher } = setup({ root: { 'C-g': { table: 'git' } }, git: { l: { terminal: 'lazygit' } }, prefix: { G: { table: 'git' } } });
     press('C-b');
     expect(press('S-g')).toBe('handled');
     expect(dispatcher.state()).toMatchObject({ table: 'git', chord: 'S-g' });
     expect(press('l')).toBe('handled');
     expect(ran).toEqual([{ binding: { terminal: 'lazygit' }, table: 'git', chord: 'l' }]);
+    expect(matched).toHaveBeenCalledTimes(3);
   });
 
   it('keeps a repeatable binding live without the leader for a moment', () => {
-    const { press, ran, dispatcher } = setup();
+    const { press, matched, ran, dispatcher } = setup();
     press('C-b');
     press('Right');
     expect(dispatcher.state()).toMatchObject({ table: 'prefix', repeat: true });
@@ -127,10 +166,11 @@ describe('key dispatcher', () => {
     vi.advanceTimersByTime(keyRepeatMs);
     expect(dispatcher.state()).toBeUndefined();
     expect(press('Right')).toBe('pass');
+    expect(matched).toHaveBeenCalledTimes(4);
   });
 
   it('ends the repeat on any other key and handles that key from root', () => {
-    const { press, ran, dispatcher } = setup();
+    const { press, matched, ran, dispatcher } = setup();
     press('C-b');
     press('Left');
     expect(press('c')).toBe('pass');
@@ -139,19 +179,40 @@ describe('key dispatcher', () => {
     press('Left');
     expect(press('C-?')).toBe('handled');
     expect(ran.map(entry => entry.binding)).toEqual(['select-panel-left', 'select-panel-left', 'show-bindings']);
+    expect(matched).toHaveBeenCalledTimes(5);
+  });
+
+  it('does not fall through a conflicted repeat key to its root binding', () => {
+    const tables = resolveKeyTables(undefined);
+    tables.prefix!['C-?'] = { chord: 'C-?', binding: 'new-terminal', source: 'config', conflicted: true };
+    const { press, matched, ran, dispatcher } = setup({}, [], tables);
+
+    press('C-b');
+    press('Right');
+    expect(dispatcher.state()).toMatchObject({ table: 'prefix', repeat: true });
+    expect(press('C-?')).toBe('handled');
+    expect(ran.map(entry => entry.binding)).toEqual(['select-panel-right']);
+    expect(matched).toHaveBeenCalledTimes(2);
+    expect(dispatcher.state()).toBeUndefined();
   });
 
   it('asks before a confirmed action and runs it only on y', () => {
-    const { press, dispatcher } = setup();
+    const { press, matched, dispatcher } = setup();
     const yes = vi.fn();
     dispatcher.confirm('Close panel Terminal 1?', yes);
     expect(dispatcher.state()).toMatchObject({ confirm: 'Close panel Terminal 1?' });
     expect(press(undefined)).toBe('pass');
+    expect(matched).not.toHaveBeenCalled();
+    expect(press('x')).toBe('handled');
+    expect(matched).not.toHaveBeenCalled();
+    dispatcher.confirm('Close panel Terminal 1?', yes);
     expect(press('n')).toBe('handled');
+    expect(matched).toHaveBeenCalledTimes(1);
     expect(yes).not.toHaveBeenCalled();
     expect(dispatcher.state()).toBeUndefined();
     dispatcher.confirm('Close panel Terminal 1?', yes);
     expect(press('y')).toBe('handled');
+    expect(matched).toHaveBeenCalledTimes(2);
     expect(yes).toHaveBeenCalledOnce();
     expect(dispatcher.state()).toBeUndefined();
   });

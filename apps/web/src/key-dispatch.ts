@@ -14,12 +14,13 @@ export type KeyDispatchState =
 type KeyDispatcherOptions<Context> = {
   tables: () => ResolvedKeyTables;
   run: (binding: KeyBinding, context: { table: string; chord: string; event: Context }) => boolean;
+  onMatch?: () => void;
 };
 
 // The tmux-style state machine behind the one keydown listener. `handle` takes the chord a key
 // makes (undefined for a bare modifier) and says whether the listener should swallow the key,
 // let it pass, or `send` it: the table's own key pressed again, for the focused terminal.
-export function createKeyDispatcher<Context>({ tables, run }: KeyDispatcherOptions<Context>) {
+export function createKeyDispatcher<Context>({ tables, run, onMatch }: KeyDispatcherOptions<Context>) {
   let state: KeyDispatchState | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const listeners = new Set<() => void>();
@@ -32,13 +33,21 @@ export function createKeyDispatcher<Context>({ tables, run }: KeyDispatcherOptio
   const repeatable = (binding: KeyBinding | undefined) => typeof binding === 'string' && keyActions[binding]?.repeat === true;
 
   const handleRoot = (chord: string, event: Context): 'pass' | 'handled' => {
-    const binding = lookupKeyBinding(tables(), 'root', chord);
+    const currentTables = tables();
+    // ambiguous root shortcuts are swallowed without running either command
+    if (currentTables.root?.[chord]?.conflicted === true) return 'handled';
+    const binding = lookupKeyBinding(currentTables, 'root', chord);
     if (binding === undefined) return 'pass';
+    // table leaders always consume their configured key
     if (isTableBinding(binding)) {
+      onMatch?.();
       set({ table: binding.table, chord, repeat: false, expiresAt: Date.now() + keyTableTimeoutMs });
       return 'handled';
     }
-    return run(binding, { table: 'root', chord, event }) ? 'handled' : 'pass';
+    // declined root actions remain ordinary input, not successful shortcut matches
+    if (!run(binding, { table: 'root', chord, event })) return 'pass';
+    onMatch?.();
+    return 'handled';
   };
 
   const handle = (chord: string | undefined, event: Context): 'pass' | 'handled' | 'send' => {
@@ -48,22 +57,39 @@ export function createKeyDispatcher<Context>({ tables, run }: KeyDispatcherOptio
     if (current === undefined) return handleRoot(chord, event);
     if (current.confirm !== undefined) {
       set(undefined);
+      // report only accepted confirmation keys
+      if (chord === 'y' || chord === 'n') onMatch?.();
       if (chord === 'y') current.onYes();
       return 'handled';
     }
-    const binding = lookupKeyBinding(tables(), current.table, chord);
+    const currentTables = tables();
+    // conflicts end a pending or repeated table without falling through or sending the leader
+    if (currentTables[current.table]?.[chord]?.conflicted === true) {
+      set(undefined);
+      return 'handled';
+    }
+    const binding = lookupKeyBinding(currentTables, current.table, chord);
     if (current.repeat) {
       // only another repeatable key continues a repeat; anything else is an ordinary root key
       if (!repeatable(binding)) { set(undefined); return handleRoot(chord, event); }
       set({ ...current, expiresAt: Date.now() + keyRepeatMs });
+      // report repeatable table matches
+      onMatch?.();
       run(binding!, { table: current.table, chord, event });
       return 'handled';
     }
     if (binding === undefined) {
       set(undefined);
       // the key that entered the table, pressed again, goes to the focused terminal (send-prefix)
-      return chord === current.chord ? 'send' : 'handled';
+      if (chord === current.chord) {
+        // report the repeated leader shortcut
+        onMatch?.();
+        return 'send';
+      }
+      return 'handled';
     }
+    // report configured table matches before dispatch
+    onMatch?.();
     if (isTableBinding(binding)) {
       set({ table: binding.table, chord, repeat: false, expiresAt: Date.now() + keyTableTimeoutMs });
       return 'handled';
